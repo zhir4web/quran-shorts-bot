@@ -233,7 +233,10 @@ def entry_uploaded_at(entry):
         return datetime.fromtimestamp(ts)
     upload_date = entry.get("upload_date")
     if upload_date:
-        return datetime.strptime(upload_date, "%Y%m%d")
+        try:
+            return datetime.strptime(upload_date, "%Y%m%d")
+        except Exception:
+            return None
     return None
 
 
@@ -278,7 +281,8 @@ def entry_url(entry):
 
 
 def search_query_entries(query, ydl, limit=SEARCH_RESULTS_PER_QUERY):
-    search_url = f"ytsearchdate{limit}:{query}"
+    """Correct fix for searching using proper ytsearch syntax."""
+    search_url = f"ytsearch{limit}:{query}"
     info = ydl.extract_info(search_url, download=False)
     if not info:
         return []
@@ -331,39 +335,38 @@ def enrich_entries(entries, browser=None, cookies_file=None):
 
 
 def select_best_short(entries):
-    """Pick the top Quran Short, trying 24h, then 7 days, then any time."""
+    """Pick the top Quran Short, checking date frames robustly."""
+    if not entries:
+        return None
+
     # Step 1: Try last 24 hours
     eligible = [
         e for e in entries
         if is_recent(e, hours=24)
         and is_short_video(e)
         and is_quran_related(e)
-        and entry_views(e) > 0
     ]
     if eligible:
         eligible.sort(key=entry_views, reverse=True)
         return eligible[0]
 
-    # Step 2: Fallback to last 7 days (168 hours)
+    # Step 2: Fallback to last 7 days
     print("  No videos in last 24h. Expanding search to last 7 days...")
     eligible = [
         e for e in entries
         if is_recent(e, hours=168)
         and is_short_video(e)
         and is_quran_related(e)
-        and entry_views(e) > 0
     ]
     if eligible:
         eligible.sort(key=entry_views, reverse=True)
         return eligible[0]
 
-    # Step 3: Ultimate fallback - any qualifying video regardless of date
-    print("  No videos in last 7 days. Using ultimate fallback (any timeframe)...")
+    # Step 3: Ultimate fallback - any time frame
+    print("  Using ultimate fallback (any timeframe)...")
     eligible = [
         e for e in entries
-        if is_short_video(e)
-        and is_quran_related(e)
-        and entry_views(e) > 0
+        if is_short_video(e) and is_quran_related(e)
     ]
     if eligible:
         eligible.sort(key=entry_views, reverse=True)
@@ -453,11 +456,16 @@ def main():
 
         candidates = collect_search_candidates(browser, cookies_file)
         print(f"  Found {len(candidates)} candidates. Loading details...\n")
+        
+        if not candidates:
+            print("No candidates found during search. Check internet or queries.")
+            sys.exit(1)
+            
         detailed = enrich_entries(candidates, browser, cookies_file)
         best = select_best_short(detailed)
 
         if not best:
-            print("No qualifying Quran Shorts found at all. Try different search keywords.")
+            print("No qualifying Quran Shorts found at all.")
             sys.exit(1)
 
         title = best.get("title", "Unknown")
@@ -486,6 +494,7 @@ def main():
             )
         except Exception as exc:
             print(f"  Failed: {exc}")
+            sys.exit(1)
 
     upload_final_shorts(processed_videos)
     print("\nDone.")
