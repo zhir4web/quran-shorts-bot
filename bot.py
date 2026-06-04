@@ -13,14 +13,22 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# لێرەدا پشتگیری هەردوو وەشانی کۆن و نوێی موڤیپی دەکەین بۆ ڕێگری لە ئیرۆر
+import importlib
+
 try:
-    from moviepy.editor import VideoFileClip
-    import moviepy.video.fx.all as vfx
-    MOVIEPY_V1 = True
-except ImportError:
+    # Try MoviePy v2 first (this matches your local installation)
     from moviepy import VideoFileClip
     MOVIEPY_V1 = False
+except ImportError:
+    # Fall back to MoviePy v1 dynamically to silence static analyzer warnings
+    try:
+        moviepy_editor = importlib.import_module("moviepy.editor")
+        VideoFileClip = moviepy_editor.VideoFileClip
+        vfx = importlib.import_module("moviepy.video.fx.all")
+        MOVIEPY_V1 = True
+    except ImportError:
+        print("Error: moviepy is not installed. Please run: pip install moviepy")
+        sys.exit(1)
 
 HOURS_BACK = 24
 MAX_SHORT_DURATION = 60
