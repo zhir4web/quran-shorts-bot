@@ -28,7 +28,6 @@ SEARCH_QUERIES = [
     "holy quran shorts",
 ]
 
-# ناوی فایلی کوکیزەکەت لێرە جێگیر کراوە بۆ ئەوەی بۆتەکە ڕاستەوخۆ بیخوێنێتەوە
 DEFAULT_COOKIES_FILE = "youtube_cookies.txt"
 
 CLIENT_SECRETS_NAMES = ("client_secrets.json", "client_secrets.json.json")
@@ -189,7 +188,6 @@ def build_base_opts(browser=None, cookies_file=None):
         "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
     
-    # لێرەدا کۆدەکە خۆکارانە سەیری فۆڵدەرەکە دەکات ئەگەر فایلی کوکیزی تێدا بێت دەیخوێنێتەوە
     if not cookies_file and not browser:
         if Path(DEFAULT_COOKIES_FILE).exists():
             cookies_file = Path(DEFAULT_COOKIES_FILE)
@@ -206,14 +204,8 @@ def build_download_opts(browser=None, cookies_file=None, outtmpl="%(id)s.%(ext)s
     opts = build_base_opts(browser, cookies_file)
     opts.update(
         {
-            "format": (
-                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/"
-                "bestvideo[height<=720]+bestaudio/"
-                "best[height<=720][ext=mp4]/"
-                "best[height<=720]/"
-                "best"
-            ),
-            "merge_output_format": "mp4",
+            # گۆڕانکاری لێرە کرا بۆ ئەوەی ڕاستەوخۆ باشترین فایلی MP4 ی تێکەڵکراو دابەزێنێت بەبێ کێشەی قەبارەی ستوونی
+            "format": "best[ext=mp4]/best",
             "outtmpl": outtmpl,
             "noplaylist": True,
             "overwrites": True,
