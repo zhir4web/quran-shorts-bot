@@ -201,10 +201,10 @@ def build_base_opts(browser=None, cookies_file=None):
         "quiet": True,
         "no_warnings": True,
         "ignoreerrors": True,
-        # ios + tv_embedded bypass YouTube bot-detection far better than web/android
+        # Try all major client types to maximize the chance of finding one not blocked by CI IP detection
         "extractor_args": {
             "youtube": {
-                "player_client": ["ios", "tv_embedded", "android"],
+                "player_client": ["ios", "tv_embedded", "web_embedded", "android", "tv", "web"],
             }
         },
         "socket_timeout": 30,
@@ -396,7 +396,16 @@ def main():
                 for old in Path(".").glob(f"{temp_stem.name}.*"):
                     old.unlink()
 
-                downloaded = download_video(url, temp_stem, browser, cookies_file)
+                try:
+                    downloaded = download_video(url, temp_stem, browser, cookies_file)
+                except Exception as e:
+                    # If downloading with cookies fails, try downloading without cookies as fallback
+                    if cookies_file:
+                        print(f"    Download failed with cookies. Retrying WITHOUT cookies...")
+                        downloaded = download_video(url, temp_stem, browser, cookies_file=None)
+                    else:
+                        raise e
+
                 process_video(downloaded, FINAL_VIDEO)
                 downloaded.unlink(missing_ok=True)
                 processed_videos.append(
