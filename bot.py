@@ -196,20 +196,22 @@ def upload_final_shorts(processed_videos):
             print(f"    Upload failed: {exc}")
 
 
-def build_base_opts(browser=None, cookies_file=None):
+def build_base_opts(browser=None, cookies_file=None, client=None):
     opts = {
         "quiet": True,
         "no_warnings": True,
         "ignoreerrors": True,
-        # Try all major client types to maximize the chance of finding one not blocked by CI IP detection
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["ios", "tv_embedded", "web_embedded", "android", "tv", "web"],
-            }
-        },
         "socket_timeout": 30,
         "retries": 5,
         "fragment_retries": 5,
+    }
+    
+    # Configure specific player client if provided, otherwise default to a resilient list
+    target_client = [client] if client else ["tv_embedded", "ios", "web_embedded", "android"]
+    opts["extractor_args"] = {
+        "youtube": {
+            "player_client": target_client,
+        }
     }
 
     if cookies_file == "none":
@@ -238,8 +240,8 @@ def build_base_opts(browser=None, cookies_file=None):
     return opts
 
 
-def build_download_opts(browser=None, cookies_file=None, outtmpl="%(id)s.%(ext)s"):
-    opts = build_base_opts(browser, cookies_file)
+def build_download_opts(browser=None, cookies_file=None, outtmpl="%(id)s.%(ext)s", client=None):
+    opts = build_base_opts(browser, cookies_file, client=client)
     opts.update(
         {
             # Broad fallback chain: prefer mp4, fall back to any best available
@@ -251,6 +253,37 @@ def build_download_opts(browser=None, cookies_file=None, outtmpl="%(id)s.%(ext)s
         }
     )
     return opts
+
+
+def download_video(url, dest_stem, browser=None, cookies_file=None):
+    # Try clients sequentially so one blocked client doesn't abort the download
+    clients_to_try = ["tv_embedded", "ios", "web_embedded", "android"]
+    last_exc = None
+
+    for client in clients_to_try:
+        try:
+            print(f"    [yt-dlp] Downloading with client format: {client}")
+            opts = build_download_opts(
+                browser, cookies_file, outtmpl=str(dest_stem) + ".%(ext)s", client=client
+            )
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+
+            matches = list(Path(".").glob(dest_stem.name + ".*"))
+            if matches:
+                return matches[0]
+        except Exception as e:
+            last_exc = e
+            # Clean up partial download files before retrying the next client
+            for temp_file in Path(".").glob(dest_stem.name + ".*"):
+                try:
+                    temp_file.unlink()
+                except Exception:
+                    pass
+
+    if last_exc:
+        raise last_exc
+    raise FileNotFoundError(f"Download failed for {url}")
 
 
 def entry_url(entry):
