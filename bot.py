@@ -193,9 +193,17 @@ def build_base_opts(browser=None, cookies_file=None):
         "quiet": True,
         "no_warnings": True,
         "ignoreerrors": True,
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+        # ios + tv_embedded bypass YouTube bot-detection far better than web/android
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["ios", "tv_embedded", "android"],
+            }
+        },
+        "socket_timeout": 30,
+        "retries": 5,
+        "fragment_retries": 5,
     }
-    
+
     if not cookies_file and not browser:
         for option in COOKIE_FILE_OPTIONS:
             if Path(option).exists():
@@ -214,7 +222,8 @@ def build_download_opts(browser=None, cookies_file=None, outtmpl="%(id)s.%(ext)s
     opts = build_base_opts(browser, cookies_file)
     opts.update(
         {
-            "format": "bestvideo+bestaudio/best",
+            # Broad fallback chain: prefer mp4, fall back to any best available
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
             "merge_output_format": "mp4",
             "outtmpl": outtmpl,
             "noplaylist": True,
@@ -348,34 +357,42 @@ def main():
         if not candidates:
             print("No candidates found during search. Check internet or queries.")
             sys.exit(1)
-            
-        best = candidates[0]
-        best["channel_name"] = best.get("uploader") or best.get("channel") or "Quran Recitation"
-
-        title = best.get("title", "Unknown")
-        channel = best.get("channel_name", "")
-        print(f"\nSuccessfully selected a fast-tracked candidate:\n")
-        print(f"  {title} — {channel}")
-
-        url = entry_url(best)
-        if not url:
-            print("Selected video has no URL.")
-            sys.exit(1)
 
         print("\nDownloading and processing...\n")
         temp_stem = Path("_temp_1")
-        try:
-            for old in Path(".").glob(f"{temp_stem.name}.*"):
-                old.unlink()
+        MAX_ATTEMPTS = 10  # try up to 10 candidates before giving up
+        success = False
 
-            downloaded = download_video(url, temp_stem, browser, cookies_file)
-            process_video(downloaded, FINAL_VIDEO)
-            downloaded.unlink(missing_ok=True)
-            processed_videos.append(
-                {"path": FINAL_VIDEO, "entry": best, "index": 1}
+        for attempt, best in enumerate(candidates[:MAX_ATTEMPTS], start=1):
+            best["channel_name"] = (
+                best.get("uploader") or best.get("channel") or "Quran Recitation"
             )
-        except Exception as exc:
-            print(f"  Failed: {exc}")
+            url = entry_url(best)
+            if not url:
+                continue
+
+            title = best.get("title", "Unknown")
+            channel = best.get("channel_name", "")
+            print(f"  [{attempt}/{MAX_ATTEMPTS}] Trying: {title} — {channel}")
+
+            try:
+                for old in Path(".").glob(f"{temp_stem.name}.*"):
+                    old.unlink()
+
+                downloaded = download_video(url, temp_stem, browser, cookies_file)
+                process_video(downloaded, FINAL_VIDEO)
+                downloaded.unlink(missing_ok=True)
+                processed_videos.append(
+                    {"path": FINAL_VIDEO, "entry": best, "index": 1}
+                )
+                success = True
+                break  # done — stop trying more candidates
+            except Exception as exc:
+                print(f"    Failed ({exc}), trying next candidate...")
+                continue
+
+        if not success:
+            print(f"All {MAX_ATTEMPTS} candidates failed to download.")
             sys.exit(1)
 
     upload_final_shorts(processed_videos)

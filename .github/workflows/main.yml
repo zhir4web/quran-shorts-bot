@@ -15,11 +15,26 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
-          pip install yt-dlp moviepy google-api-python-client google-auth-oauthlib google-auth-httplib2
+          pip install -r requirements.txt
+          pip install -U yt-dlp
+
+      - name: Write YouTube cookies from secret
+        if: ${{ secrets.YOUTUBE_COOKIES != '' }}
+        run: |
+          printf '%s' "$YOUTUBE_COOKIES" > youtube_cookies.txt
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+
+      - name: Write YouTube OAuth token from secret
+        if: ${{ secrets.YOUTUBE_TOKEN != '' }}
+        run: |
+          printf '%s' "$YOUTUBE_TOKEN" > youtube_token.json
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
 
       - name: Run script
         run: python bot.py
