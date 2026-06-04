@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch Quran Shorts, process them, and upload to your YouTube channel."""
+"""Find trending Quran Shorts globally, process, and upload to your channel."""
 
 import sys
 from datetime import datetime, timedelta
@@ -14,19 +14,32 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from moviepy import VideoFileClip
 
-# Famous Quran recitation / Shorts channels
-QURAN_CHANNELS = [
-    {"name": "Raad Al-Kurdi", "url": "https://www.youtube.com/@raadalkurdi"},
-    {"name": "Islam Sobhi", "url": "https://www.youtube.com/@IslamSobhi"},
-    {"name": "Maher Al Muaiqly", "url": "https://www.youtube.com/@MaherAlMuaiqly"},
-    {"name": "Mishary Rashid Alafasy", "url": "https://www.youtube.com/@misharyrashidalafasy"},
+HOURS_BACK = 24
+MAX_SHORT_DURATION = 60
+SEARCH_RESULTS_PER_QUERY = 30
+FINAL_VIDEO = Path("final_shorts_1.mp4")
+SPEED = 1.04
+
+SEARCH_QUERIES = [
+    "quran shorts",
+    "quran recitation shorts",
+    "surah shorts",
+    "tilawah shorts",
+    "holy quran shorts",
 ]
 
-TOP_COUNT = 4
-DAYS_BACK = 7
-SPEED = 1.04
-SHORTS_SCAN_LIMIT = 40
-ENRICH_PER_CHANNEL = 15
+QURAN_KEYWORDS = (
+    "quran",
+    "surah",
+    "sura",
+    "tilawah",
+    "recitation",
+    "taraweeh",
+    "islamic",
+    "قرآن",
+    "سورة",
+    "تلاوة",
+)
 
 CLIENT_SECRETS_NAMES = ("client_secrets.json", "client_secrets.json.json")
 TOKEN_FILE = Path("youtube_token.json")
@@ -224,11 +237,29 @@ def entry_uploaded_at(entry):
     return None
 
 
-def is_recent(entry, days=DAYS_BACK):
+def is_recent(entry, hours=HOURS_BACK):
     uploaded = entry_uploaded_at(entry)
     if uploaded is None:
         return False
-    return uploaded >= datetime.now() - timedelta(days=days)
+    return uploaded >= datetime.now() - timedelta(hours=hours)
+
+
+def is_short_video(entry):
+    duration = entry.get("duration")
+    if duration is not None and duration > MAX_SHORT_DURATION:
+        return False
+    return True
+
+
+def is_quran_related(entry):
+    parts = [
+        entry.get("title") or "",
+        entry.get("description") or "",
+        entry.get("channel") or "",
+        entry.get("uploader") or "",
+    ]
+    text = " ".join(parts).lower()
+    return any(keyword in text for keyword in QURAN_KEYWORDS)
 
 
 def entry_views(entry):
@@ -244,36 +275,33 @@ def entry_url(entry):
     return None
 
 
-def fetch_channel_shorts(channel, ydl):
-    shorts_url = channel["url"].rstrip("/") + "/shorts"
-    print(f"  Scanning {channel['name']}...")
-    info = ydl.extract_info(shorts_url, download=False)
+def search_query_entries(query, ydl, limit=SEARCH_RESULTS_PER_QUERY):
+    search_url = f"ytsearchdate{limit}:{query}"
+    info = ydl.extract_info(search_url, download=False)
     if not info:
         return []
-    entries = [e for e in (info.get("entries") or []) if e]
-    for entry in entries:
-        entry["channel_name"] = channel["name"]
-    return entries
+    return [e for e in (info.get("entries") or []) if e]
 
 
-def collect_short_candidates(browser=None, cookies_file=None):
+def collect_search_candidates(browser=None, cookies_file=None):
+    """Search YouTube globally for recent Quran Shorts candidates."""
     opts = build_base_opts(browser, cookies_file)
     opts["extract_flat"] = "in_playlist"
-    opts["playlistend"] = SHORTS_SCAN_LIMIT
 
     seen_ids = set()
     candidates = []
     with yt_dlp.YoutubeDL(opts) as ydl:
-        for channel in QURAN_CHANNELS:
+        for query in SEARCH_QUERIES:
+            print(f"  Searching globally: {query}")
             try:
-                for entry in fetch_channel_shorts(channel, ydl)[:ENRICH_PER_CHANNEL]:
+                for entry in search_query_entries(query, ydl):
                     vid = entry.get("id")
                     if not vid or vid in seen_ids:
                         continue
                     seen_ids.add(vid)
                     candidates.append(entry)
             except Exception as exc:
-                print(f"  Skipped {channel['name']}: {exc}")
+                print(f"  Search failed for '{query}': {exc}")
     return candidates
 
 
@@ -288,17 +316,32 @@ def enrich_entries(entries, browser=None, cookies_file=None):
             try:
                 full = ydl.extract_info(url, download=False)
                 if full:
-                    full["channel_name"] = entry.get("channel_name", "")
+                    full["channel_name"] = (
+                        full.get("channel")
+                        or full.get("uploader")
+                        or entry.get("channel")
+                        or ""
+                    )
                     enriched.append(full)
             except Exception as exc:
                 print(f"  Could not load metadata for {url}: {exc}")
     return enriched
 
 
-def select_top_shorts(entries):
-    recent = [e for e in entries if is_recent(e)]
-    recent.sort(key=entry_views, reverse=True)
-    return recent[:TOP_COUNT]
+def select_best_short(entries):
+    """Pick the top Quran Short from the last 24 hours by view count."""
+    eligible = [
+        e
+        for e in entries
+        if is_recent(e)
+        and is_short_video(e)
+        and is_quran_related(e)
+        and entry_views(e) > 0
+    ]
+    if not eligible:
+        return None
+    eligible.sort(key=entry_views, reverse=True)
+    return eligible[0]
 
 
 def download_video(url, dest_stem, browser=None, cookies_file=None):
@@ -378,50 +421,50 @@ def main():
             sys.exit(1)
         print(f"Found {len(processed_videos)} video(s) to upload.\n")
     else:
-        print(f"Finding top {TOP_COUNT} Quran Shorts from the last {DAYS_BACK} days...\n")
+        print(
+            f"Searching YouTube globally for trending Quran Shorts "
+            f"(last {HOURS_BACK} hours)...\n"
+        )
 
-        candidates = collect_short_candidates(browser, cookies_file)
-        print(f"  Found {len(candidates)} Shorts across channels. Loading details...\n")
+        candidates = collect_search_candidates(browser, cookies_file)
+        print(f"  Found {len(candidates)} candidates. Loading details...\n")
         detailed = enrich_entries(candidates, browser, cookies_file)
-        top_entries = select_top_shorts(detailed)
+        best = select_best_short(detailed)
 
-        if not top_entries:
+        if not best:
             print(
-                f"No Shorts from the last {DAYS_BACK} days found. Try again later, or run:\n"
+                f"No qualifying Quran Shorts from the last {HOURS_BACK} hours. "
+                "Try again later, or run:\n"
                 "  python bot.py edge"
             )
             sys.exit(1)
 
-        print(f"\nSelected {len(top_entries)} video(s):\n")
-        for i, entry in enumerate(top_entries, start=1):
-            title = entry.get("title", "Unknown")
-            views = entry_views(entry)
-            channel = entry.get("channel_name", entry.get("channel", ""))
-            print(f"  {i}. {title} ({views:,} views) — {channel}")
+        title = best.get("title", "Unknown")
+        views = entry_views(best)
+        channel = best.get("channel_name", best.get("channel", ""))
+        print(f"\nBest pick (last {HOURS_BACK}h by views):\n")
+        print(f"  {title} ({views:,} views) — {channel}")
+
+        url = entry_url(best)
+        if not url:
+            print("Selected video has no URL.")
+            sys.exit(1)
 
         print("\nDownloading and processing...\n")
-        for i, entry in enumerate(top_entries, start=1):
-            url = entry_url(entry)
-            if not url:
-                print(f"  Skipping item {i}: no URL")
-                continue
+        temp_stem = Path("_temp_1")
+        print(f"  {best.get('title', url)}")
+        try:
+            for old in Path(".").glob(f"{temp_stem.name}.*"):
+                old.unlink()
 
-            output = Path(f"final_shorts_{i}.mp4")
-            temp_stem = Path(f"_temp_{i}")
-
-            print(f"[{i}/{len(top_entries)}] {entry.get('title', url)}")
-            try:
-                for old in Path(".").glob(f"{temp_stem.name}.*"):
-                    old.unlink()
-
-                downloaded = download_video(url, temp_stem, browser, cookies_file)
-                process_video(downloaded, output)
-                downloaded.unlink(missing_ok=True)
-                processed_videos.append(
-                    {"path": output, "entry": entry, "index": i}
-                )
-            except Exception as exc:
-                print(f"  Failed: {exc}")
+            downloaded = download_video(url, temp_stem, browser, cookies_file)
+            process_video(downloaded, FINAL_VIDEO)
+            downloaded.unlink(missing_ok=True)
+            processed_videos.append(
+                {"path": FINAL_VIDEO, "entry": best, "index": 1}
+            )
+        except Exception as exc:
+            print(f"  Failed: {exc}")
 
     upload_final_shorts(processed_videos)
     print("\nDone.")
