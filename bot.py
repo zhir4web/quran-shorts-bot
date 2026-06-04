@@ -36,12 +36,11 @@ SEARCH_RESULTS_PER_QUERY = 30
 FINAL_VIDEO = Path("final_shorts_1.mp4")
 SPEED = 1.04
 
-SEARCH_QUERIES = [
-    "quran shorts",
-    "quran recitation shorts",
-    "surah shorts",
-    "tilawah shorts",
-    "holy quran shorts",
+QURAN_CHANNELS = [
+    "https://www.youtube.com/@ZikrullahTV/shorts",
+    "https://www.youtube.com/@Quran_Recitations_Shorts/shorts",
+    "https://www.youtube.com/@MercifulServant/shorts",
+    "https://www.youtube.com/@OnePathNetwork/shorts",
 ]
 
 COOKIE_FILE_OPTIONS = ["cookies.txt", "youtube_cookies.txt"]
@@ -295,32 +294,39 @@ def entry_url(entry):
     return None
 
 
-def search_query_entries(query, ydl, limit=SEARCH_RESULTS_PER_QUERY):
-    search_url = f"ytsearch{limit}:{query}"
-    info = ydl.extract_info(search_url, download=False)
-    if not info:
-        return []
-    return [e for e in (info.get("entries") or []) if e]
+import random
 
-
-def collect_search_candidates(browser=None, cookies_file=None):
+def collect_channel_candidates(browser=None, cookies_file=None):
     opts = build_base_opts(browser, cookies_file)
     opts["extract_flat"] = "in_playlist"
+    opts["playlistend"] = 8  # Only fetch the latest 8 videos from each channel to be fast
 
     seen_ids = set()
     candidates = []
+    
     with yt_dlp.YoutubeDL(opts) as ydl:
-        for query in SEARCH_QUERIES:
-            print(f"  Searching globally: {query}")
+        for channel_url in QURAN_CHANNELS:
+            print(f"  Fetching latest Shorts from: {channel_url}")
             try:
-                for entry in search_query_entries(query, ydl):
+                info = ydl.extract_info(channel_url, download=False)
+                if not info:
+                    continue
+                entries = info.get("entries") or []
+                for entry in entries:
+                    if not entry:
+                        continue
                     vid = entry.get("id")
                     if not vid or vid in seen_ids:
                         continue
                     seen_ids.add(vid)
+                    # Store parent channel name if available
+                    entry["channel_name"] = info.get("title") or info.get("uploader")
                     candidates.append(entry)
             except Exception as exc:
-                print(f"  Search failed for '{query}': {exc}")
+                print(f"  Failed to fetch from {channel_url}: {exc}")
+                
+    # Shuffle so we don't always try the same channel's video first
+    random.shuffle(candidates)
     return candidates
 
 
@@ -404,11 +410,11 @@ def main():
             sys.exit(1)
         print(f"Found {len(processed_videos)} video(s) to upload.\n")
     else:
-        print("Searching YouTube globally for trending Quran Shorts...\n")
+        print("Fetching trending Quran Shorts from targeted channels...\n")
 
-        candidates = collect_search_candidates(browser, cookies_file)
+        candidates = collect_channel_candidates(browser, cookies_file)
         if not candidates:
-            print("No candidates found during search. Check internet or queries.")
+            print("No candidates found on targeted channels. Check connection.")
             sys.exit(1)
 
         print("\nDownloading and processing...\n")
