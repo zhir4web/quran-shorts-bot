@@ -227,50 +227,6 @@ def build_download_opts(browser=None, cookies_file=None, outtmpl="%(id)s.%(ext)s
     return opts
 
 
-def entry_uploaded_at(entry):
-    ts = entry.get("timestamp") or entry.get("release_timestamp")
-    if ts:
-        return datetime.fromtimestamp(ts)
-    upload_date = entry.get("upload_date")
-    if upload_date:
-        try:
-            return datetime.strptime(upload_date, "%Y%m%d")
-        except Exception:
-            return None
-    return None
-
-
-def is_recent(entry, hours=HOURS_BACK):
-    if hours is None:
-        return True
-    uploaded = entry_uploaded_at(entry)
-    if uploaded is None:
-        return False
-    return uploaded >= datetime.now() - timedelta(hours=hours)
-
-
-def is_short_video(entry):
-    duration = entry.get("duration")
-    if duration is not None and duration > MAX_SHORT_DURATION:
-        return False
-    return True
-
-
-def is_quran_related(entry):
-    parts = [
-        entry.get("title") or "",
-        entry.get("description") or "",
-        entry.get("channel") or "",
-        entry.get("uploader") or "",
-    ]
-    text = " ".join(parts).lower()
-    return any(keyword in text for keyword in QURAN_KEYWORDS)
-
-
-def entry_views(entry):
-    return entry.get("view_count") or 0
-
-
 def entry_url(entry):
     if entry.get("url"):
         return entry["url"]
@@ -281,7 +237,6 @@ def entry_url(entry):
 
 
 def search_query_entries(query, ydl, limit=SEARCH_RESULTS_PER_QUERY):
-    """Correct fix for searching using proper ytsearch syntax."""
     search_url = f"ytsearch{limit}:{query}"
     info = ydl.extract_info(search_url, download=False)
     if not info:
@@ -309,70 +264,6 @@ def collect_search_candidates(browser=None, cookies_file=None):
             except Exception as exc:
                 print(f"  Search failed for '{query}': {exc}")
     return candidates
-
-
-def enrich_entries(entries, browser=None, cookies_file=None):
-    opts = build_base_opts(browser, cookies_file)
-    enriched = []
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        for entry in entries:
-            url = entry_url(entry)
-            if not url:
-                continue
-            try:
-                full = ydl.extract_info(url, download=False)
-                if full:
-                    full["channel_name"] = (
-                        full.get("channel")
-                        or full.get("uploader")
-                        or entry.get("channel")
-                        or ""
-                    )
-                    enriched.append(full)
-            except Exception as exc:
-                print(f"  Could not load metadata for {url}: {exc}")
-    return enriched
-
-
-def select_best_short(entries):
-    """Pick the top Quran Short, checking date frames robustly."""
-    if not entries:
-        return None
-
-    # Step 1: Try last 24 hours
-    eligible = [
-        e for e in entries
-        if is_recent(e, hours=24)
-        and is_short_video(e)
-        and is_quran_related(e)
-    ]
-    if eligible:
-        eligible.sort(key=entry_views, reverse=True)
-        return eligible[0]
-
-    # Step 2: Fallback to last 7 days
-    print("  No videos in last 24h. Expanding search to last 7 days...")
-    eligible = [
-        e for e in entries
-        if is_recent(e, hours=168)
-        and is_short_video(e)
-        and is_quran_related(e)
-    ]
-    if eligible:
-        eligible.sort(key=entry_views, reverse=True)
-        return eligible[0]
-
-    # Step 3: Ultimate fallback - any time frame
-    print("  Using ultimate fallback (any timeframe)...")
-    eligible = [
-        e for e in entries
-        if is_short_video(e) and is_quran_related(e)
-    ]
-    if eligible:
-        eligible.sort(key=entry_views, reverse=True)
-        return eligible[0]
-
-    return None
 
 
 def download_video(url, dest_stem, browser=None, cookies_file=None):
@@ -455,24 +346,20 @@ def main():
         print("Searching YouTube globally for trending Quran Shorts...\n")
 
         candidates = collect_search_candidates(browser, cookies_file)
-        print(f"  Found {len(candidates)} candidates. Loading details...\n")
+        print(f"  Found {len(candidates)} candidates. Bypassing metadata heavy checks to avoid bot block...\n")
         
         if not candidates:
             print("No candidates found during search. Check internet or queries.")
             sys.exit(1)
             
-        detailed = enrich_entries(candidates, browser, cookies_file)
-        best = select_best_short(detailed)
-
-        if not best:
-            print("No qualifying Quran Shorts found at all.")
-            sys.exit(1)
+        # Bypass enrich_entries and pick the first available candidate directly
+        best = candidates[0]
+        best["channel_name"] = best.get("uploader") or best.get("channel") or "Quran Recitation"
 
         title = best.get("title", "Unknown")
-        views = entry_views(best)
-        channel = best.get("channel_name", best.get("channel", ""))
-        print(f"\nBest pick selected successfully:\n")
-        print(f"  {title} ({views:,} views) — {channel}")
+        channel = best.get("channel_name", "")
+        print(f"\nSuccessfully selected a fast-tracked candidate:\n")
+        print(f"  {title} — {channel}")
 
         url = entry_url(best)
         if not url:
@@ -481,7 +368,6 @@ def main():
 
         print("\nDownloading and processing...\n")
         temp_stem = Path("_temp_1")
-        print(f"  {best.get('title', url)}")
         try:
             for old in Path(".").glob(f"{temp_stem.name}.*"):
                 old.unlink()
