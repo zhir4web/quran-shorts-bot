@@ -212,6 +212,9 @@ def build_base_opts(browser=None, cookies_file=None):
         "fragment_retries": 5,
     }
 
+    if cookies_file == "none":
+        return opts
+
     if not cookies_file and not browser:
         for option in COOKIE_FILE_OPTIONS:
             path = Path(option)
@@ -228,7 +231,7 @@ def build_base_opts(browser=None, cookies_file=None):
                 except Exception:
                     pass
 
-    if cookies_file:
+    if cookies_file and cookies_file != "none":
         opts["cookiefile"] = str(cookies_file)
     elif browser:
         opts["cookiesfrombrowser"] = (browser,)
@@ -399,12 +402,9 @@ def main():
                 try:
                     downloaded = download_video(url, temp_stem, browser, cookies_file)
                 except Exception as e:
-                    # If downloading with cookies fails, try downloading without cookies as fallback
-                    if cookies_file:
-                        print(f"    Download failed with cookies. Retrying WITHOUT cookies...")
-                        downloaded = download_video(url, temp_stem, browser, cookies_file=None)
-                    else:
-                        raise e
+                    # Retry without cookies
+                    print(f"    Download failed. Retrying WITHOUT cookies...")
+                    downloaded = download_video(url, temp_stem, browser, cookies_file="none")
 
                 process_video(downloaded, FINAL_VIDEO)
                 downloaded.unlink(missing_ok=True)
