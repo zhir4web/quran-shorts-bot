@@ -28,18 +28,8 @@ SEARCH_QUERIES = [
     "holy quran shorts",
 ]
 
-QURAN_KEYWORDS = (
-    "quran",
-    "surah",
-    "sura",
-    "tilawah",
-    "recitation",
-    "taraweeh",
-    "islamic",
-    "قرآن",
-    "سورة",
-    "تلاوة",
-)
+# ناوی فایلی کوکیزەکەت لێرە جێگیر کراوە بۆ ئەوەی بۆتەکە ڕاستەوخۆ بیخوێنێتەوە
+DEFAULT_COOKIES_FILE = "youtube_cookies.txt"
 
 CLIENT_SECRETS_NAMES = ("client_secrets.json", "client_secrets.json.json")
 TOKEN_FILE = Path("youtube_token.json")
@@ -76,7 +66,6 @@ def get_youtube_service():
 
 
 def islamic_metadata(entry=None, index=1):
-    """Build Islamic title, description, and tags for a Short."""
     if entry:
         channel = entry.get("channel_name") or entry.get("channel") or "Quran"
         original = entry.get("title") or "Quran Recitation"
@@ -167,7 +156,6 @@ def upload_video(youtube, video_path, entry=None, index=1):
 
 
 def upload_final_shorts(processed_videos):
-    """Upload each final_shorts_N.mp4 to YouTube."""
     if not processed_videos:
         print("No videos to upload.")
         return
@@ -200,6 +188,13 @@ def build_base_opts(browser=None, cookies_file=None):
         "ignoreerrors": True,
         "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
+    
+    # لێرەدا کۆدەکە خۆکارانە سەیری فۆڵدەرەکە دەکات ئەگەر فایلی کوکیزی تێدا بێت دەیخوێنێتەوە
+    if not cookies_file and not browser:
+        if Path(DEFAULT_COOKIES_FILE).exists():
+            cookies_file = Path(DEFAULT_COOKIES_FILE)
+            print(f"  [Info] Automatically using cookies from: {DEFAULT_COOKIES_FILE}")
+
     if cookies_file:
         opts["cookiefile"] = str(cookies_file)
     elif browser:
@@ -245,7 +240,6 @@ def search_query_entries(query, ydl, limit=SEARCH_RESULTS_PER_QUERY):
 
 
 def collect_search_candidates(browser=None, cookies_file=None):
-    """Search YouTube globally for recent Quran Shorts candidates."""
     opts = build_base_opts(browser, cookies_file)
     opts["extract_flat"] = "in_playlist"
 
@@ -331,9 +325,6 @@ def parse_args():
 
 def main():
     browser, cookies_file, upload_only = parse_args()
-    if browser:
-        print(f"Using {browser} cookies — close {browser} completely if this fails.")
-
     processed_videos = []
 
     if upload_only:
@@ -346,13 +337,10 @@ def main():
         print("Searching YouTube globally for trending Quran Shorts...\n")
 
         candidates = collect_search_candidates(browser, cookies_file)
-        print(f"  Found {len(candidates)} candidates. Bypassing metadata heavy checks to avoid bot block...\n")
-        
         if not candidates:
             print("No candidates found during search. Check internet or queries.")
             sys.exit(1)
             
-        # Bypass enrich_entries and pick the first available candidate directly
         best = candidates[0]
         best["channel_name"] = best.get("uploader") or best.get("channel") or "Quran Recitation"
 
