@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Find trending Quran Shorts globally, process, and upload to your channel."""
+"""Multi-Platform Quran Shorts downloader and uploader."""
 
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-
+import importlib
 import numpy as np
 import yt_dlp
 from google.auth.transport.requests import Request
@@ -13,8 +13,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-import importlib
-
+# Keep the automatic MoviePy version check supporting both v1 and v2
 try:
     # Try MoviePy v2 first (this matches your local installation)
     from moviepy import VideoFileClip
@@ -32,19 +31,16 @@ except ImportError:
 
 HOURS_BACK = 24
 MAX_SHORT_DURATION = 60
-SEARCH_RESULTS_PER_QUERY = 30
 FINAL_VIDEO = Path("final_shorts_1.mp4")
 SPEED = 1.04
 
-QURAN_CHANNELS = [
-    "https://www.youtube.com/@ZikrullahTV/shorts",
-    "https://www.youtube.com/@Quran_Recitations_Shorts/shorts",
-    "https://www.youtube.com/@MercifulServant/shorts",
-    "https://www.youtube.com/@OnePathNetwork/shorts",
+# Direct video links to download from (supports YouTube Shorts, TikTok, Instagram Reels, etc.)
+VIDEO_LINKS = [
+    # Paste your direct video links here. E.g.:
+    # "https://www.youtube.com/shorts/OaG9124StE0"
 ]
 
 COOKIE_FILE_OPTIONS = ["cookies.txt", "youtube_cookies.txt"]
-
 CLIENT_SECRETS_NAMES = ("client_secrets.json", "client_secrets.json.json")
 TOKEN_FILE = Path("youtube_token.json")
 YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
@@ -81,7 +77,7 @@ def get_youtube_service():
 
 def islamic_metadata(entry=None, index=1):
     if entry:
-        channel = entry.get("channel_name") or entry.get("channel") or "Quran"
+        channel = entry.get("uploader") or entry.get("channel") or "Quran"
         original = entry.get("title") or "Quran Recitation"
         title = f"🌙 {channel} | {original} | Quran Shorts #Shorts"
     else:
@@ -94,8 +90,8 @@ def islamic_metadata(entry=None, index=1):
         title = title[:97] + "..."
 
     channel_tag = ""
-    if entry and entry.get("channel_name"):
-        channel_tag = entry["channel_name"].replace(" ", "")
+    if entry and entry.get("uploader"):
+        channel_tag = entry["uploader"].replace(" ", "")
 
     tags = [
         "Quran",
@@ -122,9 +118,9 @@ def islamic_metadata(entry=None, index=1):
         "#Quran #Islam #Muslim #QuranRecitation #Shorts #Islamic "
         "#Allah #Reminder #Tilawah"
     )
-    if entry and entry.get("channel_name"):
+    if entry and entry.get("uploader"):
         description = (
-            f"Recitation featured from {entry['channel_name']}.\n\n" + description
+            f"Recitation featured from {entry['uploader']}.\n\n" + description
         )
 
     return title, description, tags
@@ -243,7 +239,6 @@ def build_download_opts(browser=None, cookies_file=None, outtmpl="%(id)s.%(ext)s
     opts = build_base_opts(browser, cookies_file, client=client)
     opts.update(
         {
-            # Broad fallback chain: prefer mp4, fall back to any best available
             "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
             "merge_output_format": "mp4",
             "outtmpl": outtmpl,
@@ -285,64 +280,6 @@ def download_video(url, dest_stem, browser=None, cookies_file=None):
     raise FileNotFoundError(f"Download failed for {url}")
 
 
-def entry_url(entry):
-    if entry.get("url"):
-        return entry["url"]
-    video_id = entry.get("id")
-    if video_id:
-        return f"https://www.youtube.com/watch?v={video_id}"
-    return None
-
-
-import random
-
-def collect_channel_candidates(browser=None, cookies_file=None):
-    opts = build_base_opts(browser, cookies_file)
-    opts["extract_flat"] = "in_playlist"
-    opts["playlistend"] = 8  # Only fetch the latest 8 videos from each channel to be fast
-
-    seen_ids = set()
-    candidates = []
-    
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        for channel_url in QURAN_CHANNELS:
-            print(f"  Fetching latest Shorts from: {channel_url}")
-            try:
-                info = ydl.extract_info(channel_url, download=False)
-                if not info:
-                    continue
-                entries = info.get("entries") or []
-                for entry in entries:
-                    if not entry:
-                        continue
-                    vid = entry.get("id")
-                    if not vid or vid in seen_ids:
-                        continue
-                    seen_ids.add(vid)
-                    # Store parent channel name if available
-                    entry["channel_name"] = info.get("title") or info.get("uploader")
-                    candidates.append(entry)
-            except Exception as exc:
-                print(f"  Failed to fetch from {channel_url}: {exc}")
-                
-    # Shuffle so we don't always try the same channel's video first
-    random.shuffle(candidates)
-    return candidates
-
-
-def download_video(url, dest_stem, browser=None, cookies_file=None):
-    opts = build_download_opts(
-        browser, cookies_file, outtmpl=str(dest_stem) + ".%(ext)s"
-    )
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.download([url])
-
-    matches = list(Path(".").glob(dest_stem.name + ".*"))
-    if not matches:
-        raise FileNotFoundError(f"Download failed for {url}")
-    return matches[0]
-
-
 def _adjust_frame(frame):
     adjusted = frame.astype(np.float32)
     adjusted = adjusted * 1.02 + 4
@@ -352,7 +289,6 @@ def _adjust_frame(frame):
 def process_video(input_path, output_path, speed=SPEED):
     clip = VideoFileClip(str(input_path))
     try:
-        # لێرەدا خۆکارانە فۆرماتەکە ڕێکدەخات بەپێی جۆری وەشانی moviepy
         if MOVIEPY_V1:
             clip = clip.fl_image(_adjust_frame)
             clip = clip.fx(vfx.speedx, speed)
@@ -399,6 +335,12 @@ def parse_args():
     return browser, cookies_file, upload_only
 
 
+def get_video_info(url, browser=None, cookies_file=None):
+    opts = build_base_opts(browser, cookies_file)
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        return ydl.extract_info(url, download=False)
+
+
 def main():
     browser, cookies_file, upload_only = parse_args()
     processed_videos = []
@@ -410,31 +352,24 @@ def main():
             sys.exit(1)
         print(f"Found {len(processed_videos)} video(s) to upload.\n")
     else:
-        print("Fetching trending Quran Shorts from targeted channels...\n")
-
-        candidates = collect_channel_candidates(browser, cookies_file)
-        if not candidates:
-            print("No candidates found on targeted channels. Check connection.")
+        if not VIDEO_LINKS:
+            print("Error: VIDEO_LINKS list is empty. Add direct URLs to download and upload.")
             sys.exit(1)
 
-        print("\nDownloading and processing...\n")
+        print(f"Processing direct video links ({len(VIDEO_LINKS)} total)...\n")
         temp_stem = Path("_temp_1")
-        MAX_ATTEMPTS = 10  # try up to 10 candidates before giving up
-        success = False
+        success_count = 0
 
-        for attempt, best in enumerate(candidates[:MAX_ATTEMPTS], start=1):
-            best["channel_name"] = (
-                best.get("uploader") or best.get("channel") or "Quran Recitation"
-            )
-            url = entry_url(best)
-            if not url:
-                continue
-
-            title = best.get("title", "Unknown")
-            channel = best.get("channel_name", "")
-            print(f"  [{attempt}/{MAX_ATTEMPTS}] Trying: {title} — {channel}")
-
+        for attempt, url in enumerate(VIDEO_LINKS, start=1):
+            print(f"Processing link [{attempt}/{len(VIDEO_LINKS)}]: {url}")
             try:
+                # Fetch metadata for Islamic titles/tags
+                try:
+                    entry = get_video_info(url, browser, cookies_file)
+                except Exception as meta_exc:
+                    print(f"  [Warning] Failed to fetch video info: {meta_exc}. Using default metadata.")
+                    entry = {"title": "Quran Recitation", "uploader": "Quran Channel"}
+
                 for old in Path(".").glob(f"{temp_stem.name}.*"):
                     old.unlink()
 
@@ -445,19 +380,21 @@ def main():
                     print(f"    Download failed. Retrying WITHOUT cookies...")
                     downloaded = download_video(url, temp_stem, browser, cookies_file="none")
 
-                process_video(downloaded, FINAL_VIDEO)
+                # Process the file using MoviePy
+                output_name = Path(f"final_shorts_{attempt}.mp4")
+                process_video(downloaded, output_name)
                 downloaded.unlink(missing_ok=True)
+
                 processed_videos.append(
-                    {"path": FINAL_VIDEO, "entry": best, "index": 1}
+                    {"path": output_name, "entry": entry, "index": attempt}
                 )
-                success = True
-                break  # done — stop trying more candidates
+                success_count += 1
             except Exception as exc:
-                print(f"    Failed ({exc}), trying next candidate...")
+                print(f"  Failed to download or process '{url}': {exc}\n")
                 continue
 
-        if not success:
-            print(f"All {MAX_ATTEMPTS} candidates failed to download.")
+        if success_count == 0:
+            print("All video links failed to download/process.")
             sys.exit(1)
 
     upload_final_shorts(processed_videos)
