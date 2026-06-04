@@ -34,10 +34,10 @@ MAX_SHORT_DURATION = 60
 FINAL_VIDEO = Path("final_shorts_1.mp4")
 SPEED = 1.04
 
-# Direct video links to download from (supports YouTube Shorts, TikTok, Instagram Reels, etc.)
 VIDEO_LINKS = [
-    # Paste your direct video links here. E.g.:
-    # "https://www.youtube.com/shorts/OaG9124StE0"
+    "https://www.youtube.com/shorts/VSolko2fZSI",
+    "https://www.youtube.com/shorts/OaG9124StE0",
+    "https://www.youtube.com/shorts/jLmdElI9Sik",
 ]
 
 COOKIE_FILE_OPTIONS = ["cookies.txt", "youtube_cookies.txt"]
