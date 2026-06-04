@@ -28,7 +28,8 @@ SEARCH_QUERIES = [
     "holy quran shorts",
 ]
 
-DEFAULT_COOKIES_FILE = "youtube_cookies.txt"
+# لێرەدا هەردوو ناوە ئەگەرییەکەی فایلی کوکیزمان داناوە بۆ دڵنیایی
+COOKIE_FILE_OPTIONS = ["cookies.txt", "youtube_cookies.txt"]
 
 CLIENT_SECRETS_NAMES = ("client_secrets.json", "client_secrets.json.json")
 TOKEN_FILE = Path("youtube_token.json")
@@ -189,9 +190,11 @@ def build_base_opts(browser=None, cookies_file=None):
     }
     
     if not cookies_file and not browser:
-        if Path(DEFAULT_COOKIES_FILE).exists():
-            cookies_file = Path(DEFAULT_COOKIES_FILE)
-            print(f"  [Info] Automatically using cookies from: {DEFAULT_COOKIES_FILE}")
+        for option in COOKIE_FILE_OPTIONS:
+            if Path(option).exists():
+                cookies_file = Path(option)
+                print(f"  [Info] Automatically using cookies from: {option}")
+                break
 
     if cookies_file:
         opts["cookiefile"] = str(cookies_file)
@@ -204,8 +207,9 @@ def build_download_opts(browser=None, cookies_file=None, outtmpl="%(id)s.%(ext)s
     opts = build_base_opts(browser, cookies_file)
     opts.update(
         {
-            # گۆڕانکاری لێرە کرا بۆ ئەوەی ڕاستەوخۆ باشترین فایلی MP4 ی تێکەڵکراو دابەزێنێت بەبێ کێشەی قەبارەی ستوونی
-            "format": "best[ext=mp4]/best",
+            # لێرەدا فۆرماتەکام گۆڕی بۆ هێنانی دەنگ و ڕەنگی جیاواز بۆ تێپەڕاندنی بلۆکی یوتیوب
+            "format": "bestvideo+bestaudio/best",
+            "merge_output_format": "mp4",
             "outtmpl": outtmpl,
             "noplaylist": True,
             "overwrites": True,
