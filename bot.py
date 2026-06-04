@@ -206,10 +206,19 @@ def build_base_opts(browser=None, cookies_file=None):
 
     if not cookies_file and not browser:
         for option in COOKIE_FILE_OPTIONS:
-            if Path(option).exists():
-                cookies_file = Path(option)
-                print(f"  [Info] Automatically using cookies from: {option}")
-                break
+            path = Path(option)
+            if path.exists() and path.stat().st_size > 0:
+                # Check if it has a valid Netscape cookie file header
+                try:
+                    content = path.read_text(errors="ignore")
+                    if "Netscape" in content or "cookietxt" in content or content.startswith("#"):
+                        cookies_file = path
+                        print(f"  [Info] Automatically using cookies from: {option}")
+                        break
+                    else:
+                        print(f"  [Warning] Skipping invalid/empty cookies file: {option}")
+                except Exception:
+                    pass
 
     if cookies_file:
         opts["cookiefile"] = str(cookies_file)
