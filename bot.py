@@ -12,7 +12,15 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from moviepy import VideoFileClip
+
+# لێرەدا پشتگیری هەردوو وەشانی کۆن و نوێی موڤیپی دەکەین بۆ ڕێگری لە ئیرۆر
+try:
+    from moviepy.editor import VideoFileClip
+    import moviepy.video.fx.all as vfx
+    MOVIEPY_V1 = True
+except ImportError:
+    from moviepy import VideoFileClip
+    MOVIEPY_V1 = False
 
 HOURS_BACK = 24
 MAX_SHORT_DURATION = 60
@@ -28,7 +36,6 @@ SEARCH_QUERIES = [
     "holy quran shorts",
 ]
 
-# لێرەدا هەردوو ناوە ئەگەرییەکەی فایلی کوکیزمان داناوە بۆ دڵنیایی
 COOKIE_FILE_OPTIONS = ["cookies.txt", "youtube_cookies.txt"]
 
 CLIENT_SECRETS_NAMES = ("client_secrets.json", "client_secrets.json.json")
@@ -207,7 +214,6 @@ def build_download_opts(browser=None, cookies_file=None, outtmpl="%(id)s.%(ext)s
     opts = build_base_opts(browser, cookies_file)
     opts.update(
         {
-            # لێرەدا فۆرماتەکام گۆڕی بۆ هێنانی دەنگ و ڕەنگی جیاواز بۆ تێپەڕاندنی بلۆکی یوتیوب
             "format": "bestvideo+bestaudio/best",
             "merge_output_format": "mp4",
             "outtmpl": outtmpl,
@@ -278,7 +284,13 @@ def _adjust_frame(frame):
 def process_video(input_path, output_path, speed=SPEED):
     clip = VideoFileClip(str(input_path))
     try:
-        clip = clip.image_transform(_adjust_frame).with_speed_scaled(speed)
+        # لێرەدا خۆکارانە فۆرماتەکە ڕێکدەخات بەپێی جۆری وەشانی moviepy
+        if MOVIEPY_V1:
+            clip = clip.fl_image(_adjust_frame)
+            clip = clip.fx(vfx.speedx, speed)
+        else:
+            clip = clip.image_transform(_adjust_frame).with_speed_scaled(speed)
+            
         clip.write_videofile(
             str(output_path),
             codec="libx264",
