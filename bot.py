@@ -238,6 +238,8 @@ def entry_uploaded_at(entry):
 
 
 def is_recent(entry, hours=HOURS_BACK):
+    if hours is None:
+        return True
     uploaded = entry_uploaded_at(entry)
     if uploaded is None:
         return False
@@ -329,19 +331,45 @@ def enrich_entries(entries, browser=None, cookies_file=None):
 
 
 def select_best_short(entries):
-    """Pick the top Quran Short from the last 24 hours by view count."""
+    """Pick the top Quran Short, trying 24h, then 7 days, then any time."""
+    # Step 1: Try last 24 hours
     eligible = [
-        e
-        for e in entries
-        if is_recent(e)
+        e for e in entries
+        if is_recent(e, hours=24)
         and is_short_video(e)
         and is_quran_related(e)
         and entry_views(e) > 0
     ]
-    if not eligible:
-        return None
-    eligible.sort(key=entry_views, reverse=True)
-    return eligible[0]
+    if eligible:
+        eligible.sort(key=entry_views, reverse=True)
+        return eligible[0]
+
+    # Step 2: Fallback to last 7 days (168 hours)
+    print("  No videos in last 24h. Expanding search to last 7 days...")
+    eligible = [
+        e for e in entries
+        if is_recent(e, hours=168)
+        and is_short_video(e)
+        and is_quran_related(e)
+        and entry_views(e) > 0
+    ]
+    if eligible:
+        eligible.sort(key=entry_views, reverse=True)
+        return eligible[0]
+
+    # Step 3: Ultimate fallback - any qualifying video regardless of date
+    print("  No videos in last 7 days. Using ultimate fallback (any timeframe)...")
+    eligible = [
+        e for e in entries
+        if is_short_video(e)
+        and is_quran_related(e)
+        and entry_views(e) > 0
+    ]
+    if eligible:
+        eligible.sort(key=entry_views, reverse=True)
+        return eligible[0]
+
+    return None
 
 
 def download_video(url, dest_stem, browser=None, cookies_file=None):
@@ -421,10 +449,7 @@ def main():
             sys.exit(1)
         print(f"Found {len(processed_videos)} video(s) to upload.\n")
     else:
-        print(
-            f"Searching YouTube globally for trending Quran Shorts "
-            f"(last {HOURS_BACK} hours)...\n"
-        )
+        print("Searching YouTube globally for trending Quran Shorts...\n")
 
         candidates = collect_search_candidates(browser, cookies_file)
         print(f"  Found {len(candidates)} candidates. Loading details...\n")
@@ -432,17 +457,13 @@ def main():
         best = select_best_short(detailed)
 
         if not best:
-            print(
-                f"No qualifying Quran Shorts from the last {HOURS_BACK} hours. "
-                "Try again later, or run:\n"
-                "  python bot.py edge"
-            )
+            print("No qualifying Quran Shorts found at all. Try different search keywords.")
             sys.exit(1)
 
         title = best.get("title", "Unknown")
         views = entry_views(best)
         channel = best.get("channel_name", best.get("channel", ""))
-        print(f"\nBest pick (last {HOURS_BACK}h by views):\n")
+        print(f"\nBest pick selected successfully:\n")
         print(f"  {title} ({views:,} views) — {channel}")
 
         url = entry_url(best)
