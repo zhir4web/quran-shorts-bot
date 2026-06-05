@@ -5,6 +5,13 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 import importlib
+
+# Ensure UTF-8 output on all platforms (Windows, GitHub Actions, etc.)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import numpy as np
 import yt_dlp
 from google.auth.transport.requests import Request
@@ -29,15 +36,15 @@ except ImportError:
         print("Error: moviepy is not installed. Please run: pip install moviepy")
         sys.exit(1)
 
-HOURS_BACK = 24
 MAX_SHORT_DURATION = 60
 FINAL_VIDEO = Path("final_shorts_1.mp4")
 SPEED = 1.04
+MAX_VIDEOS_TO_UPLOAD = 3
 
-VIDEO_LINKS = [
-    "https://www.youtube.com/shorts/VSolko2fZSI",
-    "https://www.youtube.com/shorts/OaG9124StE0",
-    "https://www.youtube.com/shorts/jLmdElI9Sik",
+# Dynamic search queries — bot picks fresh Quran Shorts automatically each run
+SEARCH_QUERIES = [
+    "ytsearch50:quran shorts recitation #shorts",
+    "ytsearch50:beautiful quran recitation short",
 ]
 
 COOKIE_FILE_OPTIONS = ["cookies.txt", "youtube_cookies.txt"]
@@ -369,6 +376,70 @@ def get_video_info(url, browser=None, cookies_file=None):
         return ydl.extract_info(url, download=False)
 
 
+def search_quran_shorts(browser=None, cookies_file=None):
+    """Search YouTube dynamically for fresh Quran Shorts (<=MAX_SHORT_DURATION sec)."""
+    found_urls = []
+    seen_ids = set()
+
+    search_opts = {
+        "quiet": False,
+        "no_warnings": False,
+        "noprogress": True,
+        "ignoreerrors": True,
+        "flat_playlist": True,
+        "extract_flat": True,
+        "socket_timeout": 30,
+    }
+    if cookies_file and cookies_file != "none" and Path(cookies_file).exists():
+        search_opts["cookiefile"] = str(cookies_file)
+    elif browser:
+        search_opts["cookiesfrombrowser"] = (browser,)
+    else:
+        # Auto-detect cookie file
+        for opt in COOKIE_FILE_OPTIONS:
+            p = Path(opt)
+            if p.exists() and p.stat().st_size > 0:
+                try:
+                    content = p.read_text(errors="ignore")
+                    if "Netscape" in content or content.startswith("#"):
+                        search_opts["cookiefile"] = str(p)
+                        break
+                except Exception:
+                    pass
+
+    for query in SEARCH_QUERIES:
+        if len(found_urls) >= MAX_VIDEOS_TO_UPLOAD:
+            break
+        print(f"  [Search] Running: {query}")
+        try:
+            with yt_dlp.YoutubeDL(search_opts) as ydl:
+                result = ydl.extract_info(query, download=False)
+
+            entries = result.get("entries", []) if result else []
+            for entry in entries:
+                if len(found_urls) >= MAX_VIDEOS_TO_UPLOAD:
+                    break
+                if not entry:
+                    continue
+                video_id = entry.get("id") or entry.get("url", "")
+                if video_id in seen_ids:
+                    continue
+                duration = entry.get("duration") or 0
+                if duration and duration > MAX_SHORT_DURATION:
+                    continue
+                url = entry.get("url") or entry.get("webpage_url", "")
+                if not url or "youtube.com" not in url and "youtu.be" not in url:
+                    url = f"https://www.youtube.com/watch?v={video_id}"
+                seen_ids.add(video_id)
+                found_urls.append({"url": url, "entry": entry})
+                print(f"    Found: [{duration}s] {entry.get('title', url)}")
+        except Exception as e:
+            print(f"  [Warning] Search failed for query '{query}': {e}")
+            continue
+
+    return found_urls
+
+
 def main():
     browser, cookies_file, upload_only = parse_args()
     processed_videos = []
@@ -380,35 +451,31 @@ def main():
             sys.exit(1)
         print(f"Found {len(processed_videos)} video(s) to upload.\n")
     else:
-        if not VIDEO_LINKS:
-            print("Error: VIDEO_LINKS list is empty. Add direct URLs to download and upload.")
+        print("Searching YouTube for fresh Quran Shorts...\n")
+        video_items = search_quran_shorts(browser, cookies_file)
+
+        if not video_items:
+            print("Error: Could not find any Quran Shorts via YouTube search.")
             sys.exit(1)
 
-        print(f"Processing direct video links ({len(VIDEO_LINKS)} total)...\n")
+        print(f"\nFound {len(video_items)} video(s) to download and process.\n")
         temp_stem = Path("_temp_1")
         success_count = 0
 
-        for attempt, url in enumerate(VIDEO_LINKS, start=1):
-            print(f"Processing link [{attempt}/{len(VIDEO_LINKS)}]: {url}")
+        for attempt, item in enumerate(video_items, start=1):
+            url = item["url"]
+            entry = item["entry"]
+            print(f"Processing video [{attempt}/{len(video_items)}]: {url}")
             try:
-                # Fetch metadata for Islamic titles/tags
-                try:
-                    entry = get_video_info(url, browser, cookies_file)
-                except Exception as meta_exc:
-                    print(f"  [Warning] Failed to fetch video info: {meta_exc}. Using default metadata.")
-                    entry = {"title": "Quran Recitation", "uploader": "Quran Channel"}
-
                 for old in Path(".").glob(f"{temp_stem.name}.*"):
                     old.unlink()
 
                 try:
                     downloaded = download_video(url, temp_stem, browser, cookies_file)
                 except Exception as e:
-                    # Retry without cookies
-                    print(f"    Download failed. Retrying WITHOUT cookies...")
+                    print(f"    Download failed ({e}). Retrying WITHOUT cookies...")
                     downloaded = download_video(url, temp_stem, browser, cookies_file="none")
 
-                # Process the file using MoviePy
                 output_name = Path(f"final_shorts_{attempt}.mp4")
                 process_video(downloaded, output_name)
                 downloaded.unlink(missing_ok=True)
