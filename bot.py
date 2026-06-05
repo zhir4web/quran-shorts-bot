@@ -220,9 +220,10 @@ def upload_final_shorts(processed_videos):
 
 def build_base_opts(browser=None, cookies_file=None, client=None):
     opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "ignoreerrors": True,
+        "quiet": False,
+        "no_warnings": False,
+        "noprogress": True,
+        "ignoreerrors": False,
         "socket_timeout": 30,
         "retries": 5,
         "fragment_retries": 5,
