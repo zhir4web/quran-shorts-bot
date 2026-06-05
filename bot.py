@@ -196,6 +196,14 @@ def upload_video(youtube, video_path, entry=None, index=1):
 
     video_id = response["id"]
     print(f"    Uploaded: https://www.youtube.com/watch?v={video_id}")
+    if entry and entry.get("id"):
+        original_id = entry.get("id")
+        try:
+            with open("uploaded_videos.txt", "a", encoding="utf-8") as f:
+                f.write(original_id + "\n")
+            print(f"    Added original video ID {original_id} to uploaded_videos.txt to avoid duplicates.")
+        except Exception as e:
+            print(f"    [Warning] Failed to write to uploaded_videos.txt: {e}")
     return video_id
 
 
@@ -381,6 +389,16 @@ def search_quran_shorts(browser=None, cookies_file=None):
     found_urls = []
     seen_ids = set()
 
+    # Load already uploaded video IDs to avoid duplicates
+    uploaded_ids = set()
+    uploaded_file = Path("uploaded_videos.txt")
+    if uploaded_file.exists():
+        try:
+            uploaded_ids = set(uploaded_file.read_text(encoding="utf-8").splitlines())
+            print(f"  [Info] Loaded {len(uploaded_ids)} already uploaded video ID(s) from uploaded_videos.txt")
+        except Exception as e:
+            print(f"  [Warning] Failed to load uploaded_videos.txt: {e}")
+
     search_opts = {
         "quiet": False,
         "no_warnings": False,
@@ -422,7 +440,7 @@ def search_quran_shorts(browser=None, cookies_file=None):
                 if not entry:
                     continue
                 video_id = entry.get("id") or entry.get("url", "")
-                if video_id in seen_ids:
+                if video_id in seen_ids or video_id in uploaded_ids:
                     continue
                 duration = entry.get("duration") or 0
                 if duration and duration > MAX_SHORT_DURATION:
