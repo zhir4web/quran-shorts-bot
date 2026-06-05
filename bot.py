@@ -39,7 +39,7 @@ except ImportError:
 MAX_SHORT_DURATION = 60
 FINAL_VIDEO = Path("final_shorts_1.mp4")
 SPEED = 1.04
-MAX_VIDEOS_TO_UPLOAD = 3
+MAX_VIDEOS_TO_UPLOAD = 1
 
 # Dynamic search queries — bot picks fresh Quran Shorts automatically each run
 SEARCH_QUERIES = [
