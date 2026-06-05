@@ -58,19 +58,46 @@ def find_client_secrets():
 
 
 def get_youtube_service():
-    secrets = find_client_secrets()
+    import os
     creds = None
 
     if TOKEN_FILE.exists():
-        creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), YOUTUBE_SCOPES)
+        try:
+            creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), YOUTUBE_SCOPES)
+        except Exception as e:
+            print(f"  [Warning] Failed to load credentials from {TOKEN_FILE}: {e}")
+
+    # Check if running in a CI/headless environment (e.g. GitHub Actions)
+    is_ci = os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("CI") == "true"
 
     if not creds or not creds.valid:
+        refreshed = False
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(str(secrets), YOUTUBE_SCOPES)
-            creds = flow.run_local_server(port=0)
-        TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+            try:
+                print("  [Info] Refreshing YouTube OAuth token...")
+                creds.refresh(Request())
+                TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+                refreshed = True
+                print("  [Info] Token refreshed successfully.")
+            except Exception as e:
+                print(f"  [Warning] Failed to refresh token: {e}")
+
+        if not refreshed:
+            if is_ci:
+                print("\n" + "=" * 80)
+                print("  [ERROR] Running in a headless/CI environment (GitHub Actions), but")
+                print("  the YouTube OAuth token is missing, expired, or invalid and cannot")
+                print("  be refreshed automatically.")
+                print("  Please re-run this script locally to authenticate and generate a new")
+                print("  youtube_token.json file, then update your GITHUB_TOKEN / YOUTUBE_TOKEN secret.")
+                print("=" * 80 + "\n")
+                sys.exit(1)
+            else:
+                print("  [Info] Starting local server for authentication...")
+                secrets = find_client_secrets()
+                flow = InstalledAppFlow.from_client_secrets_file(str(secrets), YOUTUBE_SCOPES)
+                creds = flow.run_local_server(port=0)
+                TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
 
     return build("youtube", "v3", credentials=creds)
 
