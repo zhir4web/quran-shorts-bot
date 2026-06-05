@@ -196,14 +196,16 @@ def upload_video(youtube, video_path, entry=None, index=1):
 
     video_id = response["id"]
     print(f"    Uploaded: https://www.youtube.com/watch?v={video_id}")
-    if entry and entry.get("id"):
-        original_id = entry.get("id")
-        try:
-            with open("uploaded_videos.txt", "a", encoding="utf-8") as f:
-                f.write(original_id + "\n")
-            print(f"    Added original video ID {original_id} to uploaded_videos.txt to avoid duplicates.")
-        except Exception as e:
-            print(f"    [Warning] Failed to write to uploaded_videos.txt: {e}")
+    try:
+        with open("uploaded_videos.txt", "a", encoding="utf-8") as f:
+            f.write(video_id + "\n")
+            if entry and entry.get("id"):
+                original_id = entry.get("id")
+                if original_id != video_id:
+                    f.write(original_id + "\n")
+        print(f"    Added video IDs to uploaded_videos.txt to avoid duplicates.")
+    except Exception as e:
+        print(f"    [Warning] Failed to write to uploaded_videos.txt: {e}")
     return video_id
 
 
