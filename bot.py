@@ -332,6 +332,19 @@ def _adjust_frame(frame):
 def process_video(input_path, output_path, speed=SPEED):
     clip = VideoFileClip(str(input_path))
     try:
+        # If the video is landscape (typically due to player format containing black bars),
+        # crop the center to a vertical 9:16 aspect ratio so YouTube recognizes it as a Short.
+        if clip.w > clip.h:
+            target_h = clip.h
+            target_w = int(clip.h * 9 / 16)
+            if target_w % 2 != 0:
+                target_w -= 1  # ensure even width for x264 encoder
+            
+            if MOVIEPY_V1:
+                clip = clip.crop(x_center=clip.w/2, y_center=clip.h/2, width=target_w, height=target_h)
+            else:
+                clip = clip.cropped(x_center=clip.w/2, y_center=clip.h/2, width=target_w, height=target_h)
+
         if MOVIEPY_V1:
             clip = clip.fl_image(_adjust_frame)
             clip = clip.fx(vfx.speedx, speed)
