@@ -1,533 +1,362 @@
-#!/usr/bin/env python3
-"""Multi-Platform Quran Shorts downloader and uploader."""
+"""Quran Shorts: explicit licensed queue, local rendering, durable upload ledger."""
+from __future__ import annotations
 
-import sys
-from datetime import datetime, timedelta
+import argparse
+import hashlib
+import json
+import logging
+from logging.handlers import RotatingFileHandler
+import math
+import os
 from pathlib import Path
-import importlib
+import re
+import sqlite3
+import subprocess
+import sys
+from contextlib import contextmanager
 
-# Ensure UTF-8 output on all platforms (Windows, GitHub Actions, etc.)
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
-import numpy as np
-import yt_dlp
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-
-# Keep the automatic MoviePy version check supporting both v1 and v2
-try:
-    # Try MoviePy v2 first (this matches your local installation)
-    from moviepy import VideoFileClip
-    MOVIEPY_V1 = False
-except ImportError:
-    # Fall back to MoviePy v1 dynamically to silence static analyzer warnings
-    try:
-        moviepy_editor = importlib.import_module("moviepy.editor")
-        VideoFileClip = moviepy_editor.VideoFileClip
-        vfx = importlib.import_module("moviepy.video.fx.all")
-        MOVIEPY_V1 = True
-    except ImportError:
-        print("Error: moviepy is not installed. Please run: pip install moviepy")
-        sys.exit(1)
-
-MAX_SHORT_DURATION = 60
-FINAL_VIDEO = Path("final_shorts_1.mp4")
-SPEED = 1.04
-MAX_VIDEOS_TO_UPLOAD = 1
-
-# Dynamic search queries — bot picks fresh Quran Shorts automatically each run
-SEARCH_QUERIES = [
-    "ytsearch50:quran shorts recitation #shorts",
-    "ytsearch50:beautiful quran recitation short",
-]
-
-COOKIE_FILE_OPTIONS = ["cookies.txt", "youtube_cookies.txt"]
-CLIENT_SECRETS_NAMES = ("client_secrets.json", "client_secrets.json.json")
-TOKEN_FILE = Path("youtube_token.json")
-YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
-PRIVACY_STATUS = "public"
+ROOT = Path(__file__).resolve().parent
+LOG = logging.getLogger("quran-bot")
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
 
-def find_client_secrets():
-    for name in CLIENT_SECRETS_NAMES:
-        path = Path(name)
-        if path.exists():
-            return path
-    raise FileNotFoundError(
-        "Place your OAuth file as client_secrets.json in this folder."
-    )
+def atomic_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp, path)
 
 
-def get_youtube_service():
-    import os
-    creds = None
+def read_json(path):
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
-    if TOKEN_FILE.exists():
+
+def positive(value, name, maximum):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 < value <= maximum:
+        raise ValueError(f"{name} must be greater than zero and at most {maximum}")
+    return value
+
+
+def load_queue(path):
+    data = read_json(path)
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        raise ValueError("Queue must contain an items array")
+    seen = set()
+    for item in data["items"]:
+        if not isinstance(item, dict):
+            raise ValueError("Each queue item must be an object")
+        key = item.get("id", "")
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", key) or key in seen:
+            raise ValueError("Each item needs a unique id using letters, digits, - or _")
+        seen.add(key)
+        if item.get("mode") not in ("compose", "video"):
+            raise ValueError(f"{key}: mode must be compose or video")
+        for field in ("title", "attribution", "rights"):
+            if not isinstance(item.get(field), str) or not item[field].strip():
+                raise ValueError(f"{key}: {field} is required")
+        if len(item["title"]) > 100 or any(c in item["title"] for c in "<>"):
+            raise ValueError(f"{key}: invalid YouTube title")
+        if item.get("rights_confirmed") is not True:
+            raise ValueError(f"{key}: confirm permission covering every audio, video and image asset")
+        if not isinstance(item.get("made_for_kids"), bool):
+            raise ValueError(f"{key}: made_for_kids must be true or false")
+        positive(item.get("duration"), f"{key} duration", 60)
+        start = item.get("start", 0)
+        if isinstance(start, bool) or not isinstance(start, (int, float)) or not math.isfinite(start) or start < 0:
+            raise ValueError(f"{key}: start must be a nonnegative number")
+        if not isinstance(item.get("source"), str) or not item["source"].strip():
+            raise ValueError(f"{key}: source file or HTTPS URL is required")
+        if not isinstance(item.get("description", ""), str):
+            raise ValueError(f"{key}: description must be text")
+        if item.get("background") is not None and not isinstance(item["background"], str):
+            raise ValueError(f"{key}: background must be an image path")
+        if len(description(item)) > 5000:
+            raise ValueError(f"{key}: description is too long")
+    return data["items"]
+
+
+def description(item):
+    return f"{item.get('description', '')}\n\n{item['attribution']}\n\n#Quran #Shorts".strip()
+
+
+def fingerprint(item):
+    return hashlib.sha256(json.dumps(item, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+class Ledger:
+    def __init__(self, path):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.db = sqlite3.connect(path)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, status TEXT NOT NULL, video_id TEXT, output_hash TEXT)")
+        self.db.commit()
+
+    def row(self, key):
+        return self.db.execute("SELECT fingerprint,status,video_id,output_hash FROM jobs WHERE id=?", (key,)).fetchone()
+
+    def record(self, item, status, video_id=None, output_hash=None):
+        self.db.execute("INSERT INTO jobs VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status, video_id=excluded.video_id, output_hash=excluded.output_hash", (item["id"], fingerprint(item), status, video_id, output_hash))
+        self.db.commit()
+
+    def close(self):
+        self.db.close()
+
+
+@contextmanager
+def process_lock(path):
+    # OS locks release even after a crash. Keep the lock file, never unlink it.
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+b") as handle:
+        handle.seek(0, 2)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
         try:
-            creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), YOUTUBE_SCOPES)
-        except Exception as e:
-            print(f"  [Warning] Failed to load credentials from {TOKEN_FILE}: {e}")
-
-    # Check if running in a CI/headless environment (e.g. GitHub Actions)
-    is_ci = os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("CI") == "true"
-
-    if not creds or not creds.valid:
-        refreshed = False
-        if creds and creds.expired and creds.refresh_token:
-            try:
-                print("  [Info] Refreshing YouTube OAuth token...")
-                creds.refresh(Request())
-                TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
-                refreshed = True
-                print("  [Info] Token refreshed successfully.")
-            except Exception as e:
-                print(f"  [Warning] Failed to refresh token: {e}")
-
-        if not refreshed:
-            if is_ci:
-                print("\n" + "=" * 80)
-                print("  [ERROR] Running in a headless/CI environment (GitHub Actions), but")
-                print("  the YouTube OAuth token is missing, expired, or invalid and cannot")
-                print("  be refreshed automatically.")
-                print("  Please re-run this script locally to authenticate and generate a new")
-                print("  youtube_token.json file, then update your GITHUB_TOKEN / YOUTUBE_TOKEN secret.")
-                print("=" * 80 + "\n")
-                sys.exit(1)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
             else:
-                print("  [Info] Starting local server for authentication...")
-                secrets = find_client_secrets()
-                flow = InstalledAppFlow.from_client_secrets_file(str(secrets), YOUTUBE_SCOPES)
-                creds = flow.run_local_server(port=0)
-                TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+                import fcntl
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RuntimeError("Another bot run is active") from exc
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
-    return build("youtube", "v3", credentials=creds)
+
+def ffmpeg():
+    import imageio_ffmpeg
+    return imageio_ffmpeg.get_ffmpeg_exe()
 
 
-def islamic_metadata(entry=None, index=1):
-    if entry:
-        channel = entry.get("uploader") or entry.get("channel") or "Quran"
-        original = entry.get("title") or "Quran Recitation"
-        title = f"🌙 {channel} | {original} | Quran Shorts #Shorts"
+def run_media(args):
+    result = subprocess.run([ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800)
+    if result.returncode:
+        raise RuntimeError("Media processing failed: " + result.stderr[-1500:])
+
+
+def file_hash(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def source_file(item, base, folder):
+    source = item["source"]
+    if source.startswith("https://"):
+        import yt_dlp
+        options = {"outtmpl": str(folder / "source.%(ext)s"), "noplaylist": True, "quiet": True,
+                   "socket_timeout": 30, "retries": 3, "ffmpeg_location": ffmpeg(),
+                   "format": "bestaudio/best" if item["mode"] == "compose" else "bestvideo+bestaudio/best",
+                   "merge_output_format": "mp4"}
+        with yt_dlp.YoutubeDL(options) as client:
+            info = client.extract_info(source, download=True)
+            if not info or info.get("_type") == "playlist":
+                raise ValueError("Expected one media source")
+            path = Path(info.get("filepath") or client.prepare_filename(info))
+            if not path.exists():
+                path = path.with_suffix(".mp4")
     else:
-        title = (
-            f"🌙 Beautiful Quran Recitation #{index} | "
-            "Islamic Reminder | Quran Shorts #Shorts"
-        )
-
-    if len(title) > 100:
-        title = title[:97] + "..."
-
-    channel_tag = ""
-    if entry and entry.get("uploader"):
-        channel_tag = entry["uploader"].replace(" ", "")
-
-    tags = [
-        "Quran",
-        "Holy Quran",
-        "Islam",
-        "Muslim",
-        "Islamic",
-        "Quran Recitation",
-        "Tilawah",
-        "Quran Shorts",
-        "Shorts",
-        "Islamic Reminder",
-        "Spiritual",
-        "Allah",
-        "Surah",
-        "Ramadan",
-    ]
-    if channel_tag:
-        tags.append(channel_tag)
-
-    description = (
-        "Beautiful Quranic recitation — daily Islamic reminder.\n\n"
-        "Like, share, and subscribe for more Quran Shorts!\n\n"
-        "#Quran #Islam #Muslim #QuranRecitation #Shorts #Islamic "
-        "#Allah #Reminder #Tilawah"
-    )
-    if entry and entry.get("uploader"):
-        description = (
-            f"Recitation featured from {entry['uploader']}.\n\n" + description
-        )
-
-    return title, description, tags
+        path = (base / source).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Source missing: {path}")
+    return path
 
 
-def upload_video(youtube, video_path, entry=None, index=1):
-    title, description, tags = islamic_metadata(entry, index)
-    body = {
-        "snippet": {
-            "title": title,
-            "description": description,
-            "tags": tags,
-            "categoryId": "22",
-        },
-        "status": {
-            "privacyStatus": PRIVACY_STATUS,
-            "selfDeclaredMadeForKids": False,
-        },
-    }
-
-    media = MediaFileUpload(
-        str(video_path),
-        mimetype="video/mp4",
-        resumable=True,
-        chunksize=1024 * 1024,
-    )
-    request = youtube.videos().insert(
-        part="snippet,status",
-        body=body,
-        media_body=media,
-    )
-
-    response = None
-    while response is None:
-        status, response = request.next_chunk()
-        if status:
-            pct = int(status.progress() * 100)
-            print(f"    Upload {pct}%")
-
-    video_id = response["id"]
-    print(f"    Uploaded: https://www.youtube.com/watch?v={video_id}")
-    try:
-        with open("uploaded_videos.txt", "a", encoding="utf-8") as f:
-            f.write(video_id + "\n")
-            if entry and entry.get("id"):
-                original_id = entry.get("id")
-                if original_id != video_id:
-                    f.write(original_id + "\n")
-        print(f"    Added video IDs to uploaded_videos.txt to avoid duplicates.")
-    except Exception as e:
-        print(f"    [Warning] Failed to write to uploaded_videos.txt: {e}")
-    return video_id
-
-
-def upload_final_shorts(processed_videos):
-    if not processed_videos:
-        print("No videos to upload.")
-        return
-
-    print("\nAuthenticating with YouTube...")
-    youtube = get_youtube_service()
-    print("Uploading final_shorts videos...\n")
-
-    for item in processed_videos:
-        path = item["path"]
-        if not path.exists():
-            print(f"  Skipping missing file: {path}")
-            continue
-        print(f"  Uploading {path.name}...")
-        try:
-            upload_video(
-                youtube,
-                path,
-                entry=item.get("entry"),
-                index=item["index"],
-            )
-        except Exception as exc:
-            print(f"    Upload failed: {exc}")
-
-
-def build_base_opts(browser=None, cookies_file=None, client=None):
-    opts = {
-        "quiet": False,
-        "no_warnings": False,
-        "noprogress": True,
-        "ignoreerrors": False,
-        "socket_timeout": 30,
-        "retries": 5,
-        "fragment_retries": 5,
-    }
-    
-    # Configure specific player client if provided, otherwise default to a resilient list
-    target_client = [client] if client else ["tv_embedded", "ios", "web_embedded", "android"]
-    opts["extractor_args"] = {
-        "youtube": {
-            "player_client": target_client,
-        }
-    }
-
-    if cookies_file == "none":
-        return opts
-
-    if not cookies_file and not browser:
-        for option in COOKIE_FILE_OPTIONS:
-            path = Path(option)
-            if path.exists() and path.stat().st_size > 0:
-                # Check if it has a valid Netscape cookie file header
-                try:
-                    content = path.read_text(errors="ignore")
-                    if "Netscape" in content or "cookietxt" in content or content.startswith("#"):
-                        cookies_file = path
-                        print(f"  [Info] Automatically using cookies from: {option}")
-                        break
-                    else:
-                        print(f"  [Warning] Skipping invalid/empty cookies file: {option}")
-                except Exception:
-                    pass
-
-    if cookies_file and cookies_file != "none":
-        opts["cookiefile"] = str(cookies_file)
-    elif browser:
-        opts["cookiesfrombrowser"] = (browser,)
-    return opts
-
-
-def build_download_opts(browser=None, cookies_file=None, outtmpl="%(id)s.%(ext)s", client=None):
-    opts = build_base_opts(browser, cookies_file, client=client)
-    opts.update(
-        {
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
-            "merge_output_format": "mp4",
-            "outtmpl": outtmpl,
-            "noplaylist": True,
-            "overwrites": True,
-        }
-    )
-    return opts
-
-
-def download_video(url, dest_stem, browser=None, cookies_file=None):
-    # Try clients sequentially so one blocked client doesn't abort the download
-    clients_to_try = ["tv_embedded", "ios", "web_embedded", "android"]
-    last_exc = None
-
-    for client in clients_to_try:
-        try:
-            print(f"    [yt-dlp] Downloading with client format: {client}")
-            opts = build_download_opts(
-                browser, cookies_file, outtmpl=str(dest_stem) + ".%(ext)s", client=client
-            )
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
-
-            matches = list(Path(".").glob(dest_stem.name + ".*"))
-            if matches:
-                return matches[0]
-        except Exception as e:
-            last_exc = e
-            # Clean up partial download files before retrying the next client
-            for temp_file in Path(".").glob(dest_stem.name + ".*"):
-                try:
-                    temp_file.unlink()
-                except Exception:
-                    pass
-
-    if last_exc:
-        raise last_exc
-    raise FileNotFoundError(f"Download failed for {url}")
-
-
-def _adjust_frame(frame):
-    adjusted = frame.astype(np.float32)
-    adjusted = adjusted * 1.02 + 4
-    return np.clip(adjusted, 0, 255).astype(np.uint8)
-
-
-def process_video(input_path, output_path, speed=SPEED):
-    clip = VideoFileClip(str(input_path))
-    try:
-        # If the video is landscape (typically due to player format containing black bars),
-        # crop the center to a vertical 9:16 aspect ratio so YouTube recognizes it as a Short.
-        if clip.w > clip.h:
-            target_h = clip.h
-            target_w = int(clip.h * 9 / 16)
-            if target_w % 2 != 0:
-                target_w -= 1  # ensure even width for x264 encoder
-            
-            if MOVIEPY_V1:
-                clip = clip.crop(x_center=clip.w/2, y_center=clip.h/2, width=target_w, height=target_h)
-            else:
-                clip = clip.cropped(x_center=clip.w/2, y_center=clip.h/2, width=target_w, height=target_h)
-
-        if MOVIEPY_V1:
-            clip = clip.fl_image(_adjust_frame)
-            clip = clip.fx(vfx.speedx, speed)
+def render(item, base, folder):
+    folder.mkdir(parents=True, exist_ok=True)
+    source = source_file(item, base, folder)
+    start = str(item.get("start", 0))
+    duration = str(item["duration"])
+    scale = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x081b21,setsar=1"
+    if item["mode"] == "compose":
+        if item.get("background"):
+            background = (base / item["background"]).resolve()
+            if not background.is_file():
+                raise FileNotFoundError(f"Background missing: {background}")
+            inputs = ["-loop", "1", "-i", str(background)]
         else:
-            clip = clip.image_transform(_adjust_frame).with_speed_scaled(speed)
-            
-        clip.write_videofile(
-            str(output_path),
-            codec="libx264",
-            audio_codec="aac",
-            logger=None,
-        )
+            inputs = ["-f", "lavfi", "-i", "color=c=0x081b21:s=1080x1920:r=30"]
+        inputs += ["-ss", start, "-i", str(source)]
+        mapping = ["-map", "0:v:0", "-map", "1:a:0"]
+    else:
+        inputs = ["-ss", start, "-i", str(source)]
+        mapping = ["-map", "0:v:0", "-map", "0:a:0"]
+    # Pad preserves existing Quran text; recitation speed and pitch are untouched.
+    target = folder / "video.mp4"
+    temporary = folder / "rendering.mp4"
+    run_media(["-y", *inputs, *mapping, "-t", duration, "-vf", scale,
+               "-r", "30", "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(temporary)])
+    validate_video(temporary, item["duration"])
+    os.replace(temporary, target)
+    atomic_json(folder / "metadata.json", {"title": item["title"], "description": description(item), "rights": item["rights"], "item": item})
+    return target
+
+
+def validate_video(path, expected):
+    import imageio_ffmpeg
+    reader = imageio_ffmpeg.read_frames(str(path))
+    try:
+        metadata = next(reader)
     finally:
-        clip.close()
-    print(f"  Saved {output_path}")
+        reader.close()
+    if tuple(metadata["size"]) != (1080, 1920):
+        raise ValueError("Rendered video must be 1080 by 1920")
+    if abs(metadata["duration"] - expected) > 0.35:
+        raise ValueError("Source is too short for the requested segment; choose complete verse boundaries")
+    run_media(["-i", str(path), "-map", "0:v:0", "-map", "0:a:0", "-f", "null", "-"])
 
 
-def collect_existing_final_shorts():
-    paths = sorted(Path(".").glob("final_shorts_*.mp4"))
-    videos = []
-    for path in paths:
+def youtube_service(state, interactive=False):
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+    token = state / "youtube_token.json"
+    creds = Credentials.from_authorized_user_file(str(token), SCOPES) if token.exists() else None
+    if creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+    if not creds or not creds.valid:
+        if not interactive:
+            raise RuntimeError("YouTube login required: run bot.py auth locally first")
+        flow = InstalledAppFlow.from_client_secrets_file(str(ROOT / "client_secrets.json"), SCOPES)
+        creds = flow.run_local_server(port=0, access_type="offline", prompt="consent")
+    atomic_json(token, json.loads(creds.to_json()))
+    return build("youtube", "v3", credentials=creds, cache_discovery=False)
+
+
+def upload(youtube, item, path, privacy):
+    from googleapiclient.http import MediaFileUpload
+    body = {"snippet": {"title": item["title"], "description": description(item), "categoryId": "27", "tags": ["Quran", "Shorts"]},
+            "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": item["made_for_kids"]}}
+    media = MediaFileUpload(str(path), mimetype="video/mp4", resumable=True, chunksize=8 * 1024 * 1024)
+    try:
+        request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
+        response = None
+        while response is None:
+            # Google's client retries transient failures on this resumable request.
+            progress, response = request.next_chunk(num_retries=5)
+            if progress:
+                LOG.info("Upload %d%%", progress.progress() * 100)
+        if not response.get("id"):
+            raise RuntimeError("YouTube did not return a video id")
+        return response["id"]
+    finally:
+        media.stream().close()
+
+
+def run_queue(args):
+    queue = Path(args.queue).resolve()
+    items = load_queue(queue)
+    state = Path(args.state).resolve()
+    with process_lock(state / "run.lock"):
+        ledger = Ledger(state / "jobs.sqlite3")
         try:
-            index = int(path.stem.rsplit("_", 1)[-1])
-        except ValueError:
-            index = len(videos) + 1
-        videos.append({"path": path, "entry": None, "index": index})
-    return videos
-
-
-def parse_args():
-    args = [a for a in sys.argv[1:] if a != "--upload-only"]
-    upload_only = "--upload-only" in sys.argv
-
-    browser = None
-    cookies_file = None
-    if args:
-        extra = args[0]
-        if extra.lower() != "none":
-            path = Path(extra)
-            if path.suffix.lower() == ".txt":
-                cookies_file = path
-            else:
-                browser = extra
-    return browser, cookies_file, upload_only
-
-
-def get_video_info(url, browser=None, cookies_file=None):
-    opts = build_base_opts(browser, cookies_file)
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        return ydl.extract_info(url, download=False)
-
-
-def search_quran_shorts(browser=None, cookies_file=None):
-    """Search YouTube dynamically for fresh Quran Shorts (<=MAX_SHORT_DURATION sec)."""
-    found_urls = []
-    seen_ids = set()
-
-    # Load already uploaded video IDs to avoid duplicates
-    uploaded_ids = set()
-    uploaded_file = Path("uploaded_videos.txt")
-    if uploaded_file.exists():
-        try:
-            uploaded_ids = set(uploaded_file.read_text(encoding="utf-8").splitlines())
-            print(f"  [Info] Loaded {len(uploaded_ids)} already uploaded video ID(s) from uploaded_videos.txt")
-        except Exception as e:
-            print(f"  [Warning] Failed to load uploaded_videos.txt: {e}")
-
-    search_opts = {
-        "quiet": False,
-        "no_warnings": False,
-        "noprogress": True,
-        "ignoreerrors": True,
-        "flat_playlist": True,
-        "extract_flat": True,
-        "socket_timeout": 30,
-    }
-    if cookies_file and cookies_file != "none" and Path(cookies_file).exists():
-        search_opts["cookiefile"] = str(cookies_file)
-    elif browser:
-        search_opts["cookiesfrombrowser"] = (browser,)
-    else:
-        # Auto-detect cookie file
-        for opt in COOKIE_FILE_OPTIONS:
-            p = Path(opt)
-            if p.exists() and p.stat().st_size > 0:
-                try:
-                    content = p.read_text(errors="ignore")
-                    if "Netscape" in content or content.startswith("#"):
-                        search_opts["cookiefile"] = str(p)
-                        break
-                except Exception:
-                    pass
-
-    for query in SEARCH_QUERIES:
-        if len(found_urls) >= MAX_VIDEOS_TO_UPLOAD:
-            break
-        print(f"  [Search] Running: {query}")
-        try:
-            with yt_dlp.YoutubeDL(search_opts) as ydl:
-                result = ydl.extract_info(query, download=False)
-
-            entries = result.get("entries", []) if result else []
-            for entry in entries:
-                if len(found_urls) >= MAX_VIDEOS_TO_UPLOAD:
+            if args.command == "resolve":
+                item = next((i for i in items if i["id"] == args.id), None)
+                if not item or not ledger.row(args.id) or ledger.row(args.id)[1] != "uploading":
+                    raise ValueError("Only an uncertain uploading item can be resolved")
+                old = ledger.row(args.id)
+                if old[0] != fingerprint(item):
+                    raise ValueError("Restore the original queue item before resolving")
+                ledger.record(item, "uploaded" if args.video_id else "rendered", args.video_id, old[3])
+                return
+            count = 0
+            for item in items:
+                previous = ledger.row(item["id"])
+                if previous and previous[0] != fingerprint(item):
+                    raise ValueError(f"{item['id']}: item changed; restore it or use a new id")
+                if previous and previous[1] == "uploaded":
+                    continue
+                if previous and previous[1] == "uploading":
+                    raise RuntimeError(f"{item['id']}: previous upload uncertain. Check YouTube Studio, then use resolve; no automatic duplicate retry")
+                folder = state / "renders" / item["id"]
+                target = folder / "video.mp4"
+                if not (previous and previous[1] == "rendered" and target.is_file() and file_hash(target) == previous[3]):
+                    target = render(item, queue.parent, folder)
+                    ledger.record(item, "rendered", output_hash=file_hash(target))
+                LOG.info("Preview ready: %s", target)
+                if args.command == "run":
+                    youtube = youtube_service(state)
+                    digest = file_hash(target)
+                    ledger.record(item, "uploading", output_hash=digest)
+                    video_id = upload(youtube, item, target, args.privacy)
+                    ledger.record(item, "uploaded", video_id, digest)
+                    LOG.info("Uploaded: https://www.youtube.com/watch?v=%s", video_id)
+                count += 1
+                if count >= args.limit:
                     break
-                if not entry:
-                    continue
-                video_id = entry.get("id") or entry.get("url", "")
-                if video_id in seen_ids or video_id in uploaded_ids:
-                    continue
-                duration = entry.get("duration") or 0
-                if duration and duration > MAX_SHORT_DURATION:
-                    continue
-                url = entry.get("url") or entry.get("webpage_url", "")
-                if not url or "youtube.com" not in url and "youtu.be" not in url:
-                    url = f"https://www.youtube.com/watch?v={video_id}"
-                seen_ids.add(video_id)
-                found_urls.append({"url": url, "entry": entry})
-                print(f"    Found: [{duration}s] {entry.get('title', url)}")
-        except Exception as e:
-            print(f"  [Warning] Search failed for query '{query}': {e}")
-            continue
-
-    return found_urls
+            if count == 0:
+                LOG.info("Queue has no pending items")
+        finally:
+            ledger.close()
 
 
-def main():
-    browser, cookies_file, upload_only = parse_args()
-    processed_videos = []
-
-    if upload_only:
-        processed_videos = collect_existing_final_shorts()
-        if not processed_videos:
-            print("No final_shorts_*.mp4 files found.")
-            sys.exit(1)
-        print(f"Found {len(processed_videos)} video(s) to upload.\n")
-    else:
-        print("Searching YouTube for fresh Quran Shorts...\n")
-        video_items = search_quran_shorts(browser, cookies_file)
-
-        if not video_items:
-            print("Error: Could not find any Quran Shorts via YouTube search.")
-            sys.exit(1)
-
-        print(f"\nFound {len(video_items)} video(s) to download and process.\n")
-        temp_stem = Path("_temp_1")
-        success_count = 0
-
-        for attempt, item in enumerate(video_items, start=1):
-            url = item["url"]
-            entry = item["entry"]
-            print(f"Processing video [{attempt}/{len(video_items)}]: {url}")
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=["doctor", "auth", "preview", "run", "status", "resolve"])
+    parser.add_argument("--queue", default=str(ROOT / "queue.json"))
+    parser.add_argument("--state", default=str(ROOT / "state"))
+    parser.add_argument("--limit", type=int, default=1)
+    parser.add_argument("--privacy", choices=["private", "unlisted", "public"], default="private")
+    parser.add_argument("--id")
+    resolution = parser.add_mutually_exclusive_group()
+    resolution.add_argument("--video-id")
+    resolution.add_argument("--confirmed-not-uploaded", action="store_true")
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    try:
+        state = Path(args.state)
+        state.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(state / "bot.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        LOG.addHandler(handler)
+        if args.limit < 1:
+            raise ValueError("limit must be positive")
+        if args.command == "doctor":
+            LOG.info("Python: %s", sys.version.split()[0])
+            run_media(["-version"])
+            import googleapiclient, google_auth_oauthlib, yt_dlp
+            LOG.info("Dependencies and FFmpeg OK")
+            LOG.info("Queue: %d valid items", len(load_queue(args.queue)))
+            LOG.info("YouTube login: %s", "present (not verified online)" if (Path(args.state) / "youtube_token.json").exists() else "required before upload")
+        elif args.command == "auth":
+            with process_lock(Path(args.state) / "run.lock"):
+                youtube_service(Path(args.state), interactive=True)
+            LOG.info("YouTube login saved locally")
+        elif args.command == "status":
+            ledger = Ledger(Path(args.state) / "jobs.sqlite3")
             try:
-                for old in Path(".").glob(f"{temp_stem.name}.*"):
-                    old.unlink()
-
-                try:
-                    downloaded = download_video(url, temp_stem, browser, cookies_file)
-                except Exception as e:
-                    print(f"    Download failed ({e}). Retrying WITHOUT cookies...")
-                    downloaded = download_video(url, temp_stem, browser, cookies_file="none")
-
-                output_name = Path(f"final_shorts_{attempt}.mp4")
-                process_video(downloaded, output_name)
-                downloaded.unlink(missing_ok=True)
-
-                processed_videos.append(
-                    {"path": output_name, "entry": entry, "index": attempt}
-                )
-                success_count += 1
-            except Exception as exc:
-                print(f"  Failed to download or process '{url}': {exc}\n")
-                continue
-
-        if success_count == 0:
-            print("All video links failed to download/process.")
-            sys.exit(1)
-
-    upload_final_shorts(processed_videos)
-    print("\nDone.")
+                for row in ledger.db.execute("SELECT id,status,video_id FROM jobs ORDER BY id"):
+                    print(*row, sep=" | ")
+            finally:
+                ledger.close()
+        else:
+            if args.command == "resolve" and (not args.id or not (args.video_id or args.confirmed_not_uploaded)):
+                raise ValueError("resolve needs --id and either --video-id or --confirmed-not-uploaded")
+            run_queue(args)
+        return 0
+    except Exception as exc:
+        # Avoid writing OAuth response bodies, cookies or download URLs to logs.
+        LOG.error("%s", str(exc) if isinstance(exc, (ValueError, FileNotFoundError, RuntimeError)) else type(exc).__name__ + ": operation failed; check credentials/network and run status")
+        return 1
+    finally:
+        if 'handler' in locals():
+            LOG.removeHandler(handler)
+            handler.close()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
+

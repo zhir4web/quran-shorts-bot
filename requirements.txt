@@ -1,6 +1,6 @@
-yt-dlp
-moviepy
-numpy
-google-api-python-client
-google-auth-oauthlib
-google-auth-httplib2
+imageio-ffmpeg==0.6.0
+google-api-python-client==2.200.0
+google-auth-oauthlib==1.4.1
+yt-dlp==2026.8.19
+Pillow==12.3.0
+
