@@ -1,5 +1,7 @@
 # Quran Shorts Bot — وەشانی چاککراوە
 
+**دۆخی ئێستا:** بەشی ڕۆژانەی GitHub ئامادە کراوە، بەڵام بڵاوکردنەوە هێشتا چالاک نییە. مۆڵەتی YouTube، کەناڵ و دەنگی مۆڵەتپێدراو پێویستە پشتڕاست بکرێنەوە. وردەکاری لە [AUTOMATION.md](AUTOMATION.md) ـە. تاقیکردنەوەی کۆد بە مانای سەرکەوتنی بارکردنی ڕاستەقینە نییە.
+
 ئەم وەشانە لە دەنگی مۆڵەتپێدراو و وێنە ڤیدیۆی ستوونی دروست دەکات، یان ڤیدیۆی مۆڵەتپێدراو ئامادە دەکات، و بە YouTube API باری دەکات. خێرایی و تۆنی قاری ناگۆڕێت. ڤیدیۆکە 1080×1920 دەبێت و بە مەبەست سنووری ئەم وەشانە 60 چرکەیە.
 
 ## دەستپێکردن لە Windows
@@ -84,4 +86,3 @@ run.bat resolve --id recitation-001 --confirmed-not-uploaded
 Run `python -m unittest discover -s tests -v` in an environment with `requirements.txt` installed. Tests cover real FFmpeg composition/conversion, queue validation, interrupted uploads, duplicate prevention, preview isolation, output corruption and lock behavior. OAuth and live YouTube publishing need your own credentials and are not integration-tested against your channel.
 
 The old GitHub schedule was replaced by a test workflow because an ephemeral runner without durable state can repost the same content. This release uses Windows scheduling and local SQLite state. Before updating your existing GitHub repository, disable its old `Quran Bot` workflow and remove `.github/workflows/main.yml`; simply adding this release's test workflow will not disable the old schedule. Preserve any previous upload history separately and do not add already-published clips to the new queue. The old ID file is not automatically migrated because its source and destination IDs are mixed.
-
