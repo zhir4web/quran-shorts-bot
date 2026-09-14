@@ -2,6 +2,8 @@
 
 The daily workflow is prepared but **publishing is disabled**. There is no verified recording in `catalog.json` yet. A passing test run does not mean a real YouTube upload has succeeded.
 
+Google authorization succeeded on 2026-09-14. The YouTube API confirmed channel `UCFrBgGfylAm18PWF1YgoQTg`, titled `Quran`, and that ID is configured. The token is stored privately on the setup computer; transferring it to GitHub Actions Secrets is still pending. The first cloud implementation passed GitHub Actions run 34852299714.
+
 ## What the cloud runner does
 
 On a scheduled run, it selects the next unpublished recording from the approved catalog, downloads it, verifies its SHA-256 checksum, creates an original Arabic title card, renders a vertical video without changing the recitation speed, verifies the authorized channel, and uploads one video. Uploaded IDs are saved in `.bot-state/published.json` on the repository's main branch. The computer can be off when GitHub Actions runs.
