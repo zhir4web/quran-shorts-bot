@@ -111,7 +111,6 @@ def api_entries(data):
             label = reciter.get('reciter_name', '').strip()
             if style:
                 label += f' ({style})'
-                reciter_ar += f' ({style})'
             entries.append({
                 'id': f'qf-r{reciter_id}-s{chapter}', 'source_type': 'quran_foundation',
                 'recitation_id': reciter_id, 'chapter': chapter,
@@ -235,7 +234,9 @@ def make_card(entry, destination):
         if rtl:
             text = get_display(arabic_reshaper.reshape(text))
         while size > 24:
-            face = ImageFont.truetype(str(font), size)
+            # Arabic is shaped explicitly below. BASIC prevents Linux builds with
+            # RAQM from applying bidi/shaping a second time and scrambling words.
+            face = ImageFont.truetype(str(font), size, layout_engine=ImageFont.Layout.BASIC)
             box = draw.textbbox((0, 0), text, font=face)
             if box[2]-box[0] <= 840:
                 break
