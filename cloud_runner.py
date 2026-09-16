@@ -13,12 +13,20 @@ import os
 from pathlib import Path
 import re
 import time
+from urllib.parse import urljoin
 
 import requests
 import bot
 
 ROOT = Path(__file__).resolve().parent
 STATE_PATH = '.bot-state/published.json'
+QURAN_API = 'https://api.quran.com/api/v4/'
+QURAN_AUDIO = 'https://verses.quran.foundation/'
+SHORT_SURAHS = {
+    112: ('الإخلاص', 'Al-Ikhlas'),
+    113: ('الفلق', 'Al-Falaq'),
+    114: ('الناس', 'An-Nas'),
+}
 
 
 class CloudError(RuntimeError):
@@ -66,8 +74,60 @@ class RemoteLedger:
         self.sha = response.json()['content']['sha']
 
 
+def get_json(url, params=None):
+    for attempt in range(3):
+        try:
+            response = requests.get(url, params=params, timeout=(15, 60),
+                                    headers={'User-Agent': 'quran-shorts-bot/2.0'})
+            response.raise_for_status()
+            return response.json()
+        except (requests.RequestException, ValueError):
+            if attempt == 2:
+                raise RuntimeError('Quran Foundation source is temporarily unavailable') from None
+            time.sleep(2 ** attempt)
+
+
+def api_entries(data):
+    if data.get('provider') != 'quran_foundation' or data.get('reciters') != 'all':
+        raise ValueError('Unsupported catalog provider configuration')
+    chapters = data.get('chapters')
+    if not isinstance(chapters, list) or not chapters or any(chapter not in SHORT_SURAHS for chapter in chapters):
+        raise ValueError('Only approved short Surahs may be scheduled')
+    permission_url = data.get('permission_url', '')
+    if not permission_url.startswith('https://api-docs.quran.com/'):
+        raise ValueError('Quran Foundation permission URL required')
+    english = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'en'}).get('recitations', [])
+    arabic = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'ar'}).get('recitations', [])
+    arabic_names = {row['id']: row.get('translated_name', {}).get('name') for row in arabic}
+    if not english:
+        raise RuntimeError('No Quran Foundation reciters are currently available')
+    entries = []
+    for chapter in chapters:
+        surah_ar, surah_en = SHORT_SURAHS[chapter]
+        for reciter in english:
+            reciter_id = reciter.get('id')
+            reciter_ar = arabic_names.get(reciter_id) or reciter.get('reciter_name')
+            style = reciter.get('style')
+            label = reciter.get('reciter_name', '').strip()
+            if style:
+                label += f' ({style})'
+                reciter_ar += f' ({style})'
+            entries.append({
+                'id': f'qf-r{reciter_id}-s{chapter}', 'source_type': 'quran_foundation',
+                'recitation_id': reciter_id, 'chapter': chapter,
+                'surah_ar': surah_ar, 'surah_en': surah_en,
+                'reciter_ar': reciter_ar, 'reciter_en': label,
+                'permission_url': permission_url,
+                'attribution': data.get('attribution', ''), 'rights': data.get('rights', ''),
+                'verified': True, 'whole_recording': True,
+            })
+    return entries
+
+
 def load_catalog(path):
     data = bot.read_json(path)
+    if data.get('schema') == 2:
+        return api_entries(data)
     if data.get('schema') != 1 or not isinstance(data.get('recordings'), list):
         raise ValueError('Invalid recording catalog')
     seen = set()
@@ -91,6 +151,8 @@ def load_catalog(path):
 
 
 def download_recording(entry, destination):
+    if entry.get('source_type') == 'quran_foundation':
+        return download_quran_foundation(entry, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.is_file() and bot.file_hash(destination) == entry['sha256']:
         return destination
@@ -114,6 +176,42 @@ def download_recording(entry, destination):
     if bot.file_hash(temp) != entry['sha256']:
         raise ValueError('Audio changed at its source; stopping until the recording is verified again')
     os.replace(temp, destination)
+    return destination
+
+
+def download_quran_foundation(entry, destination):
+    payload = get_json(urljoin(QURAN_API, f"recitations/{entry['recitation_id']}/by_chapter/{entry['chapter']}"),
+                       {'per_page': 50, 'fields': 'chapter_id,verse_number,verse_key,duration,url'})
+    audio_files = payload.get('audio_files', [])
+    if not audio_files:
+        raise RuntimeError('The selected recitation has no audio files')
+    duration = sum(float(row.get('duration') or 0) for row in audio_files)
+    if duration <= 0 or duration > 60:
+        raise ValueError('The selected recitation is not a valid Short')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    parts = []
+    for index, row in enumerate(audio_files, 1):
+        relative_url = row.get('url', '')
+        if not relative_url or '://' in relative_url or '..' in relative_url:
+            raise ValueError('Quran Foundation returned an invalid audio path')
+        part = destination.parent / f'verse-{index:03}.mp3'
+        with requests.get(urljoin(QURAN_AUDIO, relative_url), stream=True, timeout=(15, 60),
+                          headers={'User-Agent': 'quran-shorts-bot/2.0'}) as response:
+            response.raise_for_status()
+            with part.open('wb') as handle:
+                for block in response.iter_content(65536):
+                    handle.write(block)
+        parts.append(part)
+    command = []
+    for part in parts:
+        command.extend(['-i', str(part)])
+    filters = ''.join(f'[{index}:a]' for index in range(len(parts))) + f'concat=n={len(parts)}:v=0:a=1[out]'
+    temporary = destination.with_suffix('.part.mp3')
+    bot.run_media(['-y', *command, '-filter_complex', filters, '-map', '[out]',
+                   '-c:a', 'libmp3lame', '-b:a', '192k', str(temporary)])
+    os.replace(temporary, destination)
+    entry['duration'] = duration
+    entry['sha256'] = bot.file_hash(destination)
     return destination
 
 
@@ -181,7 +279,7 @@ def run(args, ledger=None, service=None):
     if any(row.get('status') == 'uploading' for row in jobs.values()):
         raise RuntimeError('An earlier upload is uncertain. Check YouTube Studio before continuing.')
     for entry in entries:
-        if entry['id'] in jobs and jobs[entry['id']].get('audio_sha256') != entry['sha256']:
+        if entry['id'] in jobs and entry.get('sha256') and jobs[entry['id']].get('audio_sha256') != entry['sha256']:
             raise CloudError('A published recording changed; restore its original catalog entry')
     entry = next((entry for entry in entries if entry['id'] not in jobs), None)
     if entry is None:
@@ -240,3 +338,4 @@ def main():
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
