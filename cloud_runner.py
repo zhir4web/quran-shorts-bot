@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
 from urllib.parse import urljoin
 
@@ -31,6 +32,10 @@ SHORT_SURAHS = {
 
 class CloudError(RuntimeError):
     """A diagnostic safe to display without external response bodies."""
+
+
+class TooLongRecording(RuntimeError):
+    """The complete recording cannot fit safely in a YouTube Short."""
 
 
 class RemoteLedger:
@@ -61,6 +66,10 @@ class RemoteLedger:
                 raise ValueError('Remote ledger contains an invalid job')
             if row['status'] == 'uploaded' and not row.get('video_id'):
                 raise ValueError('Remote ledger is missing an uploaded video ID')
+        cursor = self.data.get('cursor', len(self.data['jobs']))
+        if not isinstance(cursor, int) or cursor < 0:
+            raise ValueError('Remote ledger cursor is invalid')
+        self.data['cursor'] = cursor
 
     def save(self):
         # Never retry an uncertain write blindly. A later run reads the remote record.
@@ -123,8 +132,87 @@ def api_entries(data):
     return entries
 
 
+def validate_verse_catalog(data):
+    if data.get('provider') != 'quran_foundation' or data.get('reciters') != 'all':
+        raise ValueError('Unsupported Quran Foundation catalog configuration')
+    if data.get('content') != 'complete_verses':
+        raise ValueError('Only complete-verse publishing is supported')
+    limit = float(data.get('max_audio_seconds', 0))
+    tail = float(data.get('tail_silence_seconds', 0))
+    if limit <= 0 or limit + tail > 60 or tail < 0.5:
+        raise ValueError('Invalid Short duration or ending-silence configuration')
+    if not str(data.get('permission_url', '')).startswith('https://api-docs.quran.com/'):
+        raise ValueError('Quran Foundation permission URL required')
+    for field in ('attribution', 'rights'):
+        if not isinstance(data.get(field), str) or not data[field].strip():
+            raise ValueError(f'{field} required')
+    return data
+
+
+def verse_entry_for_position(catalog, jobs, position):
+    english = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'en'}).get('recitations', [])
+    arabic = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'ar'}).get('recitations', [])
+    chapters = get_json(urljoin(QURAN_API, 'chapters'), {'language': 'en'}).get('chapters', [])
+    if not english or not chapters:
+        raise RuntimeError('Quran Foundation catalog is temporarily empty')
+    arabic_names = {row['id']: row.get('translated_name', {}).get('name') for row in arabic}
+    total_verses = sum(int(row['verses_count']) for row in chapters)
+    if total_verses < 6000:
+        raise RuntimeError('Quran Foundation chapter metadata is incomplete')
+    for _ in range(total_verses * len(english)):
+        reciter_index = position % len(english)
+        batch = position // len(english)
+        # Every adjacent post changes both reciter and verse. Each reciter still
+        # visits every Quran verse exactly once before the sequence repeats.
+        verse_index = (batch + reciter_index * 521) % total_verses
+        remaining = verse_index
+        chapter = None
+        for row in chapters:
+            count = int(row['verses_count'])
+            if remaining < count:
+                chapter = row
+                verse_number = remaining + 1
+                break
+            remaining -= count
+        reciter = english[reciter_index]
+        reciter_id = reciter['id']
+        chapter_id = int(chapter['id'])
+        key = f'qf-v-r{reciter_id}-a{chapter_id}-{verse_number}'
+        next_position = position + 1
+        position = next_position
+        if key in jobs:
+            continue
+        payload = get_json(urljoin(QURAN_API, f'recitations/{reciter_id}/by_ayah/{chapter_id}:{verse_number}'),
+                           {'fields': 'chapter_id,verse_number,verse_key,duration,url'})
+        files = payload.get('audio_files', [])
+        if len(files) != 1:
+            continue
+        audio = files[0]
+        hint = float(audio.get('duration') or 0)
+        if hint <= 0 or hint > float(catalog['max_audio_seconds']):
+            continue
+        relative_url = audio.get('url', '')
+        if not relative_url or '://' in relative_url or '..' in relative_url:
+            raise ValueError('Quran Foundation returned an invalid audio path')
+        style = reciter.get('style') or ''
+        reciter_ar = arabic_names.get(reciter_id) or reciter.get('reciter_name')
+        return ({
+            'id': key, 'source_type': 'quran_verse', 'audio_url': urljoin(QURAN_AUDIO, relative_url),
+            'surah_ar': chapter['name_arabic'], 'surah_en': chapter['name_simple'],
+            'verse_number': verse_number, 'verse_key': f'{chapter_id}:{verse_number}',
+            'reciter_ar': reciter_ar, 'reciter_en': reciter.get('reciter_name', ''), 'style': style,
+            'permission_url': catalog['permission_url'], 'attribution': catalog['attribution'],
+            'rights': catalog['rights'], 'verified': True, 'whole_recording': True,
+            'max_audio_seconds': float(catalog['max_audio_seconds']),
+            'tail_silence_seconds': float(catalog['tail_silence_seconds']),
+        }, next_position)
+    raise RuntimeError('All Quran verse and reciter combinations have been published')
+
+
 def load_catalog(path):
     data = bot.read_json(path)
+    if data.get('schema') == 3:
+        return validate_verse_catalog(data)
     if data.get('schema') == 2:
         return api_entries(data)
     if data.get('schema') != 1 or not isinstance(data.get('recordings'), list):
@@ -150,6 +238,8 @@ def load_catalog(path):
 
 
 def download_recording(entry, destination):
+    if entry.get('source_type') == 'quran_verse':
+        return download_quran_verse(entry, destination)
     if entry.get('source_type') == 'quran_foundation':
         return download_quran_foundation(entry, destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -175,6 +265,46 @@ def download_recording(entry, destination):
     if bot.file_hash(temp) != entry['sha256']:
         raise ValueError('Audio changed at its source; stopping until the recording is verified again')
     os.replace(temp, destination)
+    return destination
+
+
+def media_duration(path):
+    result = subprocess.run([bot.ffmpeg(), '-hide_banner', '-nostdin', '-i', str(path),
+                             '-f', 'null', '-'], capture_output=True, text=True,
+                            encoding='utf-8', errors='replace', timeout=180)
+    match = re.search(r'Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)', result.stderr)
+    if not match:
+        raise RuntimeError('Cannot measure the complete audio recording')
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def download_quran_verse(entry, destination):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    raw = destination.with_name('recitation-source.mp3')
+    with requests.get(entry['audio_url'], stream=True, timeout=(15, 60),
+                      headers={'User-Agent': 'quran-shorts-bot/3.0'}) as response:
+        response.raise_for_status()
+        total = 0
+        with raw.open('wb') as handle:
+            for block in response.iter_content(65536):
+                total += len(block)
+                if total > 20 * 1024 * 1024:
+                    raise ValueError('Verse recording exceeds the size limit')
+                handle.write(block)
+    actual = media_duration(raw)
+    if actual > entry['max_audio_seconds']:
+        raise TooLongRecording('Complete verse is too long for a Short')
+    temporary = destination.with_suffix('.part.mp3')
+    tail = entry['tail_silence_seconds']
+    bot.run_media(['-y', '-i', str(raw), '-af', f'apad=pad_dur={tail}',
+                   '-c:a', 'libmp3lame', '-b:a', '192k', str(temporary)])
+    padded = media_duration(temporary)
+    if padded > 60:
+        raise TooLongRecording('Complete verse with its ending is too long for a Short')
+    os.replace(temporary, destination)
+    entry['duration'] = round(padded, 2)
+    entry['sha256'] = bot.file_hash(destination)
     return destination
 
 
@@ -244,8 +374,12 @@ def make_card(entry, destination):
         draw.text(((1080-(box[2]-box[0]))/2-box[0], y), text, font=face, fill=color)
     centered('القرآن الكريم', 300, 64, rtl=True)
     draw.line((270, 540, 810, 540), fill=gold, width=2)
-    centered('سورة ' + entry['surah_ar'], 705, 104, '#f1eee2', rtl=True)
-    centered(entry['surah_en'], 915, 46, '#d1d8d1')
+    centered('سورة ' + entry['surah_ar'], 690, 96, '#f1eee2', rtl=True)
+    if entry.get('verse_number'):
+        centered('الآية ' + str(entry['verse_number']), 890, 58, '#f1eee2', rtl=True)
+        centered(entry['surah_en'], 1005, 40, '#d1d8d1')
+    else:
+        centered(entry['surah_en'], 915, 46, '#d1d8d1')
     centered(entry['reciter_ar'], 1130, 51, rtl=True)
     draw.line((270, 1370, 810, 1370), fill=gold, width=2)
     centered('تلاوة كاملة', 1480, 42, '#d1d8d1', rtl=True)
@@ -255,10 +389,17 @@ def make_card(entry, destination):
 
 
 def item_for(entry, source, background):
+    if entry.get('verse_number'):
+        style = f" ({entry['style']})" if entry.get('style') else ''
+        title = f"سورة {entry['surah_ar']}، الآية {entry['verse_number']} | {entry['reciter_ar']}{style} #Shorts"
+        description = (f"تلاوة كاملة للآية {entry['verse_key']} من سورة {entry['surah_ar']}، "
+                       f"دون تغيير سرعة التلاوة.\n{entry['permission_url']}")
+    else:
+        title = f"سورة {entry['surah_ar']} | {entry['reciter_ar']} #Shorts"
+        description = f"سورة {entry['surah_ar']} كاملة، دون تغيير سرعة التلاوة.\n{entry['permission_url']}"
     return {'id': entry['id'], 'mode': 'compose', 'source': str(source.resolve()),
             'background': str(background.resolve()), 'start': 0, 'duration': entry['duration'],
-            'title': f"سورة {entry['surah_ar']} | {entry['reciter_ar']} #Shorts",
-            'description': f"سورة {entry['surah_ar']} كاملة، دون تغيير سرعة التلاوة.\n{entry['permission_url']}",
+            'title': title, 'description': description,
             'attribution': entry['attribution'], 'rights': entry['rights'],
             'rights_confirmed': True, 'made_for_kids': False}
 
@@ -267,8 +408,8 @@ def run(args, ledger=None, service=None):
     config = bot.read_json(ROOT / 'automation.json')
     if config.get('privacy', 'private') not in ('private', 'unlisted', 'public'):
         raise CloudError('Invalid publication privacy setting')
-    entries = load_catalog(ROOT / 'catalog.json')
-    if not entries:
+    catalog = load_catalog(ROOT / 'catalog.json')
+    if not catalog:
         raise RuntimeError('No verified recordings configured. Publishing remains inactive.')
     if args.mode == 'publish' and config.get('enabled') is not True:
         raise RuntimeError('Automatic publishing is not activated')
@@ -279,15 +420,33 @@ def run(args, ledger=None, service=None):
     jobs = ledger.data['jobs'] if ledger else {}
     if any(row.get('status') == 'uploading' for row in jobs.values()):
         raise RuntimeError('An earlier upload is uncertain. Check YouTube Studio before continuing.')
-    for entry in entries:
-        if entry['id'] in jobs and entry.get('sha256') and jobs[entry['id']].get('audio_sha256') != entry['sha256']:
-            raise CloudError('A published recording changed; restore its original catalog entry')
-    entry = next((entry for entry in entries if entry['id'] not in jobs), None)
-    if entry is None:
-        print('All verified recordings have been published; no duplicates will be created.')
-        return
-    workspace = ROOT / 'state' / 'cloud' / entry['id']
-    source = download_recording(entry, workspace / 'recitation.mp3')
+    next_cursor = None
+    if isinstance(catalog, dict) and catalog.get('schema') == 3:
+        cursor = ledger.data.get('cursor', len(jobs)) if ledger else len(jobs)
+        for _ in range(100):
+            entry, next_cursor = verse_entry_for_position(catalog, jobs, cursor)
+            workspace = ROOT / 'state' / 'cloud' / entry['id']
+            try:
+                source = download_recording(entry, workspace / 'recitation.mp3')
+                break
+            except TooLongRecording:
+                cursor = next_cursor
+                if ledger:
+                    ledger.data['cursor'] = cursor
+                    ledger.save()
+        else:
+            raise RuntimeError('No complete verse under the Shorts duration limit was found')
+    else:
+        entries = catalog
+        for entry in entries:
+            if entry['id'] in jobs and entry.get('sha256') and jobs[entry['id']].get('audio_sha256') != entry['sha256']:
+                raise CloudError('A published recording changed; restore its original catalog entry')
+        entry = next((entry for entry in entries if entry['id'] not in jobs), None)
+        if entry is None:
+            print('All verified recordings have been published; no duplicates will be created.')
+            return
+        workspace = ROOT / 'state' / 'cloud' / entry['id']
+        source = download_recording(entry, workspace / 'recitation.mp3')
     card = make_card(entry, workspace / 'background.png')
     job = item_for(entry, source, card)
     queue = workspace / 'queue.json'
@@ -305,6 +464,8 @@ def run(args, ledger=None, service=None):
     jobs[entry['id']] = {'status': 'uploading', 'audio_sha256': entry['sha256'],
                          'render_sha256': bot.file_hash(target),
                          'started_at': datetime.now(timezone.utc).isoformat()}
+    if next_cursor is not None:
+        ledger.data['cursor'] = next_cursor
     ledger.save()  # Must succeed BEFORE sending any upload bytes.
     video_id = bot.upload(service, job, target, config.get('privacy', 'private'))
     jobs[entry['id']].update(status='uploaded', video_id=video_id)
