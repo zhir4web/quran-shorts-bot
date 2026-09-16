@@ -130,6 +130,61 @@ class CloudTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'invalid job'):
             ledger.load()
 
+    def test_verse_rotation_changes_reciter_and_verse(self):
+        catalog = {'schema': 3, 'provider': 'quran_foundation', 'reciters': 'all',
+                   'content': 'complete_verses', 'max_audio_seconds': 58,
+                   'tail_silence_seconds': 1, 'permission_url': 'https://api-docs.quran.com/legal/developer-terms/',
+                   'attribution': 'Quran Foundation', 'rights': 'Test rights'}
+        reciters = [{'id': 1, 'reciter_name': 'One', 'style': None,
+                     'translated_name': {'name': 'One'}},
+                    {'id': 2, 'reciter_name': 'Two', 'style': 'Murattal',
+                     'translated_name': {'name': 'Two'}}]
+        chapters = [{'id': 1, 'verses_count': 6236, 'name_arabic': 'الفاتحة', 'name_simple': 'Al-Fatihah'}]
+        def api(url, params=None):
+            if 'resources/recitations' in url:
+                return {'recitations': reciters}
+            if url.endswith('/chapters'):
+                return {'chapters': chapters}
+            verse = url.rsplit('/', 1)[-1]
+            return {'audio_files': [{'duration': 10, 'url': f'Test/{verse}.mp3'}]}
+        with patch.object(cloud, 'get_json', side_effect=api):
+            first, _ = cloud.verse_entry_for_position(catalog, {}, 0)
+            second, _ = cloud.verse_entry_for_position(catalog, {}, 1)
+        self.assertNotEqual(first['reciter_en'], second['reciter_en'])
+        self.assertNotEqual(first['verse_key'], second['verse_key'])
+
+    def test_verse_audio_uses_measured_duration_and_tail(self):
+        entry = dict(ENTRY, source_type='quran_verse', audio_url='https://verses.quran.foundation/test.mp3',
+                     max_audio_seconds=58, tail_silence_seconds=1)
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.raise_for_status = Mock()
+        response.iter_content.return_value = [b'complete verse']
+        target = self.root / 'recitation.mp3'
+        def render(args):
+            Path(args[-1]).write_bytes(b'complete verse plus silence')
+        with patch.object(cloud.requests, 'get', return_value=response), \
+             patch.object(cloud, 'media_duration', side_effect=[10.25, 11.25]), \
+             patch.object(bot, 'run_media', side_effect=render):
+            cloud.download_quran_verse(entry, target)
+        self.assertEqual(entry['duration'], 11.25)
+        self.assertTrue(target.is_file())
+
+    def test_overlong_complete_verse_is_skipped_not_trimmed(self):
+        entry = dict(ENTRY, source_type='quran_verse', audio_url='https://verses.quran.foundation/test.mp3',
+                     max_audio_seconds=58, tail_silence_seconds=1)
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.raise_for_status = Mock()
+        response.iter_content.return_value = [b'long verse']
+        with patch.object(cloud.requests, 'get', return_value=response), \
+             patch.object(cloud, 'media_duration', return_value=59):
+            with self.assertRaises(cloud.TooLongRecording):
+                cloud.download_quran_verse(entry, self.root / 'recitation.mp3')
+
 
 if __name__ == '__main__':
     unittest.main()
+
