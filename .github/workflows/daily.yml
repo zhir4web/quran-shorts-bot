@@ -1,7 +1,10 @@
-name: Daily Quran Shorts
+name: Quran Shorts - 3 Daily
 on:
   schedule:
-    - cron: '17 15 * * *'
+    # 09:00, 15:00 and 21:00 Asia/Baghdad (UTC+3)
+    - cron: '0 6 * * *'
+    - cron: '0 12 * * *'
+    - cron: '0 18 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -57,3 +60,4 @@ jobs:
             state/cloud/*/background.png
             state/cloud/*/metadata.json
           retention-days: 7
+
