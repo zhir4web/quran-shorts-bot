@@ -1,5 +1,6 @@
 {
-  "enabled": false,
+  "enabled": true,
   "channel_id": "UCFrBgGfylAm18PWF1YgoQTg",
-  "privacy": "private"
+  "privacy": "public"
 }
+
