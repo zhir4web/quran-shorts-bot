@@ -1,30 +1,33 @@
-# Cloud automation — current deployment status
+# دۆخی بڵاوکردنەوەی خۆکار
 
-The GitHub workflow is active and publishes public Shorts three times per day. The first end-to-end upload succeeded on 2026-09-16: https://www.youtube.com/watch?v=9i_Ix-efT2I.
+کەناڵی ڕێکخراو `UCFrBgGfylAm18PWF1YgoQTg` ـە. OAuth token لە GitHub Actions secret ـی `YOUTUBE_TOKEN` پارێزراوە و لە کۆدەکەدا نییە.
 
-Google authorization succeeded on 2026-09-14. The YouTube API confirmed channel `UCFrBgGfylAm18PWF1YgoQTg`, titled `Quran`, and that ID is configured. The OAuth token is stored in the encrypted GitHub Actions secret `YOUTUBE_TOKEN` and is never committed to the repository.
+## کات
 
-## What the cloud runner does
+هەر ڕۆژێک یەک Short لە هەر یەک لەم کاتانەدا بڵاودەبێتەوە:
 
-On a scheduled run, it obtains the current reciter list and short-Surah audio from the Quran Foundation API, selects the next unpublished combination, creates an original Arabic title card, renders a vertical video without changing the recitation speed, verifies the authorized channel, and uploads one video. Uploaded IDs and media hashes are saved in `.bot-state/published.json` on the repository's main branch. The computer can be off when GitHub Actions runs.
+- 09:00 بە کاتی بەغدا
+- 15:00 بە کاتی بەغدا
+- 21:00 بە کاتی بەغدا
 
-The schedule is 09:00, 15:00 and 21:00 Baghdad time. GitHub may delay scheduled jobs by several minutes. The bot never silently reuses a published combination.
+GitHub لەوانەیە چەند خولەکێک schedule دوا بخات.
 
-## Active deployment
+## چۆنیەتی هەڵبژاردن
 
-`automation.json` is enabled with `privacy: public`. `catalog.json` uses all reciters currently returned by the Quran Foundation recitations endpoint and Surahs 112–114, each of which is checked against the 60-second Shorts limit before rendering. Descriptions credit Quran Foundation and link to its developer terms. Run `35093667675` completed the first real public upload successfully.
+بۆتەکە هەموو 6,236 ئایەت و هەموو وەشانە بەردەستەکانی قارییەکان لە Quran Foundation وەردەگرێت. هەر جار قاری و ئایەت پێکەوە دەگۆڕێن. هەڵبژاردن بە cursor ـێکی پایەدارە، بۆیە دوای restart یان workflow ـێکی نوێ لە شوێنی خۆی بەردەوام دەبێت.
 
-## Recovering an interrupted upload
+دەنگی هەر ئایەتێک بە تەواوی وەردەگیرێت. ماوەی ڕاستەقینەی فایلەکە پێوانە دەکرێت؛ ئەگەر لە 58 چرکە زیاتر بێت پەڕێندرێت و هیچ بەشێک لە ئایەت نابڕدرێت. لە کۆتایی 1 چرکە بێدەنگی هەیە.
 
-The runner writes `uploading` to the remote ledger before sending upload bytes. If the result is uncertain, later runs stop. Check YouTube Studio first. If the video exists, preserve the ledger entry and set its status to `uploaded` with the real `video_id`. Remove a reservation only after confirming that no video was uploaded. Never clear the entire ledger to restart the bot. GitHub's workflow concurrency and conditional ledger writes guard against overlapping runs.
+## پاراستنی دۆخ
 
-`legacy/uploaded_videos.txt` preserves the old bot's seven source IDs for reference. These are not confirmed destination YouTube upload IDs and cannot be imported as successful uploads in the new ledger.
+`.bot-state/published.json` cursor ـی شوێنی داهاتوو، ناسنامە و hash ـی ناوەڕۆک، دۆخی `uploading` پێش ناردن، و دۆخی `uploaded` لەگەڵ YouTube video ID دەپارێزێت.
 
-## Artwork and source permissions
+ئەگەر upload لە دۆخێکی نادیاردا بوەستێت، پێش هەر گۆڕانێک YouTube Studio بپشکنە. ئەگەر ڤیدیۆکە هەیە، تۆمارەکە بە video ID ـی ڕاستەقینە تەواو بکە. reservation تەنها کاتێک لاببە کە دڵنیایت هیچ ڤیدیۆیەک upload نەبووە. هەرگیز هەموو ledger مەسڕەوە.
 
-The card artwork is created by this project. Amiri font is bundled under the SIL Open Font License in `assets/Amiri-OFL.txt`; source: https://github.com/google/fonts/tree/main/ofl/amiri. Arabic labels are shaped without synthesizing Quran text. Copyright detection is never bypassed or guaranteed absent by changing speed, color or pitch.
+## سەرچاوە و دیزاین
 
-## Checks
+دەنگەکان لە Quran Foundation (Quran.com) ـن. وەسفی هەر پۆستێک attribution و بەستەری مەرجەکانی developer هەیە. دیزاینەکە لەلایەن ئەم پڕۆژەیەوە دروست کراوە و فۆنتی Amiri بە مۆڵەتی SIL Open Font License بەکاردێت. نووسینی عەرەبی لە Linux بە شێوەی ڕاست تاقیکراوەتەوە.
 
-`python -m unittest discover -s tests -v` covers the local queue/render pipeline and the cloud publication state machine. All 26 tests passed before activation, followed by a successful real public upload through GitHub Actions.
+## سنوورە دەرەکییەکان
 
+هیچ سیستەمێک ناتوانێت بەڵێن بدات هەرگیز ناوەستێت. کێشەی YouTube API، quota، OAuth، GitHub Actions یان Quran Foundation دەتوانێت run ـێک بوەستێنێت. ڕێکخستنەکە دۆخ دەپارێزێت و schedule ـی دواتر بەردەوام دەبێت؛ تەنها upload ـی نادیار بە مەبەست پێویستی بە پشکنین هەیە تا پۆستی دووبارە دروست نەبێت.
