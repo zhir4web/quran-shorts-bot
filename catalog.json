@@ -1,8 +1,10 @@
 {
-  "schema": 2,
+  "schema": 3,
   "provider": "quran_foundation",
   "reciters": "all",
-  "chapters": [112, 113, 114],
+  "content": "complete_verses",
+  "max_audio_seconds": 58,
+  "tail_silence_seconds": 1,
   "permission_url": "https://api-docs.quran.com/legal/developer-terms/",
   "attribution": "Recitation audio provided by Quran Foundation (Quran.com)",
   "rights": "Used in a credited social-media video under the Quran Foundation Developer Terms"
