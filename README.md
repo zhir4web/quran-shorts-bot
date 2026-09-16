@@ -1,6 +1,6 @@
 # Quran Shorts Bot — وەشانی چاککراوە
 
-**دۆخی ئێستا:** بەشی ڕۆژانەی GitHub ئامادە کراوە، بەڵام بڵاوکردنەوە هێشتا چالاک نییە. مۆڵەتی YouTube، کەناڵ و دەنگی مۆڵەتپێدراو پێویستە پشتڕاست بکرێنەوە. وردەکاری لە [AUTOMATION.md](AUTOMATION.md) ـە. تاقیکردنەوەی کۆد بە مانای سەرکەوتنی بارکردنی ڕاستەقینە نییە.
+**دۆخی ئێستا:** بڵاوکردنەوەی خۆکار لە GitHub Actions چالاکە. ڤیدیۆکان بە شێوەی public، سێ جار ڕۆژانە لە 09:00، 15:00 و 21:00 بە کاتی بەغدا بڵاودەبنەوە. یەکەم upload ـی ڕاستەقینە لە 2026-09-16 سەرکەوتوو بوو. وردەکاری لە [AUTOMATION.md](AUTOMATION.md) ـە.
 
 ئەم وەشانە لە دەنگی مۆڵەتپێدراو و وێنە ڤیدیۆی ستوونی دروست دەکات، یان ڤیدیۆی مۆڵەتپێدراو ئامادە دەکات، و بە YouTube API باری دەکات. خێرایی و تۆنی قاری ناگۆڕێت. ڤیدیۆکە 1080×1920 دەبێت و بە مەبەست سنووری ئەم وەشانە 60 چرکەیە.
 
@@ -25,7 +25,7 @@
 5. `run.bat run --privacy private` یەک ڤیدیۆی چاوەڕوانکراو بە شێوەی تایبەت بار دەکات. لە YouTube Studio ئەنجامەکە بپشکنە.
 6. بۆ ڤیدیۆ نوێیەکانی دواتر دەتوانیت `run.bat run --privacy public` بەکاربهێنیت.
 
-ڤیدیۆیەک کە پێشتر بە private بار کراوە دووبارە بار ناکرێت؛ بۆ گۆڕینی بە public لە YouTube Studio تایبەتمەندییەکە بگۆڕە. هیچ فرمانێکی upload لەم گەیاندنەدا لەسەر کەناڵەکەت جێبەجێ نەکراوە.
+ڤیدیۆیەک کە پێشتر بار کراوە دووبارە بار ناکرێت. بۆتە هەورییەکە تۆماری ڤیدیۆ بڵاوکراوەکان لە GitHub دەپارێزێت.
 
 ## کارکردنی خۆکار
 
@@ -37,7 +37,7 @@
 
 ئەمە لە Windows Task Scheduler ئەرکێکی ڕۆژانە بە ناوی `QuranShortsBot` دروست دەکات. هەر جار یەک دانەی داهاتووی ڕیزەکە بار دەکات. کاتەکە بە کاتی کۆمپیوتەرەکەتە. کۆمپیوتەر دەبێت کار بکات، ئینتەرنێتی هەبێت و تۆش چووبیتە ژوورەوە. ئەگەر PowerShell ڕێگە بە script نادات، دەتوانیت هەمان ئەرک لە Task Scheduler بە دەستی دروست بکەیت: program = `.venv/Scripts/python.exe` بە ڕێڕەوی تەواو، arguments = ڕێڕەوی تەواوی `bot.py` لە نێوان کوتیشن و `run --privacy public`.
 
-بۆ وەستاندن، ئەرکەکە لە Task Scheduler بکە Disable. ئەم پەکەجە خۆی هیچ schedule ـێکی لەسەر کۆمپیوتەر یان GitHub چالاک نەکردووە. بۆ کاری 24 کاتژمێری بەبێ کۆمپیوتەرەکەت پێویستە لەسەر سێرڤەرێکی هەمیشە کارا، بە دیسکی بەردەوام، دابمەزرێندرێت.
+وەشانی چالاک لە GitHub Actions کار دەکات؛ کۆمپیوتەرەکەت دەتوانێت کوژاوە بێت. Windows Task Scheduler تەنها هەڵبژاردەیەکی لوکاڵە و بۆ وەشانی هەوری پێویست نییە.
 
 ## زیادکردنی ناوەڕۆک
 
@@ -85,4 +85,5 @@ run.bat resolve --id recitation-001 --confirmed-not-uploaded
 
 Run `python -m unittest discover -s tests -v` in an environment with `requirements.txt` installed. Tests cover real FFmpeg composition/conversion, queue validation, interrupted uploads, duplicate prevention, preview isolation, output corruption and lock behavior. OAuth and live YouTube publishing need your own credentials and are not integration-tested against your channel.
 
-The old GitHub schedule was replaced by a test workflow because an ephemeral runner without durable state can repost the same content. This release uses Windows scheduling and local SQLite state. Before updating your existing GitHub repository, disable its old `Quran Bot` workflow and remove `.github/workflows/main.yml`; simply adding this release's test workflow will not disable the old schedule. Preserve any previous upload history separately and do not add already-published clips to the new queue. The old ID file is not automatically migrated because its source and destination IDs are mixed.
+The active GitHub workflow uses a durable repository ledger to prevent duplicate uploads. It publishes one Short per run at three scheduled Baghdad times. The local Windows queue remains available for offline previews and manual operation.
+
