@@ -1,4 +1,10 @@
 {
-  "schema": 1,
-  "recordings": []
+  "schema": 2,
+  "provider": "quran_foundation",
+  "reciters": "all",
+  "chapters": [112, 113, 114],
+  "permission_url": "https://api-docs.quran.com/legal/developer-terms/",
+  "attribution": "Recitation audio provided by Quran Foundation (Quran.com)",
+  "rights": "Used in a credited social-media video under the Quran Foundation Developer Terms"
 }
+
