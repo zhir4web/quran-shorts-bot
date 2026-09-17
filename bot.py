@@ -71,6 +71,8 @@ def load_queue(path):
             raise ValueError(f"{key}: description must be text")
         if item.get("background") is not None and not isinstance(item["background"], str):
             raise ValueError(f"{key}: background must be an image path")
+        if item.get("background_motion") not in (None, "calm_rain"):
+            raise ValueError(f"{key}: unsupported background motion")
         if len(description(item)) > 5000:
             raise ValueError(f"{key}: description is too long")
     return data["items"]
@@ -184,7 +186,7 @@ def render(item, base, folder):
             background = (base / item["background"]).resolve()
             if not background.is_file():
                 raise FileNotFoundError(f"Background missing: {background}")
-            inputs = ["-loop", "1", "-i", str(background)]
+            inputs = ["-loop", "1", "-framerate", "30", "-i", str(background)]
         else:
             inputs = ["-f", "lavfi", "-i", "color=c=0x081b21:s=1080x1920:r=30"]
         inputs += ["-ss", start, "-i", str(source)]
@@ -195,6 +197,12 @@ def render(item, base, folder):
     # Pad preserves existing Quran text; recitation speed and pitch are untouched.
     target = folder / "video.mp4"
     temporary = folder / "rendering.mp4"
+    if item.get("background_motion") == "calm_rain":
+        # A slow push-in and fresh temporal grain make an original atmospheric
+        # video from the locally drawn forest; no third-party footage is used.
+        scale = ("scale=1120:1992,crop=1080:1920:"
+                 "x='20+12*sin(t/5)':y='36+10*cos(t/6)',"
+                 "noise=alls=5:allf=t+u,eq=brightness='0.008*sin(t/4)',setsar=1")
     run_media(["-y", *inputs, *mapping, "-t", duration, "-vf", scale,
                "-r", "30", "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
                "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(temporary)])
@@ -359,4 +367,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
-
