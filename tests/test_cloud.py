@@ -131,7 +131,9 @@ class CloudTests(unittest.TestCase):
             ledger.load()
 
     def test_verse_rotation_changes_reciter_and_verse(self):
-        catalog = {'schema': 3, 'provider': 'quran_foundation', 'reciters': 'all',
+        catalog = {'schema': 3, 'provider': 'quran_foundation', 'reciters': 'allowlist',
+                   'allowed_reciter_ids': [1, 2], 'blocked_reciter_ids': [5],
+                   'visual_style': 'calm_forest_rain',
                    'content': 'complete_verses', 'max_audio_seconds': 58,
                    'tail_silence_seconds': 1, 'permission_url': 'https://api-docs.quran.com/legal/developer-terms/',
                    'attribution': 'Quran Foundation', 'rights': 'Test rights'}
@@ -152,6 +154,29 @@ class CloudTests(unittest.TestCase):
             second, _ = cloud.verse_entry_for_position(catalog, {}, 1)
         self.assertNotEqual(first['reciter_en'], second['reciter_en'])
         self.assertNotEqual(first['verse_key'], second['verse_key'])
+
+    def test_blocked_reciter_is_never_selected(self):
+        catalog = {'schema': 3, 'provider': 'quran_foundation', 'reciters': 'allowlist',
+                   'allowed_reciter_ids': [1, 2], 'blocked_reciter_ids': [5],
+                   'visual_style': 'calm_forest_rain', 'content': 'complete_verses',
+                   'max_audio_seconds': 58, 'tail_silence_seconds': 1,
+                   'permission_url': 'https://api-docs.quran.com/legal/developer-terms/',
+                   'attribution': 'Quran Foundation', 'rights': 'verified'}
+        reciters = [{'id': 1, 'reciter_name': 'Safe One'},
+                    {'id': 2, 'reciter_name': 'Safe Two'},
+                    {'id': 5, 'reciter_name': 'Blocked'}]
+        chapters = [{'id': 1, 'verses_count': 6236, 'name_arabic': 'الفاتحة',
+                     'name_simple': 'Al-Fatihah'}]
+        def api(url, params=None):
+            if 'resources/recitations' in url:
+                return {'recitations': reciters}
+            if url.endswith('/chapters'):
+                return {'chapters': chapters}
+            return {'audio_files': [{'duration': 10, 'url': 'safe/test.mp3'}]}
+        with patch.object(cloud, 'get_json', side_effect=api):
+            chosen = [cloud.verse_entry_for_position(catalog, {}, pos)[0]['recitation_id']
+                      for pos in range(8)]
+        self.assertNotIn(5, chosen)
 
     def test_verse_audio_uses_measured_duration_and_tail(self):
         entry = dict(ENTRY, source_type='quran_verse', audio_url='https://verses.quran.foundation/test.mp3',
@@ -187,4 +212,3 @@ class CloudTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
