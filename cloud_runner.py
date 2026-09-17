@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import base64
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -133,7 +134,7 @@ def api_entries(data):
 
 
 def validate_verse_catalog(data):
-    if data.get('provider') != 'quran_foundation' or data.get('reciters') != 'all':
+    if data.get('provider') != 'quran_foundation' or data.get('reciters') != 'allowlist':
         raise ValueError('Unsupported Quran Foundation catalog configuration')
     if data.get('content') != 'complete_verses':
         raise ValueError('Only complete-verse publishing is supported')
@@ -146,6 +147,18 @@ def validate_verse_catalog(data):
     for field in ('attribution', 'rights'):
         if not isinstance(data.get(field), str) or not data[field].strip():
             raise ValueError(f'{field} required')
+    allowed = data.get('allowed_reciter_ids')
+    blocked = data.get('blocked_reciter_ids', [])
+    if (not isinstance(allowed, list) or not allowed or
+            any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in allowed)):
+        raise ValueError('A verified reciter allowlist is required')
+    if (not isinstance(blocked, list) or
+            any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in blocked)):
+        raise ValueError('Invalid blocked-reciter list')
+    if len(set(allowed)) != len(allowed) or set(allowed) & set(blocked):
+        raise ValueError('Reciter lists must be unique and disjoint')
+    if data.get('visual_style') != 'calm_forest_rain':
+        raise ValueError('The original calm visual style is required')
     return data
 
 
@@ -153,6 +166,9 @@ def verse_entry_for_position(catalog, jobs, position):
     english = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'en'}).get('recitations', [])
     arabic = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'ar'}).get('recitations', [])
     chapters = get_json(urljoin(QURAN_API, 'chapters'), {'language': 'en'}).get('chapters', [])
+    allowed = set(catalog['allowed_reciter_ids'])
+    blocked = set(catalog.get('blocked_reciter_ids', []))
+    english = [row for row in english if row.get('id') in allowed and row.get('id') not in blocked]
     if not english or not chapters:
         raise RuntimeError('Quran Foundation catalog is temporarily empty')
     arabic_names = {row['id']: row.get('translated_name', {}).get('name') for row in arabic}
@@ -197,7 +213,8 @@ def verse_entry_for_position(catalog, jobs, position):
         style = reciter.get('style') or ''
         reciter_ar = arabic_names.get(reciter_id) or reciter.get('reciter_name')
         return ({
-            'id': key, 'source_type': 'quran_verse', 'audio_url': urljoin(QURAN_AUDIO, relative_url),
+            'id': key, 'source_type': 'quran_verse', 'recitation_id': reciter_id,
+            'audio_url': urljoin(QURAN_AUDIO, relative_url),
             'surah_ar': chapter['name_arabic'], 'surah_en': chapter['name_simple'],
             'verse_number': verse_number, 'verse_key': f'{chapter_id}:{verse_number}',
             'reciter_ar': reciter_ar, 'reciter_en': reciter.get('reciter_name', ''), 'style': style,
@@ -205,6 +222,7 @@ def verse_entry_for_position(catalog, jobs, position):
             'rights': catalog['rights'], 'verified': True, 'whole_recording': True,
             'max_audio_seconds': float(catalog['max_audio_seconds']),
             'tail_silence_seconds': float(catalog['tail_silence_seconds']),
+            'visual_style': catalog['visual_style'],
         }, next_position)
     raise RuntimeError('All Quran verse and reciter combinations have been published')
 
@@ -345,21 +363,57 @@ def download_quran_foundation(entry, destination):
 
 
 def make_card(entry, destination):
-    """Original geometric artwork; Arabic shaping preserves joined letter forms."""
-    from PIL import Image, ImageDraw, ImageFont
+    """Original peaceful forest artwork with only the requested title and name."""
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
     import arabic_reshaper
     from bidi.algorithm import get_display
+    import random
     font = ROOT / 'assets' / 'Amiri-Regular.ttf'
     if not font.is_file():
         raise FileNotFoundError('Arabic font missing: assets/Amiri-Regular.ttf')
-    image = Image.new('RGB', (1080, 1920), '#091b23')
+    image = Image.new('RGB', (1080, 1920), '#0a2025')
     draw = ImageDraw.Draw(image)
     for y in range(1920):
         blend = y / 1920
-        draw.line((0, y, 1080, y), fill=(8+int(blend*6), 27+int(blend*18), 35+int(blend*13)))
-    gold = '#cfb477'
-    draw.rounded_rectangle((65, 130, 1015, 1790), radius=280, outline=gold, width=3)
-    draw.rounded_rectangle((88, 155, 992, 1765), radius=260, outline='#52604e', width=1)
+        draw.line((0, y, 1080, y), fill=(8+int(blend*10), 30+int(blend*22), 38+int(blend*18)))
+    seed = int(hashlib.sha256(entry['id'].encode()).hexdigest()[:16], 16)
+    rng = random.Random(seed)
+    # Moonlight and mist are created locally; no downloaded image or video is used.
+    moon = Image.new('RGBA', image.size, (0, 0, 0, 0))
+    md = ImageDraw.Draw(moon)
+    md.ellipse((745, 170, 945, 370), fill=(229, 224, 193, 115))
+    moon = moon.filter(ImageFilter.GaussianBlur(28))
+    image = Image.alpha_composite(image.convert('RGBA'), moon).convert('RGB')
+    draw = ImageDraw.Draw(image, 'RGBA')
+    for band in range(5):
+        y = 930 + band * 120
+        draw.ellipse((-250, y-110, 1330, y+180), fill=(174, 195, 187, 12+band*5))
+    def pine(x, base, height, color):
+        width = int(height * .42)
+        draw.rectangle((x-8, base-height*.18, x+8, base), fill=color)
+        for level in range(5):
+            top = base-height + level*height*.16
+            half = width*(.48+level*.13)
+            draw.polygon(((x, top), (x-half, top+height*.36), (x+half, top+height*.36)), fill=color)
+    for layer, (base, low, high, color) in enumerate([
+            (1420, 330, 560, (20, 55, 52, 210)),
+            (1600, 430, 720, (11, 42, 40, 235)),
+            (1920, 560, 920, (5, 29, 30, 255))]):
+        x = -80
+        while x < 1160:
+            pine(x, base+rng.randint(-35, 35), rng.randint(low, high), color)
+            x += rng.randint(105, 190)
+    # Fine rain becomes gently animated by the renderer's changing grain/zoom.
+    for _ in range(180):
+        x, y = rng.randrange(1080), rng.randrange(1920)
+        length = rng.randrange(18, 55)
+        draw.line((x, y, x-7, y+length), fill=(190, 218, 217, rng.randrange(20, 60)), width=1)
+    shade = Image.new('RGBA', image.size, (0, 0, 0, 0))
+    sd = ImageDraw.Draw(shade)
+    sd.rounded_rectangle((90, 520, 990, 1270), radius=70, fill=(3, 18, 22, 118), outline=(207, 180, 119, 90), width=2)
+    image = Image.alpha_composite(image.convert('RGBA'), shade).convert('RGB')
+    draw = ImageDraw.Draw(image)
+    gold = '#dcc58e'
     def centered(text, y, size, color=gold, rtl=False):
         if rtl:
             text = get_display(arabic_reshaper.reshape(text))
@@ -372,17 +426,11 @@ def make_card(entry, destination):
                 break
             size -= 2
         draw.text(((1080-(box[2]-box[0]))/2-box[0], y), text, font=face, fill=color)
-    centered('القرآن الكريم', 300, 64, rtl=True)
-    draw.line((270, 540, 810, 540), fill=gold, width=2)
-    centered('سورة ' + entry['surah_ar'], 690, 96, '#f1eee2', rtl=True)
+    centered('سورة ' + entry['surah_ar'], 665, 96, '#f4f1e8', rtl=True)
     if entry.get('verse_number'):
-        centered('الآية ' + str(entry['verse_number']), 890, 58, '#f1eee2', rtl=True)
-        centered(entry['surah_en'], 1005, 40, '#d1d8d1')
-    else:
-        centered(entry['surah_en'], 915, 46, '#d1d8d1')
-    centered(entry['reciter_ar'], 1130, 51, rtl=True)
-    draw.line((270, 1370, 810, 1370), fill=gold, width=2)
-    centered('تلاوة كاملة', 1480, 42, '#d1d8d1', rtl=True)
+        centered('الآية ' + str(entry['verse_number']), 825, 58, '#e7e9e4', rtl=True)
+    draw.line((330, 955, 750, 955), fill=gold, width=2)
+    centered(entry['reciter_ar'], 1015, 54, gold, rtl=True)
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination)
     return destination
@@ -399,6 +447,7 @@ def item_for(entry, source, background):
         description = f"سورة {entry['surah_ar']} كاملة، دون تغيير سرعة التلاوة.\n{entry['permission_url']}"
     return {'id': entry['id'], 'mode': 'compose', 'source': str(source.resolve()),
             'background': str(background.resolve()), 'start': 0, 'duration': entry['duration'],
+            'background_motion': 'calm_rain',
             'title': title, 'description': description,
             'attribution': entry['attribution'], 'rights': entry['rights'],
             'rights_confirmed': True, 'made_for_kids': False}
@@ -500,4 +549,3 @@ def main():
 
 if __name__ == '__main__':
     raise SystemExit(main())
-
