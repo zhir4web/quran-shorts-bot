@@ -235,6 +235,9 @@ def render(item, base, folder):
     folder.mkdir(parents=True, exist_ok=True)
     source = source_file(item, base, folder)
     start = str(item.get("start", 0))
+    minimum = float(item.get("min_duration_seconds", 0))
+    if float(item["duration"]) < minimum:
+        raise ValueError("Requested segment is below the minimum video duration")
     duration = str(item["duration"])
     scale = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x081b21,setsar=1"
     if item["mode"] == "compose":
@@ -277,7 +280,7 @@ def render(item, base, folder):
     run_media(["-y", *inputs, *mapping, "-t", duration, *filters,
                "-r", "30", "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
                "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(temporary)])
-    validate_video(temporary, item["duration"])
+    validate_video(temporary, item["duration"], minimum=minimum)
     if item.get("background_motion") == "premium_motion":
         validate_visible_motion(temporary, item["duration"])
     os.replace(temporary, target)
@@ -285,7 +288,7 @@ def render(item, base, folder):
     return target
 
 
-def validate_video(path, expected):
+def validate_video(path, expected, minimum=0):
     import imageio_ffmpeg
     reader = imageio_ffmpeg.read_frames(str(path))
     try:
@@ -294,6 +297,8 @@ def validate_video(path, expected):
         reader.close()
     if tuple(metadata["size"]) != (1080, 1920):
         raise ValueError("Rendered video must be 1080 by 1920")
+    if metadata["duration"] < minimum:
+        raise ValueError("Rendered video is below the minimum video duration")
     if abs(metadata["duration"] - expected) > 0.35:
         raise ValueError("Source is too short for the requested segment; choose complete verse boundaries")
     run_media(["-i", str(path), "-map", "0:v:0", "-map", "0:a:0", "-f", "null", "-"])
@@ -459,4 +464,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
-
