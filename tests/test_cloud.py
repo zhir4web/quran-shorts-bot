@@ -1,5 +1,6 @@
 import base64
 import copy
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -256,6 +257,56 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(row['status'], 'uploaded')
         self.assertEqual(row['video_id'], 'video123')
         self.assertFalse(row['cta_comment_succeeded'])
+
+    def test_metrics_collection_appends_history_and_averages(self):
+        now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+        self.ledger.data = {'schema': 1, 'jobs': {
+            'job': {'status': 'uploaded', 'video_id': 'video123', 'reciter_id': 4,
+                    'reciter_name': 'Abu Bakr al-Shatri', 'visual_theme': 'forest_rain',
+                    'uploaded_at': (now - timedelta(hours=2)).isoformat()}}}
+        self.service.videos.return_value.list.return_value.execute.return_value = {
+            'items': [{'id': 'video123', 'statistics': {'viewCount': '120', 'likeCount': '14',
+                                                        'commentCount': '3'},
+                       'status': {'privacyStatus': 'public'}}]}
+        report = cloud.collect_performance_metrics(self.service, self.ledger, 'public', now=now)
+        snapshot = self.ledger.data['metrics_history']['video123'][0]
+        self.assertEqual(snapshot['view_count'], 120)
+        self.assertEqual(snapshot['like_count'], 14)
+        self.assertEqual(report['averages']['reciters']['Abu Bakr al-Shatri'], 120.0)
+        self.assertEqual(report['averages']['visual_themes']['forest_rain'], 120.0)
+        self.ledger.save.assert_called_once()
+
+    def test_no_traction_and_visibility_flags(self):
+        now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+        self.ledger.data = {'schema': 1, 'jobs': {
+            'job': {'status': 'uploaded', 'video_id': 'quiet',
+                    'uploaded_at': (now - timedelta(hours=49)).isoformat()}}}
+        self.service.videos.return_value.list.return_value.execute.return_value = {
+            'items': [{'id': 'quiet', 'statistics': {'viewCount': '0'},
+                       'status': {'privacyStatus': 'private'}}]}
+        report = cloud.collect_performance_metrics(self.service, self.ledger, 'public', now=now)
+        flags = {row['flag'] for row in report['new_flags']}
+        self.assertEqual(flags, {'no traction', 'visibility problem'})
+        self.assertEqual(set(self.ledger.data['health_flags']['quiet']), flags)
+
+    def test_performance_summary_is_readable(self):
+        report = {'timestamp': '2026-09-18T00:00:00+00:00', 'tracked': 2,
+                  'new_flags': [{'video_id': 'abc', 'flag': 'no traction'}],
+                  'averages': {'reciters': {'Reader': 42.5},
+                               'visual_themes': {'starry_night': 55.0}}}
+        text = cloud.performance_summary(report)
+        self.assertIn('Total uploaded videos tracked: 2', text)
+        self.assertIn('https://www.youtube.com/watch?v=abc', text)
+        self.assertIn('Reader: 42.5', text)
+        self.assertIn('starry_night: 55.0', text)
+
+    def test_failed_statistics_api_is_nonfatal(self):
+        self.ledger.data = {'schema': 1, 'jobs': {
+            'job': {'status': 'uploaded', 'video_id': 'video123'}}}
+        self.service.videos.return_value.list.return_value.execute.side_effect = RuntimeError('temporary')
+        with patch.object(cloud, 'ROOT', self.root):
+            text = cloud.run_performance_report(self.service, self.ledger)
+        self.assertIn('temporarily unavailable', text)
 
 
 if __name__ == '__main__':
