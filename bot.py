@@ -73,6 +73,8 @@ def load_queue(path):
             raise ValueError(f"{key}: background must be an image path")
         if item.get("background_motion") not in (None, "calm_rain"):
             raise ValueError(f"{key}: unsupported background motion")
+        if item.get("motion_overlay") is not None and not isinstance(item["motion_overlay"], str):
+            raise ValueError(f"{key}: motion overlay must be an image path")
         if len(description(item)) > 5000:
             raise ValueError(f"{key}: description is too long")
     return data["items"]
@@ -191,19 +193,34 @@ def render(item, base, folder):
             inputs = ["-f", "lavfi", "-i", "color=c=0x081b21:s=1080x1920:r=30"]
         inputs += ["-ss", start, "-i", str(source)]
         mapping = ["-map", "0:v:0", "-map", "1:a:0"]
+        if item.get("motion_overlay"):
+            overlay = (base / item["motion_overlay"]).resolve()
+            if not overlay.is_file():
+                raise FileNotFoundError(f"Motion overlay missing: {overlay}")
+            inputs += ["-loop", "1", "-framerate", "30", "-i", str(overlay)]
     else:
         inputs = ["-ss", start, "-i", str(source)]
         mapping = ["-map", "0:v:0", "-map", "0:a:0"]
     # Pad preserves existing Quran text; recitation speed and pitch are untouched.
     target = folder / "video.mp4"
     temporary = folder / "rendering.mp4"
-    if item.get("background_motion") == "calm_rain":
-        # A slow push-in and fresh temporal grain make an original atmospheric
-        # video from the locally drawn forest; no third-party footage is used.
+    filters = ["-vf", scale]
+    if item.get("background_motion") == "calm_rain" and item.get("motion_overlay"):
+        # The 3840px rain sheet travels over a 1920px viewport and loops. This
+        # creates clearly visible motion while keeping all artwork project-owned.
+        graph = ("[0:v]scale=1120:1992,crop=1080:1920:"
+                 "x='20+12*sin(t/5)':y='36+10*cos(t/6)',"
+                 "eq=brightness='0.012*sin(t/3)'[base];"
+                 "[2:v]format=rgba[rain];"
+                 "[base][rain]overlay=x=0:y='-1920+mod(t*620,1920)':shortest=1,setsar=1[v]")
+        filters = ["-filter_complex", graph]
+        mapping = ["-map", "[v]", "-map", "1:a:0"]
+    elif item.get("background_motion") == "calm_rain":
         scale = ("scale=1120:1992,crop=1080:1920:"
                  "x='20+12*sin(t/5)':y='36+10*cos(t/6)',"
                  "noise=alls=5:allf=t+u,eq=brightness='0.008*sin(t/4)',setsar=1")
-    run_media(["-y", *inputs, *mapping, "-t", duration, "-vf", scale,
+        filters = ["-vf", scale]
+    run_media(["-y", *inputs, *mapping, "-t", duration, *filters,
                "-r", "30", "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
                "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(temporary)])
     validate_video(temporary, item["duration"])
