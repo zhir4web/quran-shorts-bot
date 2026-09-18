@@ -46,6 +46,7 @@ class CloudTests(unittest.TestCase):
         with patch.object(cloud, 'download_recording', side_effect=lambda e, p: p), \
              patch.object(cloud, 'make_card', side_effect=lambda e, p: p), \
              patch.object(bot, 'render', side_effect=self.render), \
+             patch.object(cloud.time, 'sleep'), \
              patch.object(bot, 'upload', upload or Mock(return_value='video123')) as uploader:
             cloud.run(SimpleNamespace(mode=mode), self.ledger, self.service)
             return uploader
@@ -222,6 +223,41 @@ class CloudTests(unittest.TestCase):
             with self.assertRaises(cloud.TooLongRecording):
                 cloud.download_quran_verse(entry, self.root / 'recitation.mp3')
 
+    def test_bilingual_metadata_has_verified_order_and_no_kurdish(self):
+        entry = dict(ENTRY, verse_number=3, verse_key='112:3', ayah_text='لَمْ يَلِدْ وَلَمْ يُولَدْ',
+                     reciter_en='Test Reciter', style='Murattal', recitation_id=1)
+        job = cloud.item_for(entry, self.root / 'audio.mp3', self.root / 'card.png')
+        self.assertIn('سورة الإخلاص، الآية 3', job['title'])
+        self.assertIn('Surah Al-Ikhlas, Ayah 3', job['title'])
+        parts = job['description'].split('\n\n')
+        self.assertEqual(parts[0], entry['ayah_text'])
+        self.assertTrue(parts[1].startswith('Beautiful Quran recitation'))
+        self.assertEqual(parts[2], entry['attribution'])
+        self.assertEqual(parts[3], entry['permission_url'])
+        self.assertNotIn('ک', job['description'])
+
+    def test_claim_detection_blocks_reciter_and_records_incident(self):
+        self.ledger.data['jobs'] = {'job': {'status': 'uploaded', 'video_id': 'blocked-video',
+                                                   'reciter_id': 12}}
+        self.service.videos.return_value.list.return_value.execute.return_value = {
+            'items': [{'id': 'blocked-video', 'status': {'uploadStatus': 'rejected',
+                                                         'rejectionReason': 'copyright'},
+                       'contentDetails': {}}]}
+        catalog = {'allowed_reciter_ids': [1, 12], 'blocked_reciter_ids': []}
+        incidents = cloud.check_upload_restrictions(self.service, self.ledger, catalog)
+        self.assertEqual(incidents[0]['reason'], 'copyright')
+        self.ledger.block_reciter.assert_called_once_with(catalog, 12)
+        self.assertEqual(self.ledger.data['jobs']['job']['safety_incident']['video_id'], 'blocked-video')
+
+    def test_failed_comment_never_breaks_completed_upload(self):
+        with patch.object(bot, 'post_cta_comment', return_value=(4, False)):
+            self.execute()
+        row = self.ledger.data['jobs'][ENTRY['id']]
+        self.assertEqual(row['status'], 'uploaded')
+        self.assertEqual(row['video_id'], 'video123')
+        self.assertFalse(row['cta_comment_succeeded'])
+
 
 if __name__ == '__main__':
     unittest.main()
+
