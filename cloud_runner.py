@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -756,6 +756,56 @@ def run_performance_report(service, ledger):
     return summary
 
 
+BAGHDAD = timezone(timedelta(hours=3), 'Asia/Baghdad')
+PUBLICATION_HOURS = (11, 16, 20)
+
+
+def next_schedule_slot(jobs, now=None):
+    """Catch up daytime slots once; overnight manual tests are separate.
+
+    Legacy/manual daytime uploads count toward the target. No catch-up after
+    22:00 or across dates. Space delayed uploads at least twenty minutes apart.
+    """
+    local = (now or datetime.now(timezone.utc)).astimezone(BAGHDAD)
+    if not PUBLICATION_HOURS[0] <= local.hour < 22:
+        return None
+    prefix = local.date().isoformat() + '/'
+    completed = set()
+    unassigned = 0
+    latest = None
+    for row in jobs.values():
+        if row.get('status') != 'uploaded':
+            continue
+        slot = row.get('schedule_slot', '')
+        if slot.startswith(prefix):
+            completed.add(slot)
+        stamp = row.get('uploaded_at') or row.get('started_at')
+        if stamp:
+            try:
+                uploaded = datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+                if uploaded.tzinfo is None:
+                    raise ValueError('Upload time must include timezone')
+                uploaded = uploaded.astimezone(BAGHDAD)
+            except (ValueError, TypeError):
+                raise CloudError('Invalid ledger upload time; stopping to prevent extra posts')
+            if uploaded.date() == local.date() and uploaded.hour >= PUBLICATION_HOURS[0]:
+                latest = max(latest, uploaded) if latest else uploaded
+                if not slot.startswith(prefix):
+                    unassigned += 1
+    if latest and (local - latest).total_seconds() < 20 * 60:
+        return None
+    for hour in PUBLICATION_HOURS:
+        slot = prefix + f'{hour:02d}:00'
+        if slot in completed:
+            continue
+        if unassigned:
+            unassigned -= 1
+            continue
+        if local.hour >= hour:
+            return slot
+    return None
+
+
 def run(args, ledger=None, service=None):
     config = bot.read_json(ROOT / 'automation.json')
     if config.get('privacy', 'private') not in ('private', 'unlisted', 'public'):
@@ -763,14 +813,29 @@ def run(args, ledger=None, service=None):
     catalog = load_catalog(ROOT / 'catalog.json')
     if not catalog:
         raise RuntimeError('No verified recordings configured. Publishing remains inactive.')
-    if args.mode == 'publish' and config.get('enabled') is not True:
+    if args.mode in ('publish', 'scheduled') and config.get('enabled') is not True:
         raise RuntimeError('Automatic publishing is not activated')
-    if args.mode == 'publish' and not config.get('channel_id'):
+    if args.mode in ('publish', 'scheduled') and not config.get('channel_id'):
         raise RuntimeError('An expected YouTube channel must be configured before publishing')
     if ledger:
         ledger.load()
     jobs = ledger.data['jobs'] if ledger else {}
-    if args.mode == 'publish' and ledger and service and isinstance(catalog, dict) and catalog.get('schema') == 3:
+    schedule_slot = None
+    if args.mode == 'scheduled':
+        if not ledger or not service:
+            raise CloudError('Scheduled publishing requires a durable ledger and YouTube service')
+        if any(row.get('status') == 'uploading' for row in jobs.values()):
+            raise CloudError('An earlier upload is uncertain; review it before retrying')
+        schedule_slot = next_schedule_slot(jobs)
+        message = ('Schedule: catching up slot ' + schedule_slot if schedule_slot else
+                   'Schedule: no slot due (completed, spacing limit, or outside 11:00-22:00 Baghdad).')
+        print(message)
+        if os.environ.get('GITHUB_STEP_SUMMARY'):
+            with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as handle:
+                handle.write('## Publication schedule\n\n' + message + '\n')
+        if not schedule_slot:
+            return
+    if args.mode in ('publish', 'scheduled') and ledger and service and isinstance(catalog, dict) and catalog.get('schema') == 3:
         try:
             check_upload_restrictions(service, ledger, catalog)
         except Exception:
@@ -825,6 +890,8 @@ def run(args, ledger=None, service=None):
                          'visual_theme': entry.get('visual_theme'),
                          'render_sha256': bot.file_hash(target),
                          'started_at': datetime.now(timezone.utc).isoformat()}
+    if schedule_slot:
+        jobs[entry['id']]['schedule_slot'] = schedule_slot
     if next_cursor is not None:
         ledger.data['cursor'] = next_cursor
     ledger.save()  # Must succeed BEFORE sending any upload bytes.
@@ -847,7 +914,7 @@ def run(args, ledger=None, service=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['preview', 'publish', 'report'])
+    parser.add_argument('mode', choices=['preview', 'publish', 'scheduled', 'report'])
     args = parser.parse_args()
     try:
         if args.mode == 'preview':
@@ -875,4 +942,3 @@ def main():
 
 if __name__ == '__main__':
     raise SystemExit(main())
-
