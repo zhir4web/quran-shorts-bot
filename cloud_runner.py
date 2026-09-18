@@ -44,6 +44,7 @@ class RemoteLedger:
         if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
             raise ValueError('Invalid repository')
         self.url = f'https://api.github.com/repos/{repository}/contents/{STATE_PATH}'
+        self.catalog_url = f'https://api.github.com/repos/{repository}/contents/catalog.json'
         self.branch = branch
         self.session = requests.Session()
         self.session.headers.update({'Authorization': f'Bearer {token}',
@@ -82,6 +83,30 @@ class RemoteLedger:
         if response.status_code not in (200, 201):
             raise RuntimeError(f'Remote ledger not saved (HTTP {response.status_code}); no new upload will start')
         self.sha = response.json()['content']['sha']
+
+    def block_reciter(self, catalog, reciter_id):
+        """Persist a newly unsafe reciter without changing the reviewed allowlist."""
+        if reciter_id in catalog.get('blocked_reciter_ids', []):
+            return
+        response = self.session.get(self.catalog_url, params={'ref': self.branch}, timeout=30)
+        if response.status_code != 200:
+            raise RuntimeError(f'Cannot read catalog for safety update (HTTP {response.status_code})')
+        payload = response.json()
+        remote = json.loads(base64.b64decode(payload['content']))
+        blocked = remote.setdefault('blocked_reciter_ids', [])
+        if reciter_id not in blocked:
+            blocked.append(reciter_id)
+            blocked.sort()
+        remote['allowed_reciter_ids'] = [value for value in remote.get('allowed_reciter_ids', [])
+                                         if value != reciter_id]
+        body = {'message': 'Auto-block reciter after YouTube restriction [skip ci]',
+                'content': base64.b64encode(json.dumps(remote, ensure_ascii=False, indent=2).encode()).decode(),
+                'branch': self.branch, 'sha': payload['sha']}
+        written = self.session.put(self.catalog_url, json=body, timeout=30)
+        if written.status_code not in (200, 201):
+            raise RuntimeError(f'Cannot save catalog safety update (HTTP {written.status_code})')
+        catalog['blocked_reciter_ids'] = sorted(set(catalog.get('blocked_reciter_ids', [])) | {reciter_id})
+        catalog['allowed_reciter_ids'] = [value for value in catalog['allowed_reciter_ids'] if value != reciter_id]
 
 
 def get_json(url, params=None):
@@ -531,25 +556,83 @@ def make_motion_overlay(entry, destination):
 
 
 def item_for(entry, source, background, motion_overlay=None):
+    cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
+    cta = bot.CTA_COMMENTS[cta_index]
     if entry.get('verse_number'):
-        style = f" ({entry['style']})" if entry.get('style') else ''
-        title = f"سورة {entry['surah_ar']}، الآية {entry['verse_number']} | {entry['reciter_ar']}{style} #Shorts"
+        suffix = f" | Surah {entry['surah_en']}, Ayah {entry['verse_number']} #Shorts"
+        prefix = f"سورة {entry['surah_ar']}، الآية {entry['verse_number']} | القارئ "
+        reciter = entry['reciter_ar']
+        room = max(1, 100 - len(prefix) - len(suffix))
+        title = prefix + reciter[:room].rstrip() + suffix
         description = (f"{entry.get('ayah_text', '')}\n\n"
-                       f"تلاوة كاملة للآية {entry['verse_key']} من سورة {entry['surah_ar']}، "
-                       f"دون تغيير سرعة التلاوة.\n{entry['permission_url']}")
+                       f"Beautiful Quran recitation — Surah {entry['surah_en']}, "
+                       f"Ayah {entry['verse_number']}, recited by {entry['reciter_en']}\n\n"
+                       f"{entry['attribution']}\n\n{entry['permission_url']}\n\n{cta}")
     else:
-        title = f"سورة {entry['surah_ar']} | {entry['reciter_ar']} #Shorts"
-        description = f"سورة {entry['surah_ar']} كاملة، دون تغيير سرعة التلاوة.\n{entry['permission_url']}"
+        suffix = f" | Surah {entry['surah_en']} #Shorts"
+        prefix = f"سورة {entry['surah_ar']} | القارئ "
+        room = max(1, 100 - len(prefix) - len(suffix))
+        title = prefix + entry['reciter_ar'][:room].rstrip() + suffix
+        description = (f"Beautiful Quran recitation — Surah {entry['surah_en']}, "
+                       f"recited by {entry.get('reciter_en', entry['reciter_ar'])}\n\n"
+                       f"{entry['attribution']}\n\n{entry['permission_url']}\n\n{cta}")
     item = {'id': entry['id'], 'mode': 'compose', 'source': str(source.resolve()),
             'background': str(background.resolve()), 'start': 0, 'duration': entry['duration'],
             'background_motion': 'premium_motion',
             'visual_theme': entry.get('visual_theme', 'forest_rain'),
-            'title': title, 'description': description,
+            'title': title, 'description': description, 'metadata_complete': True,
+            'surah_ar': entry['surah_ar'], 'surah_en': entry['surah_en'],
+            'reciter_ar': entry['reciter_ar'],
+            'reciter_en': entry.get('reciter_en', entry['reciter_ar']),
+            'cta_description_variant': cta_index,
             'attribution': entry['attribution'], 'rights': entry['rights'],
             'rights_confirmed': True, 'made_for_kids': False}
     if motion_overlay:
         item['motion_overlay'] = str(motion_overlay.resolve())
     return item
+
+
+def restriction_reason(video):
+    status = video.get('status', {})
+    details = video.get('contentDetails', {})
+    upload_status = status.get('uploadStatus')
+    if upload_status in {'rejected', 'failed', 'deleted'}:
+        return status.get('rejectionReason') or status.get('failureReason') or upload_status
+    regions = details.get('regionRestriction', {})
+    if regions.get('blocked'):
+        return 'region blocked: ' + ','.join(regions['blocked'][:20])
+    if regions.get('allowed'):
+        return 'region restricted to: ' + ','.join(regions['allowed'][:20])
+    return None
+
+
+def check_upload_restrictions(service, ledger, catalog):
+    """Auto-block reciters when YouTube reports a takedown or region restriction."""
+    tracked = [(job_id, row) for job_id, row in ledger.data['jobs'].items()
+               if row.get('status') == 'uploaded' and row.get('video_id') and row.get('reciter_id')]
+    if not tracked:
+        return []
+    incidents = []
+    for offset in range(0, len(tracked), 50):
+        batch = tracked[offset:offset + 50]
+        ids = ','.join(row['video_id'] for _, row in batch)
+        response = service.videos().list(part='status,contentDetails', id=ids).execute()
+        videos = {row['id']: row for row in response.get('items', [])}
+        for job_id, row in batch:
+            video = videos.get(row['video_id'])
+            reason = restriction_reason(video) if video else None
+            if not reason or row.get('safety_incident'):
+                continue
+            reciter_id = int(row['reciter_id'])
+            ledger.block_reciter(catalog, reciter_id)
+            incident = {'video_id': row['video_id'], 'reciter_id': reciter_id,
+                        'reason': reason, 'timestamp': datetime.now(timezone.utc).isoformat()}
+            row['safety_incident'] = incident
+            incidents.append(incident)
+    if incidents:
+        ledger.data.setdefault('incidents', []).extend(incidents)
+        ledger.save()
+    return incidents
 
 
 def run(args, ledger=None, service=None):
@@ -566,6 +649,11 @@ def run(args, ledger=None, service=None):
     if ledger:
         ledger.load()
     jobs = ledger.data['jobs'] if ledger else {}
+    if args.mode == 'publish' and ledger and service and isinstance(catalog, dict) and catalog.get('schema') == 3:
+        try:
+            check_upload_restrictions(service, ledger, catalog)
+        except Exception:
+            print('YouTube restriction check was unavailable; publishing safety rules remain unchanged')
     if any(row.get('status') == 'uploading' for row in jobs.values()):
         raise RuntimeError('An earlier upload is uncertain. Check YouTube Studio before continuing.')
     next_cursor = None
@@ -611,15 +699,27 @@ def run(args, ledger=None, service=None):
     if config['channel_id'] not in [row['id'] for row in channels.get('items', [])]:
         raise RuntimeError('Authorized YouTube channel does not match the configured channel')
     jobs[entry['id']] = {'status': 'uploading', 'audio_sha256': entry['sha256'],
+                         'reciter_id': entry.get('recitation_id'),
                          'render_sha256': bot.file_hash(target),
                          'started_at': datetime.now(timezone.utc).isoformat()}
     if next_cursor is not None:
         ledger.data['cursor'] = next_cursor
     ledger.save()  # Must succeed BEFORE sending any upload bytes.
     video_id = bot.upload(service, job, target, config.get('privacy', 'private'))
-    jobs[entry['id']].update(status='uploaded', video_id=video_id)
+    cta_index, comment_ok = bot.post_cta_comment(service, video_id)
+    jobs[entry['id']].update(status='uploaded', video_id=video_id,
+                             uploaded_at=datetime.now(timezone.utc).isoformat(),
+                             cta_comment_variant=cta_index,
+                             cta_comment_succeeded=comment_ok)
     ledger.save()
     print('Uploaded: https://www.youtube.com/watch?v=' + video_id)
+    # Processing signals can appear shortly after upload. This check is best-effort;
+    # the next scheduled run checks every tracked upload again.
+    time.sleep(12)
+    try:
+        check_upload_restrictions(service, ledger, catalog)
+    except Exception:
+        print('Post-upload restriction check deferred to the next scheduled run')
 
 
 def main():
@@ -649,3 +749,4 @@ def main():
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
