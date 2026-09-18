@@ -16,7 +16,7 @@ ENTRY = dict(id='sample-112', verified=True, whole_recording=True,
              audio_url='https://example.com/112.mp3', permission_url='https://example.com/license',
              surah_ar='الإخلاص', surah_en='Al-Ikhlas', reciter_ar='اسم القارئ',
              attribution='Test fixture only', rights='Test fixture only',
-             sha256='a' * 64, duration=20)
+             sha256='a' * 64, duration=35)
 
 
 class CloudTests(unittest.TestCase):
@@ -43,14 +43,77 @@ class CloudTests(unittest.TestCase):
         target.write_bytes(b'test media')
         return target
 
-    def execute(self, mode='publish', upload=None):
+    def execute(self, mode='publish', upload=None, measured=None):
         with patch.object(cloud, 'download_recording', side_effect=lambda e, p: p), \
              patch.object(cloud, 'make_card', side_effect=lambda e, p: p), \
              patch.object(bot, 'render', side_effect=self.render), \
              patch.object(cloud.time, 'sleep'), \
+             patch.object(cloud, 'media_duration', side_effect=measured or [35, 35]), \
              patch.object(bot, 'upload', upload or Mock(return_value='video123')) as uploader:
             cloud.run(SimpleNamespace(mode=mode), self.ledger, self.service)
             return uploader
+
+
+    def test_short_source_and_short_final_video_never_upload(self):
+        for durations in ([6], [29.99], [35, 6], [35, 29.99]):
+            with self.subTest(durations=durations):
+                uploader = Mock()
+                with self.assertRaises(cloud.TooShortRecording):
+                    self.execute(upload=uploader, measured=durations)
+                uploader.assert_not_called()
+                self.ledger.save.assert_not_called()
+
+    def test_measured_short_verse_never_gets_silence_padding(self):
+        entry = dict(ENTRY, audio_url='https://example.com/verse.mp3',
+                     max_audio_seconds=58, tail_silence_seconds=1)
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.iter_content.return_value = [b'audio']
+        with patch.object(cloud.requests, 'get', return_value=response), \
+             patch.object(cloud, 'media_duration', return_value=6), \
+             patch.object(bot, 'run_media') as media:
+            with self.assertRaises(cloud.TooShortRecording):
+                cloud.download_quran_verse(entry, self.root / 'short.mp3')
+        media.assert_not_called()
+
+    def test_exactly_thirty_seconds_is_allowed(self):
+        uploader = self.execute(measured=[30, 30])
+        uploader.assert_called_once()
+
+    def test_final_frame_metadata_enforces_minimum_without_tolerance(self):
+        for seconds in (6, 29.99, 30):
+            with self.subTest(seconds=seconds), \
+                 patch('imageio_ffmpeg.read_frames', return_value=(x for x in [
+                     {'size': (1080, 1920), 'duration': seconds}])), \
+                 patch.object(bot, 'run_media'):
+                if seconds < 30:
+                    with self.assertRaisesRegex(ValueError, 'minimum'):
+                        bot.validate_video(self.root / 'video.mp4', 30, minimum=30)
+                else:
+                    bot.validate_video(self.root / 'video.mp4', 30, minimum=30)
+
+    def test_six_second_api_candidate_is_skipped(self):
+        catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
+                   'tail_silence_seconds': 1, 'max_ayah_characters': 180,
+                   'permission_url': 'https://example.com/license', 'attribution': 'test',
+                   'rights': 'test', 'visual_style': 'premium_rotating_scenes',
+                   'visual_themes': ['forest_rain']}
+        def api(url, params=None):
+            if 'resources/recitations' in url:
+                return {'recitations': [{'id': 1, 'reciter_name': 'Test'}]}
+            if url.endswith('/chapters'):
+                return {'chapters': [{'id': 1, 'verses_count': 6236,
+                                     'name_arabic': 'Test', 'name_simple': 'Test'}]}
+            if 'quran/verses/uthmani' in url:
+                return {'verses': [{'text_uthmani': 'test text'}]}
+            return {'audio_files': [{'duration': 6 if url.endswith('1:1') else 35,
+                                     'url': 'test.mp3'}]}
+        with patch.object(cloud, 'get_json', side_effect=api):
+            entry, cursor = cloud.verse_entry_for_position(catalog, {}, 0)
+        self.assertEqual(entry['verse_key'], '1:2')
+        self.assertEqual(cursor, 2)
+        self.assertEqual(entry['min_audio_seconds'], 30)
 
     def test_write_ahead_then_upload_then_completion(self):
         events = []
@@ -155,7 +218,7 @@ class CloudTests(unittest.TestCase):
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ'}]}
             verse = url.rsplit('/', 1)[-1]
-            return {'audio_files': [{'duration': 10, 'url': f'Test/{verse}.mp3'}]}
+            return {'audio_files': [{'duration': 35, 'url': f'Test/{verse}.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
             first, _ = cloud.verse_entry_for_position(catalog, {}, 0)
             second, _ = cloud.verse_entry_for_position(catalog, {}, 1)
@@ -187,7 +250,7 @@ class CloudTests(unittest.TestCase):
                 return {'chapters': chapters}
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'قُلْ هُوَ اللَّهُ أَحَدٌ'}]}
-            return {'audio_files': [{'duration': 10, 'url': 'safe/test.mp3'}]}
+            return {'audio_files': [{'duration': 35, 'url': 'safe/test.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
             chosen = [cloud.verse_entry_for_position(catalog, {}, pos)[0]['recitation_id']
                       for pos in range(8)]
@@ -205,10 +268,10 @@ class CloudTests(unittest.TestCase):
         def render(args):
             Path(args[-1]).write_bytes(b'complete verse plus silence')
         with patch.object(cloud.requests, 'get', return_value=response), \
-             patch.object(cloud, 'media_duration', side_effect=[10.25, 11.25]), \
+             patch.object(cloud, 'media_duration', side_effect=[30.25, 31.25]), \
              patch.object(bot, 'run_media', side_effect=render):
             cloud.download_quran_verse(entry, target)
-        self.assertEqual(entry['duration'], 11.25)
+        self.assertEqual(entry['duration'], 31.25)
         self.assertTrue(target.is_file())
 
     def test_overlong_complete_verse_is_skipped_not_trimmed(self):
