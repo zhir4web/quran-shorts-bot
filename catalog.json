@@ -4,6 +4,7 @@
   "reciters": "allowlist",
   "allowed_reciter_ids": [1, 2, 3, 4, 12],
   "blocked_reciter_ids": [5],
+  "proposed_reciter_ids_for_review": [6, 7, 8, 9, 10, 11],
   "content": "complete_verses",
   "max_audio_seconds": 58,
   "tail_silence_seconds": 1,
@@ -15,3 +16,4 @@
   "attribution": "Recitation audio provided by Quran Foundation (Quran.com)",
   "rights": "Used in a credited social-media video under the Quran Foundation Developer Terms"
 }
+
