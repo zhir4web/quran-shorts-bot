@@ -309,6 +309,82 @@ class CloudTests(unittest.TestCase):
         self.assertIn('temporarily unavailable', text)
 
 
+
+
+class ScheduleTests(unittest.TestCase):
+    def now(self, hour, minute=0, day=18):
+        return datetime(2026, 9, day, hour, minute, tzinfo=cloud.BAGHDAD)
+
+    def row(self, hour=11, slot='2026-09-18/11:00'):
+        return {'status': 'uploaded', 'video_id': 'test',
+                'uploaded_at': self.now(hour).isoformat(), 'schedule_slot': slot}
+
+    def test_baghdad_boundary_and_utc_conversion(self):
+        self.assertIsNone(cloud.next_schedule_slot({}, self.now(10, 59)))
+        self.assertEqual(cloud.next_schedule_slot({}, self.now(11).astimezone(timezone.utc)),
+                         '2026-09-18/11:00')
+        self.assertIsNone(cloud.next_schedule_slot({}, self.now(22)))
+        self.assertIsNone(cloud.next_schedule_slot({}, self.now(2)))
+
+    def test_duplicate_triggers_wait_for_next_slot(self):
+        jobs = {'a': self.row()}
+        self.assertIsNone(cloud.next_schedule_slot(jobs, self.now(14)))
+        self.assertEqual(cloud.next_schedule_slot(jobs, self.now(16)), '2026-09-18/16:00')
+
+    def test_delayed_run_catches_oldest_slot_and_daily_cap(self):
+        jobs = {}
+        for hour in (11, 16, 20):
+            slot = f'2026-09-18/{hour:02d}:00'
+            self.assertEqual(cloud.next_schedule_slot(jobs, self.now(21)), slot)
+            jobs[str(hour)] = self.row(hour, slot)
+        self.assertIsNone(cloud.next_schedule_slot(jobs, self.now(21)))
+        self.assertEqual(cloud.next_schedule_slot(jobs, self.now(11, day=19)),
+                         '2026-09-19/11:00')
+
+    def test_legacy_daytime_upload_counts_but_overnight_test_does_not(self):
+        self.assertIsNone(cloud.next_schedule_slot({'a': self.row(slot='')}, self.now(14)))
+        self.assertEqual(cloud.next_schedule_slot({'a': self.row(3, '')}, self.now(14)),
+                         '2026-09-18/11:00')
+
+    def test_backlog_uploads_have_spacing(self):
+        jobs = {'a': self.row(20)}
+        self.assertIsNone(cloud.next_schedule_slot(jobs, self.now(20, 19)))
+        self.assertEqual(cloud.next_schedule_slot(jobs, self.now(20, 20)),
+                         '2026-09-18/16:00')
+
+    def test_malformed_timestamp_fails_closed(self):
+        row = self.row(); row['uploaded_at'] = 'not-a-date'
+        with self.assertRaises(cloud.CloudError):
+            cloud.next_schedule_slot({'a': row}, self.now(14))
+
+
+class ScheduledFlowTests(unittest.TestCase):
+    setUp = CloudTests.setUp
+    persist = CloudTests.persist
+    render = CloudTests.render
+    execute = CloudTests.execute
+
+    def test_scheduled_noop_never_renders_or_uploads(self):
+        with patch.object(cloud, 'next_schedule_slot', return_value=None), \
+             patch.object(bot, 'render') as render:
+            uploader = self.execute(mode='scheduled')
+        render.assert_not_called()
+        uploader.assert_not_called()
+        self.ledger.save.assert_not_called()
+
+    def test_slot_is_saved_before_upload_and_survives_completion(self):
+        slot = '2026-09-18/11:00'
+        upload = Mock(side_effect=lambda *a: self.assertEqual(
+            self.ledger.data['jobs'][ENTRY['id']]['schedule_slot'], slot) or 'video123')
+        with patch.object(cloud, 'next_schedule_slot', return_value=slot):
+            self.execute(mode='scheduled', upload=upload)
+        self.assertEqual(self.ledger.data['jobs'][ENTRY['id']]['schedule_slot'], slot)
+        self.assertEqual(self.ledger.data['jobs'][ENTRY['id']]['status'], 'uploaded')
+
+    def test_uncertain_upload_is_not_retried_by_heartbeat(self):
+        self.ledger.data['jobs']['uncertain'] = {'status': 'uploading'}
+        with self.assertRaises(cloud.CloudError):
+            self.execute(mode='scheduled')
+
 if __name__ == '__main__':
     unittest.main()
-
