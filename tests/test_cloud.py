@@ -133,7 +133,10 @@ class CloudTests(unittest.TestCase):
     def test_verse_rotation_changes_reciter_and_verse(self):
         catalog = {'schema': 3, 'provider': 'quran_foundation', 'reciters': 'allowlist',
                    'allowed_reciter_ids': [1, 2], 'blocked_reciter_ids': [5],
-                   'visual_style': 'calm_forest_rain',
+                   'visual_style': 'premium_rotating_scenes',
+                   'visual_themes': ['forest_rain', 'mist_mountains', 'starry_night',
+                                     'ocean_moon', 'dawn_mosque'],
+                   'show_verified_ayah_text': True, 'max_ayah_characters': 180,
                    'content': 'complete_verses', 'max_audio_seconds': 58,
                    'tail_silence_seconds': 1, 'permission_url': 'https://api-docs.quran.com/legal/developer-terms/',
                    'attribution': 'Quran Foundation', 'rights': 'Test rights'}
@@ -147,6 +150,8 @@ class CloudTests(unittest.TestCase):
                 return {'recitations': reciters}
             if url.endswith('/chapters'):
                 return {'chapters': chapters}
+            if 'quran/verses/uthmani' in url:
+                return {'verses': [{'text_uthmani': 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ'}]}
             verse = url.rsplit('/', 1)[-1]
             return {'audio_files': [{'duration': 10, 'url': f'Test/{verse}.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
@@ -154,11 +159,17 @@ class CloudTests(unittest.TestCase):
             second, _ = cloud.verse_entry_for_position(catalog, {}, 1)
         self.assertNotEqual(first['reciter_en'], second['reciter_en'])
         self.assertNotEqual(first['verse_key'], second['verse_key'])
+        self.assertNotEqual(first['visual_theme'], second['visual_theme'])
+        self.assertTrue(first['ayah_text'])
 
     def test_blocked_reciter_is_never_selected(self):
         catalog = {'schema': 3, 'provider': 'quran_foundation', 'reciters': 'allowlist',
                    'allowed_reciter_ids': [1, 2], 'blocked_reciter_ids': [5],
-                   'visual_style': 'calm_forest_rain', 'content': 'complete_verses',
+                   'visual_style': 'premium_rotating_scenes',
+                   'visual_themes': ['forest_rain', 'mist_mountains', 'starry_night',
+                                     'ocean_moon', 'dawn_mosque'],
+                   'show_verified_ayah_text': True, 'max_ayah_characters': 180,
+                   'content': 'complete_verses',
                    'max_audio_seconds': 58, 'tail_silence_seconds': 1,
                    'permission_url': 'https://api-docs.quran.com/legal/developer-terms/',
                    'attribution': 'Quran Foundation', 'rights': 'verified'}
@@ -172,6 +183,8 @@ class CloudTests(unittest.TestCase):
                 return {'recitations': reciters}
             if url.endswith('/chapters'):
                 return {'chapters': chapters}
+            if 'quran/verses/uthmani' in url:
+                return {'verses': [{'text_uthmani': 'قُلْ هُوَ اللَّهُ أَحَدٌ'}]}
             return {'audio_files': [{'duration': 10, 'url': 'safe/test.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
             chosen = [cloud.verse_entry_for_position(catalog, {}, pos)[0]['recitation_id']
