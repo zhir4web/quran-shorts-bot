@@ -7,7 +7,10 @@
   "content": "complete_verses",
   "max_audio_seconds": 58,
   "tail_silence_seconds": 1,
-  "visual_style": "calm_forest_rain",
+  "visual_style": "premium_rotating_scenes",
+  "visual_themes": ["forest_rain", "mist_mountains", "starry_night", "ocean_moon", "dawn_mosque"],
+  "show_verified_ayah_text": true,
+  "max_ayah_characters": 180,
   "permission_url": "https://api-docs.quran.com/legal/developer-terms/",
   "attribution": "Recitation audio provided by Quran Foundation (Quran.com)",
   "rights": "Used in a credited social-media video under the Quran Foundation Developer Terms"
