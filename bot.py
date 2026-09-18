@@ -17,7 +17,20 @@ from contextlib import contextmanager
 
 ROOT = Path(__file__).resolve().parent
 LOG = logging.getLogger("quran-bot")
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload",
+          "https://www.googleapis.com/auth/youtube.readonly",
+          "https://www.googleapis.com/auth/youtube.force-ssl"]
+
+CTA_COMMENTS = (
+    "اذكر الله بكلمة طيبة في التعليقات، واشترك ليصلك المزيد من القرآن. 🤍\nLeave a short dhikr below and subscribe for more Quran recitations.",
+    "ما الدعاء الذي تحب أن تردده اليوم؟ اكتبه في التعليقات واشترك للمزيد.\nShare a short dua for today, and subscribe for more peaceful recitations.",
+    "سبحان الله، والحمد لله، والله أكبر. أضف ذكرك في التعليقات واشترك.\nShare a brief dhikr in the comments and subscribe to keep the Quran close.",
+    "اكتب دعاءً قصيرًا لمن يقرأ تعليقك، واشترك ليصلك كل جديد.\nLeave a short dua for everyone reading, and subscribe for upcoming recitations.",
+    "اجعل تعليقك ذكرًا نافعًا، واشترك لتستمع إلى آيات جديدة.\nMake your comment a beautiful dhikr, and subscribe for new Quran verses.",
+    "اللهم اجعل القرآن نور قلوبنا. شارك دعاءك واشترك للمزيد.\nShare a heartfelt dua below and subscribe for more Quran recitation.",
+    "أي ذكر يطمئن قلبك؟ اكتبه في التعليقات واشترك لتتابع التلاوات.\nWhich dhikr brings you peace? Comment it below and subscribe for more.",
+    "اترك كلمة طيبة أو دعاءً قصيرًا، واشترك حتى لا تفوتك التلاوة القادمة.\nLeave a kind dua or dhikr, and subscribe so you do not miss the next recitation.",
+)
 
 
 def atomic_json(path, value):
@@ -81,7 +94,48 @@ def load_queue(path):
 
 
 def description(item):
+    if item.get("metadata_complete") is True:
+        return item.get("description", "").strip()
     return f"{item.get('description', '')}\n\n{item['attribution']}\n\n#Quran #Shorts".strip()
+
+
+def dynamic_tags(item):
+    candidates = ["Quran", "Quran recitation", "Islamic shorts",
+                  item.get("surah_ar"), item.get("surah_en"), item.get("reciter_ar"),
+                  item.get("reciter_en"), "quran verses", "quran audio", "quran shorts", "islam"]
+    tags, seen, total = [], set(), 0
+    for value in candidates:
+        tag = str(value or "").strip()
+        key = tag.casefold()
+        if not tag or key in seen or len(tag) > 100:
+            continue
+        # YouTube limits the combined tag field to 500 characters. Count commas too.
+        addition = len(tag) + (1 if tags else 0)
+        if total + addition > 500:
+            break
+        tags.append(tag)
+        seen.add(key)
+        total += addition
+    return tags
+
+
+def comment_variant(video_id):
+    index = int(hashlib.sha256(video_id.encode("utf-8")).hexdigest(), 16) % len(CTA_COMMENTS)
+    return index, CTA_COMMENTS[index]
+
+
+def post_cta_comment(youtube, video_id):
+    index, text = comment_variant(video_id)
+    try:
+        youtube.commentThreads().insert(
+            part="snippet",
+            body={"snippet": {"videoId": video_id,
+                               "topLevelComment": {"snippet": {"textOriginal": text}}}},
+        ).execute()
+        return index, True
+    except Exception:
+        LOG.warning("CTA comment could not be posted; the uploaded video remains valid")
+        return index, False
 
 
 def fingerprint(item):
@@ -284,7 +338,7 @@ def youtube_service(state, interactive=False):
 
 def upload(youtube, item, path, privacy):
     from googleapiclient.http import MediaFileUpload
-    body = {"snippet": {"title": item["title"], "description": description(item), "categoryId": "27", "tags": ["Quran", "Shorts"]},
+    body = {"snippet": {"title": item["title"], "description": description(item), "categoryId": "27", "tags": dynamic_tags(item)},
             "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": item["made_for_kids"]}}
     media = MediaFileUpload(str(path), mimetype="video/mp4", resumable=True, chunksize=8 * 1024 * 1024)
     try:
@@ -405,3 +459,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
+
