@@ -71,7 +71,7 @@ def load_queue(path):
             raise ValueError(f"{key}: description must be text")
         if item.get("background") is not None and not isinstance(item["background"], str):
             raise ValueError(f"{key}: background must be an image path")
-        if item.get("background_motion") not in (None, "calm_rain"):
+        if item.get("background_motion") not in (None, "calm_rain", "premium_motion"):
             raise ValueError(f"{key}: unsupported background motion")
         if item.get("motion_overlay") is not None and not isinstance(item["motion_overlay"], str):
             raise ValueError(f"{key}: motion overlay must be an image path")
@@ -205,7 +205,7 @@ def render(item, base, folder):
     target = folder / "video.mp4"
     temporary = folder / "rendering.mp4"
     filters = ["-vf", scale]
-    if item.get("background_motion") == "calm_rain" and item.get("motion_overlay"):
+    if item.get("background_motion") in ("calm_rain", "premium_motion") and item.get("motion_overlay"):
         # The 3840px rain sheet travels over a 1920px viewport and loops. This
         # creates clearly visible motion while keeping all artwork project-owned.
         graph = ("[0:v]scale=1120:1992,crop=1080:1920:"
@@ -215,7 +215,7 @@ def render(item, base, folder):
                  "[base][rain]overlay=x=0:y='-1920+mod(t*620,1920)':shortest=1,setsar=1[v]")
         filters = ["-filter_complex", graph]
         mapping = ["-map", "[v]", "-map", "1:a:0"]
-    elif item.get("background_motion") == "calm_rain":
+    elif item.get("background_motion") in ("calm_rain", "premium_motion"):
         scale = ("scale=1120:1992,crop=1080:1920:"
                  "x='20+12*sin(t/5)':y='36+10*cos(t/6)',"
                  "noise=alls=5:allf=t+u,eq=brightness='0.008*sin(t/4)',setsar=1")
@@ -224,6 +224,8 @@ def render(item, base, folder):
                "-r", "30", "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
                "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(temporary)])
     validate_video(temporary, item["duration"])
+    if item.get("background_motion") == "premium_motion":
+        validate_visible_motion(temporary, item["duration"])
     os.replace(temporary, target)
     atomic_json(folder / "metadata.json", {"title": item["title"], "description": description(item), "rights": item["rights"], "item": item})
     return target
@@ -241,6 +243,25 @@ def validate_video(path, expected):
     if abs(metadata["duration"] - expected) > 0.35:
         raise ValueError("Source is too short for the requested segment; choose complete verse boundaries")
     run_media(["-i", str(path), "-map", "0:v:0", "-map", "0:a:0", "-f", "null", "-"])
+
+
+def validate_visible_motion(path, duration):
+    """Fail closed when an intended video background is effectively static."""
+    from PIL import Image, ImageChops, ImageStat
+    first = Path(path).with_name("motion-check-first.png")
+    second = Path(path).with_name("motion-check-second.png")
+    later = min(2.5, max(1.0, float(duration) * 0.55))
+    try:
+        run_media(["-y", "-ss", "0.4", "-i", str(path), "-frames:v", "1", str(first)])
+        run_media(["-y", "-ss", str(later), "-i", str(path), "-frames:v", "1", str(second)])
+        with Image.open(first) as a, Image.open(second) as b:
+            difference = ImageChops.difference(a.convert("RGB"), b.convert("RGB"))
+            mean = sum(ImageStat.Stat(difference).mean) / 3
+        if mean < 2.0:
+            raise ValueError("Rendered background is effectively static")
+    finally:
+        first.unlink(missing_ok=True)
+        second.unlink(missing_ok=True)
 
 
 def youtube_service(state, interactive=False):
