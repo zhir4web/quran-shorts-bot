@@ -35,6 +35,10 @@ class CloudError(RuntimeError):
     """A diagnostic safe to display without external response bodies."""
 
 
+class TooShortRecording(RuntimeError):
+    """Complete recitation is below the minimum; select another, never pad it."""
+
+
 class TooLongRecording(RuntimeError):
     """The complete recording cannot fit safely in a YouTube Short."""
 
@@ -165,6 +169,9 @@ def validate_verse_catalog(data):
         raise ValueError('Only complete-verse publishing is supported')
     limit = float(data.get('max_audio_seconds', 0))
     tail = float(data.get('tail_silence_seconds', 0))
+    minimum = float(data.get('min_audio_seconds', 30))
+    if not 30 <= minimum <= limit:
+        raise ValueError('Minimum recitation duration must be at least 30 seconds and within the maximum')
     if limit <= 0 or limit + tail > 60 or tail < 0.5:
         raise ValueError('Invalid Short duration or ending-silence configuration')
     if not str(data.get('permission_url', '')).startswith('https://api-docs.quran.com/'):
@@ -239,7 +246,7 @@ def verse_entry_for_position(catalog, jobs, position):
             continue
         audio = files[0]
         hint = float(audio.get('duration') or 0)
-        if hint <= 0 or hint > float(catalog['max_audio_seconds']):
+        if not float(catalog.get('min_audio_seconds', 30)) <= hint <= float(catalog['max_audio_seconds']):
             continue
         relative_url = audio.get('url', '')
         if not relative_url or '://' in relative_url or '..' in relative_url:
@@ -261,6 +268,7 @@ def verse_entry_for_position(catalog, jobs, position):
             'reciter_ar': reciter_ar, 'reciter_en': reciter.get('reciter_name', ''), 'style': style,
             'permission_url': catalog['permission_url'], 'attribution': catalog['attribution'],
             'rights': catalog['rights'], 'verified': True, 'whole_recording': True,
+            'min_audio_seconds': max(30, float(catalog.get('min_audio_seconds', 30))),
             'max_audio_seconds': float(catalog['max_audio_seconds']),
             'tail_silence_seconds': float(catalog['tail_silence_seconds']),
             'visual_style': catalog['visual_style'],
@@ -355,6 +363,8 @@ def download_quran_verse(entry, destination):
                     raise ValueError('Verse recording exceeds the size limit')
                 handle.write(block)
     actual = media_duration(raw)
+    if actual < max(30, float(entry.get('min_audio_seconds', 30))):
+        raise TooShortRecording('Complete recitation is shorter than 30 seconds; selecting another verse')
     if actual > entry['max_audio_seconds']:
         raise TooLongRecording('Complete verse is too long for a Short')
     temporary = destination.with_suffix('.part.mp3')
@@ -578,6 +588,7 @@ def item_for(entry, source, background, motion_overlay=None):
                        f"{entry['attribution']}\n\n{entry['permission_url']}\n\n{cta}")
     item = {'id': entry['id'], 'mode': 'compose', 'source': str(source.resolve()),
             'background': str(background.resolve()), 'start': 0, 'duration': entry['duration'],
+            'min_duration_seconds': 30,
             'background_motion': 'premium_motion',
             'visual_theme': entry.get('visual_theme', 'forest_rain'),
             'title': title, 'description': description, 'metadata_complete': True,
@@ -851,13 +862,13 @@ def run(args, ledger=None, service=None):
             try:
                 source = download_recording(entry, workspace / 'recitation.mp3')
                 break
-            except TooLongRecording:
+            except (TooLongRecording, TooShortRecording):
                 cursor = next_cursor
                 if ledger:
                     ledger.data['cursor'] = cursor
                     ledger.save()
         else:
-            raise RuntimeError('No complete verse under the Shorts duration limit was found')
+            raise RuntimeError('No complete recitation between 30 seconds and the Shorts limit was found')
     else:
         entries = catalog
         for entry in entries:
@@ -869,6 +880,9 @@ def run(args, ledger=None, service=None):
             return
         workspace = ROOT / 'state' / 'cloud' / entry['id']
         source = download_recording(entry, workspace / 'recitation.mp3')
+    # Enforce the policy for every source type, including legacy catalogs.
+    if media_duration(source) < 30 or float(entry['duration']) < 30:
+        raise TooShortRecording('Recitation must be at least 30 seconds before rendering')
     card = make_card(entry, workspace / 'background.png')
     motion = make_motion_overlay(entry, workspace / 'moving-rain.png')
     job = item_for(entry, source, card, motion)
@@ -876,6 +890,8 @@ def run(args, ledger=None, service=None):
     bot.atomic_json(queue, {'items': [job]})
     bot.load_queue(queue)  # Apply the same metadata and permission checks as local runs.
     target = bot.render(job, ROOT, workspace)
+    if media_duration(target) < 30:
+        raise TooShortRecording('Rendered video is under 30 seconds; upload blocked')
     print('Preview ready:', target)
     if args.mode == 'preview':
         return
