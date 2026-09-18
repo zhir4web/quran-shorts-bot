@@ -635,6 +635,127 @@ def check_upload_restrictions(service, ledger, catalog):
     return incidents
 
 
+def _count(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def performance_averages(history, jobs, window=10):
+    """Return simple rolling view averages without affecting content selection."""
+    groups = {'reciters': {}, 'visual_themes': {}}
+    for job_id, row in jobs.items():
+        video_id = row.get('video_id')
+        samples = history.get(video_id, [])[-window:]
+        if not samples:
+            continue
+        values = [_count(sample.get('view_count')) for sample in samples]
+        reciter = row.get('reciter_name') or (
+            f"reciter {row['reciter_id']}" if row.get('reciter_id') else 'unknown')
+        theme = row.get('visual_theme') or 'unknown'
+        groups['reciters'].setdefault(reciter, []).extend(values)
+        groups['visual_themes'].setdefault(theme, []).extend(values)
+    return {kind: {name: round(sum(values) / len(values), 1)
+                   for name, values in sorted(rows.items())}
+            for kind, rows in groups.items()}
+
+
+def collect_performance_metrics(service, ledger, expected_privacy, now=None):
+    """Append YouTube statistics and update non-destructive health flags."""
+    now = now or datetime.now(timezone.utc)
+    jobs = ledger.data['jobs']
+    tracked = [(job_id, row) for job_id, row in jobs.items()
+               if row.get('status') == 'uploaded' and row.get('video_id')]
+    history = ledger.data.setdefault('metrics_history', {})
+    previous_flags = ledger.data.setdefault('health_flags', {})
+    current_flags = {}
+    new_flags = []
+    videos = {}
+    for offset in range(0, len(tracked), 50):
+        ids = ','.join(row['video_id'] for _, row in tracked[offset:offset + 50])
+        response = service.videos().list(part='statistics,status', id=ids).execute()
+        videos.update({video['id']: video for video in response.get('items', [])})
+    timestamp = now.isoformat()
+    for job_id, row in tracked:
+        video_id = row['video_id']
+        video = videos.get(video_id)
+        if not video:
+            continue
+        statistics = video.get('statistics', {})
+        privacy = video.get('status', {}).get('privacyStatus', 'unknown')
+        snapshot = {'timestamp': timestamp,
+                    'view_count': _count(statistics.get('viewCount')),
+                    'like_count': _count(statistics.get('likeCount')),
+                    'comment_count': _count(statistics.get('commentCount')),
+                    'privacy_status': privacy}
+        history.setdefault(video_id, []).append(snapshot)
+        flags = []
+        uploaded = row.get('uploaded_at') or row.get('started_at')
+        if uploaded:
+            try:
+                age = now - datetime.fromisoformat(uploaded.replace('Z', '+00:00'))
+                if age.total_seconds() > 48 * 3600 and snapshot['view_count'] == 0:
+                    flags.append('no traction')
+            except (TypeError, ValueError):
+                pass
+        if privacy != expected_privacy:
+            flags.append('visibility problem')
+        if flags:
+            current_flags[video_id] = flags
+            old = set(previous_flags.get(video_id, []))
+            for flag in flags:
+                if flag not in old:
+                    new_flags.append({'video_id': video_id, 'flag': flag})
+    ledger.data['health_flags'] = current_flags
+    averages = performance_averages(history, jobs)
+    ledger.data['performance_averages'] = averages
+    ledger.save()
+    return {'tracked': len(tracked), 'new_flags': new_flags, 'averages': averages,
+            'timestamp': timestamp}
+
+
+def performance_summary(report):
+    lines = ['## Quran Shorts performance report', '',
+             f"Generated: {report['timestamp']}",
+             f"Total uploaded videos tracked: {report['tracked']}", '']
+    if report['new_flags']:
+        lines.append('### Newly flagged videos')
+        for row in report['new_flags']:
+            lines.append(f"- [{row['flag']}](https://www.youtube.com/watch?v={row['video_id']}): "
+                         f"https://www.youtube.com/watch?v={row['video_id']}")
+    else:
+        lines.extend(['### Newly flagged videos', '- None'])
+    lines.extend(['', '### Rolling average views by reciter'])
+    reciters = report['averages']['reciters']
+    lines.extend([f'- {name}: {average:.1f}' for name, average in reciters.items()] or ['- No data yet'])
+    lines.extend(['', '### Rolling average views by visual theme'])
+    themes = report['averages']['visual_themes']
+    lines.extend([f'- {name}: {average:.1f}' for name, average in themes.items()] or ['- No data yet'])
+    return '\n'.join(lines) + '\n'
+
+
+def run_performance_report(service, ledger):
+    """Best-effort reporting entry point; monitoring must never fail publishing."""
+    try:
+        config = bot.read_json(ROOT / 'automation.json')
+        ledger.load()
+        report = collect_performance_metrics(service, ledger, config.get('privacy', 'private'))
+        summary = performance_summary(report)
+    except Exception:
+        summary = ('## Quran Shorts performance report\n\n'
+                   'Metrics are temporarily unavailable; the upload workflow remains healthy.\n')
+    print(summary)
+    step_summary = os.environ.get('GITHUB_STEP_SUMMARY')
+    if step_summary:
+        try:
+            with open(step_summary, 'a', encoding='utf-8') as handle:
+                handle.write(summary)
+        except OSError:
+            print('GitHub step summary could not be written; report was printed above')
+    return summary
+
+
 def run(args, ledger=None, service=None):
     config = bot.read_json(ROOT / 'automation.json')
     if config.get('privacy', 'private') not in ('private', 'unlisted', 'public'):
@@ -700,6 +821,8 @@ def run(args, ledger=None, service=None):
         raise RuntimeError('Authorized YouTube channel does not match the configured channel')
     jobs[entry['id']] = {'status': 'uploading', 'audio_sha256': entry['sha256'],
                          'reciter_id': entry.get('recitation_id'),
+                         'reciter_name': entry.get('reciter_en'),
+                         'visual_theme': entry.get('visual_theme'),
                          'render_sha256': bot.file_hash(target),
                          'started_at': datetime.now(timezone.utc).isoformat()}
     if next_cursor is not None:
@@ -724,7 +847,7 @@ def run(args, ledger=None, service=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=['preview', 'publish'])
+    parser.add_argument('mode', choices=['preview', 'publish', 'report'])
     args = parser.parse_args()
     try:
         if args.mode == 'preview':
@@ -739,7 +862,10 @@ def main():
                 credentials.refresh(Request())
             service = build('youtube', 'v3', credentials=credentials, cache_discovery=False)
             ledger = RemoteLedger(os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_TOKEN'])
-            run(args, ledger, service)
+            if args.mode == 'report':
+                run_performance_report(service, ledger)
+            else:
+                run(args, ledger, service)
         return 0
     except Exception as error:
         # External exception bodies can contain secrets. Print only our own diagnostics.
