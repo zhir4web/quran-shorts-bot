@@ -1,17 +1,16 @@
 name: Quran Shorts - 3 Daily
 on:
   schedule:
-    # Target 11:00, 16:00 and 20:00 Asia/Baghdad (UTC+3).
-    # GitHub scheduled jobs can start late, so these avoid night/early-morning posts.
-    - cron: '0 8 * * *'
-    - cron: '0 13 * * *'
-    - cron: '0 17 * * *'
+    # UTC heartbeat: 11:07-21:47 Baghdad, away from busy minute zero.
+    # Runner catches up 11:00/16:00/20:00 slots, at most three daytime posts.
+    # Durable slot records make repeated triggers safe.
+    - cron: '7,27,47 8-18 * * *'
   workflow_dispatch:
     inputs:
       mode:
-        description: Preview or publish the next verified recording
+        description: Preview, force one publish, or safely catch up the schedule
         type: choice
-        options: [preview, publish]
+        options: [preview, publish, scheduled]
         default: preview
 permissions:
   contents: write
@@ -49,7 +48,7 @@ jobs:
         env:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_MODE: ${{ inputs.mode || 'publish' }}
+          RUN_MODE: ${{ inputs.mode || 'scheduled' }}
         run: python cloud_runner.py "$RUN_MODE"
       - name: Save preview for inspection
         if: success() && steps.gate.outputs.run == 'true' && inputs.mode == 'preview'
@@ -67,4 +66,3 @@ jobs:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python cloud_runner.py report
-
