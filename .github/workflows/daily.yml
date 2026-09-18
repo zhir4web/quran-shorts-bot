@@ -61,3 +61,10 @@ jobs:
             state/cloud/*/background.png
             state/cloud/*/metadata.json
           retention-days: 7
+      - name: Performance and health report
+        if: always() && steps.gate.outputs.run == 'true'
+        env:
+          YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python cloud_runner.py report
+
