@@ -157,8 +157,17 @@ def validate_verse_catalog(data):
         raise ValueError('Invalid blocked-reciter list')
     if len(set(allowed)) != len(allowed) or set(allowed) & set(blocked):
         raise ValueError('Reciter lists must be unique and disjoint')
-    if data.get('visual_style') != 'calm_forest_rain':
-        raise ValueError('The original calm visual style is required')
+    if data.get('visual_style') != 'premium_rotating_scenes':
+        raise ValueError('The premium original visual style is required')
+    themes = data.get('visual_themes')
+    supported = {'forest_rain', 'mist_mountains', 'starry_night', 'ocean_moon', 'dawn_mosque'}
+    if not isinstance(themes, list) or set(themes) != supported or len(themes) != len(supported):
+        raise ValueError('All premium visual themes are required exactly once')
+    if data.get('show_verified_ayah_text') is not True:
+        raise ValueError('Verified ayah text must be shown')
+    maximum_text = data.get('max_ayah_characters')
+    if isinstance(maximum_text, bool) or not isinstance(maximum_text, int) or not 80 <= maximum_text <= 240:
+        raise ValueError('Invalid ayah text limit')
     return data
 
 
@@ -210,6 +219,12 @@ def verse_entry_for_position(catalog, jobs, position):
         relative_url = audio.get('url', '')
         if not relative_url or '://' in relative_url or '..' in relative_url:
             raise ValueError('Quran Foundation returned an invalid audio path')
+        text_payload = get_json(urljoin(QURAN_API, 'quran/verses/uthmani'),
+                                {'verse_key': f'{chapter_id}:{verse_number}'})
+        text_rows = text_payload.get('verses', [])
+        ayah_text = text_rows[0].get('text_uthmani', '').strip() if len(text_rows) == 1 else ''
+        if not ayah_text or len(ayah_text) > catalog['max_ayah_characters']:
+            continue
         style = reciter.get('style') or ''
         reciter_ar = arabic_names.get(reciter_id) or reciter.get('reciter_name')
         return ({
@@ -217,12 +232,16 @@ def verse_entry_for_position(catalog, jobs, position):
             'audio_url': urljoin(QURAN_AUDIO, relative_url),
             'surah_ar': chapter['name_arabic'], 'surah_en': chapter['name_simple'],
             'verse_number': verse_number, 'verse_key': f'{chapter_id}:{verse_number}',
+            'ayah_text': ayah_text,
             'reciter_ar': reciter_ar, 'reciter_en': reciter.get('reciter_name', ''), 'style': style,
             'permission_url': catalog['permission_url'], 'attribution': catalog['attribution'],
             'rights': catalog['rights'], 'verified': True, 'whole_recording': True,
             'max_audio_seconds': float(catalog['max_audio_seconds']),
             'tail_silence_seconds': float(catalog['tail_silence_seconds']),
             'visual_style': catalog['visual_style'],
+            # Rotate scenes deterministically so adjacent Shorts cannot use the
+            # same visual theme, even after a restart.
+            'visual_theme': catalog['visual_themes'][(next_position - 1) % len(catalog['visual_themes'])],
         }, next_position)
     raise RuntimeError('All Quran verse and reciter combinations have been published')
 
@@ -378,16 +397,23 @@ def make_card(entry, destination):
         draw.line((0, y, 1080, y), fill=(8+int(blend*10), 30+int(blend*22), 38+int(blend*18)))
     seed = int(hashlib.sha256(entry['id'].encode()).hexdigest()[:16], 16)
     rng = random.Random(seed)
-    # Moonlight and mist are created locally; no downloaded image or video is used.
-    moon = Image.new('RGBA', image.size, (0, 0, 0, 0))
-    md = ImageDraw.Draw(moon)
-    md.ellipse((745, 170, 945, 370), fill=(229, 224, 193, 115))
-    moon = moon.filter(ImageFilter.GaussianBlur(28))
-    image = Image.alpha_composite(image.convert('RGBA'), moon).convert('RGB')
+    theme = entry.get('visual_theme', 'forest_rain')
+    # Every scene is drawn locally; no downloaded image or video is used.
+    glow = Image.new('RGBA', image.size, (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    glow_color = (229, 224, 193, 125) if theme != 'dawn_mosque' else (255, 198, 125, 150)
+    gd.ellipse((745, 170, 945, 370), fill=glow_color)
+    glow = glow.filter(ImageFilter.GaussianBlur(30))
+    image = Image.alpha_composite(image.convert('RGBA'), glow).convert('RGB')
     draw = ImageDraw.Draw(image, 'RGBA')
+    if theme == 'starry_night':
+        for _ in range(115):
+            x, y = rng.randrange(1080), rng.randrange(1000)
+            r = rng.choice((1, 1, 2, 3))
+            draw.ellipse((x-r, y-r, x+r, y+r), fill=(232, 229, 203, rng.randrange(80, 190)))
     for band in range(5):
         y = 930 + band * 120
-        draw.ellipse((-250, y-110, 1330, y+180), fill=(174, 195, 187, 12+band*5))
+        draw.ellipse((-250, y-110, 1330, y+180), fill=(174, 195, 187, 10+band*4))
     def pine(x, base, height, color):
         width = int(height * .42)
         draw.rectangle((x-8, base-height*.18, x+8, base), fill=color)
@@ -395,14 +421,34 @@ def make_card(entry, destination):
             top = base-height + level*height*.16
             half = width*(.48+level*.13)
             draw.polygon(((x, top), (x-half, top+height*.36), (x+half, top+height*.36)), fill=color)
-    for layer, (base, low, high, color) in enumerate([
-            (1420, 330, 560, (20, 55, 52, 210)),
-            (1600, 430, 720, (11, 42, 40, 235)),
-            (1920, 560, 920, (5, 29, 30, 255))]):
-        x = -80
-        while x < 1160:
-            pine(x, base+rng.randint(-35, 35), rng.randint(low, high), color)
-            x += rng.randint(105, 190)
+    if theme in ('forest_rain', 'starry_night'):
+        for base, low, high, color in [
+                (1420, 330, 560, (20, 55, 52, 210)),
+                (1600, 430, 720, (11, 42, 40, 235)),
+                (1920, 560, 920, (5, 29, 30, 255))]:
+            x = -80
+            while x < 1160:
+                pine(x, base+rng.randint(-35, 35), rng.randint(low, high), color)
+                x += rng.randint(105, 190)
+    elif theme == 'mist_mountains':
+        draw.polygon(((-100, 1540), (260, 920), (510, 1490), (760, 820), (1200, 1580)),
+                     fill=(19, 52, 57, 235))
+        draw.polygon(((-100, 1800), (340, 1130), (600, 1690), (880, 1080), (1220, 1800)),
+                     fill=(8, 35, 41, 255))
+    elif theme == 'ocean_moon':
+        for y in range(1160, 1920, 34):
+            offset = (y // 34) % 2 * 45
+            for x in range(-80+offset, 1160, 150):
+                draw.arc((x, y, x+180, y+55), 190, 350,
+                         fill=(100, 158, 160, max(35, 125-(y-1160)//8)), width=3)
+    elif theme == 'dawn_mosque':
+        draw.rectangle((0, 1430, 1080, 1920), fill=(9, 37, 42, 255))
+        draw.rectangle((360, 1210, 720, 1660), fill=(7, 31, 36, 255))
+        draw.ellipse((405, 1040, 675, 1340), fill=(7, 31, 36, 255))
+        draw.rectangle((185, 1030, 245, 1660), fill=(7, 31, 36, 255))
+        draw.polygon(((215, 900), (165, 1050), (265, 1050)), fill=(7, 31, 36, 255))
+        draw.rectangle((835, 1030, 895, 1660), fill=(7, 31, 36, 255))
+        draw.polygon(((865, 900), (815, 1050), (915, 1050)), fill=(7, 31, 36, 255))
     shade = Image.new('RGBA', image.size, (0, 0, 0, 0))
     sd = ImageDraw.Draw(shade)
     sd.rounded_rectangle((90, 520, 990, 1270), radius=70, fill=(3, 18, 22, 118), outline=(207, 180, 119, 90), width=2)
@@ -424,27 +470,54 @@ def make_card(entry, destination):
     centered('سورة ' + entry['surah_ar'], 665, 96, '#f4f1e8', rtl=True)
     if entry.get('verse_number'):
         centered('الآية ' + str(entry['verse_number']), 825, 58, '#e7e9e4', rtl=True)
-    draw.line((330, 955, 750, 955), fill=gold, width=2)
-    centered(entry['reciter_ar'], 1015, 54, gold, rtl=True)
+    draw.line((330, 945, 750, 945), fill=gold, width=2)
+    words = entry.get('ayah_text', '').split()
+    lines, current = [], ''
+    for word in words:
+        candidate = (current + ' ' + word).strip()
+        shaped = get_display(arabic_reshaper.reshape(candidate))
+        face = ImageFont.truetype(str(font), 46, layout_engine=ImageFont.Layout.BASIC)
+        if current and draw.textbbox((0, 0), shaped, font=face)[2] > 800:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    if len(lines) <= 3:
+        for index, line in enumerate(lines):
+            centered(line, 990 + index*64, 46, '#f4f1e8', rtl=True)
+        reciter_y = 1010 + len(lines)*72
+    else:
+        reciter_y = 1015
+    centered(entry['reciter_ar'], reciter_y, 49, gold, rtl=True)
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination)
     return destination
 
 
 def make_motion_overlay(entry, destination):
-    """Create a tall transparent rain sheet that visibly moves during rendering."""
+    """Create a tall transparent atmosphere sheet that visibly moves."""
     from PIL import Image, ImageDraw, ImageFilter
     import random
     seed = int(hashlib.sha256((entry['id'] + ':moving-rain').encode()).hexdigest()[:16], 16)
     rng = random.Random(seed)
     rain = Image.new('RGBA', (1080, 3840), (0, 0, 0, 0))
     draw = ImageDraw.Draw(rain, 'RGBA')
-    for _ in range(650):
+    theme = entry.get('visual_theme', 'forest_rain')
+    count = {'forest_rain': 650, 'mist_mountains': 180, 'starry_night': 150,
+             'ocean_moon': 260, 'dawn_mosque': 130}.get(theme, 300)
+    for _ in range(count):
         x, y = rng.randrange(1100), rng.randrange(3840)
-        length = rng.randrange(34, 105)
-        width = 1 if length < 70 else 2
-        draw.line((x, y, x-13, y+length),
-                  fill=(198, 225, 225, rng.randrange(45, 115)), width=width)
+        if theme == 'starry_night':
+            radius = rng.choice((2, 3, 4, 6))
+            draw.ellipse((x-radius, y-radius, x+radius, y+radius),
+                         fill=(235, 231, 196, rng.randrange(55, 145)))
+        else:
+            length = rng.randrange(28, 105 if theme == 'forest_rain' else 68)
+            width = 1 if length < 70 else 2
+            draw.line((x, y, x-13, y+length),
+                      fill=(198, 225, 225, rng.randrange(30, 115)), width=width)
     # Two soft translucent fog bands move with the rain sheet at a slower visual pace.
     fog = Image.new('RGBA', rain.size, (0, 0, 0, 0))
     fog_draw = ImageDraw.Draw(fog, 'RGBA')
@@ -461,14 +534,16 @@ def item_for(entry, source, background, motion_overlay=None):
     if entry.get('verse_number'):
         style = f" ({entry['style']})" if entry.get('style') else ''
         title = f"سورة {entry['surah_ar']}، الآية {entry['verse_number']} | {entry['reciter_ar']}{style} #Shorts"
-        description = (f"تلاوة كاملة للآية {entry['verse_key']} من سورة {entry['surah_ar']}، "
+        description = (f"{entry.get('ayah_text', '')}\n\n"
+                       f"تلاوة كاملة للآية {entry['verse_key']} من سورة {entry['surah_ar']}، "
                        f"دون تغيير سرعة التلاوة.\n{entry['permission_url']}")
     else:
         title = f"سورة {entry['surah_ar']} | {entry['reciter_ar']} #Shorts"
         description = f"سورة {entry['surah_ar']} كاملة، دون تغيير سرعة التلاوة.\n{entry['permission_url']}"
     item = {'id': entry['id'], 'mode': 'compose', 'source': str(source.resolve()),
             'background': str(background.resolve()), 'start': 0, 'duration': entry['duration'],
-            'background_motion': 'calm_rain',
+            'background_motion': 'premium_motion',
+            'visual_theme': entry.get('visual_theme', 'forest_rain'),
             'title': title, 'description': description,
             'attribution': entry['attribution'], 'rights': entry['rights'],
             'rights_confirmed': True, 'made_for_kids': False}
