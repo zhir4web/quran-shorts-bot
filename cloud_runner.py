@@ -403,11 +403,6 @@ def make_card(entry, destination):
         while x < 1160:
             pine(x, base+rng.randint(-35, 35), rng.randint(low, high), color)
             x += rng.randint(105, 190)
-    # Fine rain becomes gently animated by the renderer's changing grain/zoom.
-    for _ in range(180):
-        x, y = rng.randrange(1080), rng.randrange(1920)
-        length = rng.randrange(18, 55)
-        draw.line((x, y, x-7, y+length), fill=(190, 218, 217, rng.randrange(20, 60)), width=1)
     shade = Image.new('RGBA', image.size, (0, 0, 0, 0))
     sd = ImageDraw.Draw(shade)
     sd.rounded_rectangle((90, 520, 990, 1270), radius=70, fill=(3, 18, 22, 118), outline=(207, 180, 119, 90), width=2)
@@ -436,7 +431,33 @@ def make_card(entry, destination):
     return destination
 
 
-def item_for(entry, source, background):
+def make_motion_overlay(entry, destination):
+    """Create a tall transparent rain sheet that visibly moves during rendering."""
+    from PIL import Image, ImageDraw, ImageFilter
+    import random
+    seed = int(hashlib.sha256((entry['id'] + ':moving-rain').encode()).hexdigest()[:16], 16)
+    rng = random.Random(seed)
+    rain = Image.new('RGBA', (1080, 3840), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(rain, 'RGBA')
+    for _ in range(650):
+        x, y = rng.randrange(1100), rng.randrange(3840)
+        length = rng.randrange(34, 105)
+        width = 1 if length < 70 else 2
+        draw.line((x, y, x-13, y+length),
+                  fill=(198, 225, 225, rng.randrange(45, 115)), width=width)
+    # Two soft translucent fog bands move with the rain sheet at a slower visual pace.
+    fog = Image.new('RGBA', rain.size, (0, 0, 0, 0))
+    fog_draw = ImageDraw.Draw(fog, 'RGBA')
+    fog_draw.ellipse((-400, 900, 1480, 1370), fill=(190, 210, 204, 24))
+    fog_draw.ellipse((-650, 2700, 1250, 3260), fill=(190, 210, 204, 20))
+    fog = fog.filter(ImageFilter.GaussianBlur(45))
+    rain = Image.alpha_composite(rain, fog)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    rain.save(destination)
+    return destination
+
+
+def item_for(entry, source, background, motion_overlay=None):
     if entry.get('verse_number'):
         style = f" ({entry['style']})" if entry.get('style') else ''
         title = f"سورة {entry['surah_ar']}، الآية {entry['verse_number']} | {entry['reciter_ar']}{style} #Shorts"
@@ -445,12 +466,15 @@ def item_for(entry, source, background):
     else:
         title = f"سورة {entry['surah_ar']} | {entry['reciter_ar']} #Shorts"
         description = f"سورة {entry['surah_ar']} كاملة، دون تغيير سرعة التلاوة.\n{entry['permission_url']}"
-    return {'id': entry['id'], 'mode': 'compose', 'source': str(source.resolve()),
+    item = {'id': entry['id'], 'mode': 'compose', 'source': str(source.resolve()),
             'background': str(background.resolve()), 'start': 0, 'duration': entry['duration'],
             'background_motion': 'calm_rain',
             'title': title, 'description': description,
             'attribution': entry['attribution'], 'rights': entry['rights'],
             'rights_confirmed': True, 'made_for_kids': False}
+    if motion_overlay:
+        item['motion_overlay'] = str(motion_overlay.resolve())
+    return item
 
 
 def run(args, ledger=None, service=None):
@@ -497,7 +521,8 @@ def run(args, ledger=None, service=None):
         workspace = ROOT / 'state' / 'cloud' / entry['id']
         source = download_recording(entry, workspace / 'recitation.mp3')
     card = make_card(entry, workspace / 'background.png')
-    job = item_for(entry, source, card)
+    motion = make_motion_overlay(entry, workspace / 'moving-rain.png')
+    job = item_for(entry, source, card, motion)
     queue = workspace / 'queue.json'
     bot.atomic_json(queue, {'items': [job]})
     bot.load_queue(queue)  # Apply the same metadata and permission checks as local runs.
