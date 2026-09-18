@@ -118,6 +118,29 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(payload["media_body"].resumable())
         request.next_chunk.assert_called_with(num_retries=5)
 
+    def test_dynamic_tags_are_relevant_and_bounded(self):
+        self.job.update(surah_ar='الإخلاص', surah_en='Al-Ikhlas',
+                        reciter_ar='عبد الباسط عبد الصمد', reciter_en='Abdul Basit')
+        tags = bot.dynamic_tags(self.job)
+        self.assertIn('Quran recitation', tags)
+        self.assertIn('الإخلاص', tags)
+        self.assertIn('Al-Ikhlas', tags)
+        self.assertIn('Abdul Basit', tags)
+        self.assertLessEqual(len(','.join(tags)), 500)
+
+    def test_comment_variant_is_deterministic_and_varied(self):
+        first = bot.comment_variant('video-one')
+        self.assertEqual(first, bot.comment_variant('video-one'))
+        variants = {bot.comment_variant(f'video-{number}')[0] for number in range(30)}
+        self.assertGreaterEqual(len(variants), 6)
+
+    def test_comment_failure_is_nonfatal(self):
+        service = MagicMock()
+        service.commentThreads.return_value.insert.return_value.execute.side_effect = RuntimeError('disabled')
+        index, succeeded = bot.post_cta_comment(service, 'video-id')
+        self.assertIn(index, range(len(bot.CTA_COMMENTS)))
+        self.assertFalse(succeeded)
+
     def test_missing_auth_does_not_mark_uploading(self):
         with patch.object(bot, "render", side_effect=self.fake_render), patch.object(bot, "youtube_service", side_effect=RuntimeError("Login required")):
             with self.assertRaisesRegex(RuntimeError, "Login required"):
