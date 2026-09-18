@@ -2,6 +2,8 @@
 
 کەناڵی ڕێکخراو `UCFrBgGfylAm18PWF1YgoQTg` ـە. OAuth token لە GitHub Actions secret ـی `YOUTUBE_TOKEN` پارێزراوە و لە کۆدەکەدا نییە.
 
+OAuth token پێویستی بە scope ـەکانی `youtube.upload`، `youtube.readonly` و `youtube.force-ssl` هەیە. scope ـی کۆتایی بۆ CTA comment ـە و هەر گۆڕانێک لەم لیستەدا پێویستی بە دروستکردنەوەی token و نوێکردنەوەی `YOUTUBE_TOKEN` هەیە.
+
 ## کات
 
 هەر ڕۆژێک یەک Short لە هەر یەک لەم کاتانەدا بڵاودەبێتەوە:
@@ -22,6 +24,8 @@ GitHub لەوانەیە لە کاتی قەرەباڵغیدا schedule دوا ب�
 
 `.bot-state/published.json` cursor ـی شوێنی داهاتوو، ناسنامە و hash ـی ناوەڕۆک، دۆخی `uploading` پێش ناردن، و دۆخی `uploaded` لەگەڵ YouTube video ID دەپارێزێت.
 
+هەمان تۆمار ژمارەی CTA، سەرکەوتن یان شکستی comment، reciter ID و هەر copyright/region incident ـێکیش دەپارێزێت. شکستی comment دۆخی `uploaded` ناگۆڕێت و upload دووبارە ناکاتەوە.
+
 ئەگەر upload لە دۆخێکی نادیاردا بوەستێت، پێش هەر گۆڕانێک YouTube Studio بپشکنە. ئەگەر ڤیدیۆکە هەیە، تۆمارەکە بە video ID ـی ڕاستەقینە تەواو بکە. reservation تەنها کاتێک لاببە کە دڵنیایت هیچ ڤیدیۆیەک upload نەبووە. هەرگیز هەموو ledger مەسڕەوە.
 
 ## سەرچاوە و دیزاین
@@ -31,3 +35,4 @@ GitHub لەوانەیە لە کاتی قەرەباڵغیدا schedule دوا ب�
 ## سنوورە دەرەکییەکان
 
 هیچ سیستەمێک ناتوانێت بەڵێن بدات هەرگیز ناوەستێت. کێشەی YouTube API، quota، OAuth، GitHub Actions یان Quran Foundation دەتوانێت run ـێک بوەستێنێت. ڕێکخستنەکە دۆخ دەپارێزێت و schedule ـی دواتر بەردەوام دەبێت؛ تەنها upload ـی نادیار بە مەبەست پێویستی بە پشکنین هەیە تا پۆستی دووبارە دروست نەبێت.
+
