@@ -84,8 +84,11 @@ def load_queue(path):
             raise ValueError(f"{key}: description must be text")
         if item.get("background") is not None and not isinstance(item["background"], str):
             raise ValueError(f"{key}: background must be an image path")
-        if item.get("background_motion") not in (None, "calm_rain", "premium_motion"):
+        if item.get("background_motion") not in (None, "calm_rain", "premium_motion", "real_video"):
             raise ValueError(f"{key}: unsupported background motion")
+        if item.get("background_video") is not None:
+            if not isinstance(item["background_video"], str) or not item["background_video"].strip():
+                raise ValueError(f"{key}: background video must be a file path")
         if item.get("motion_overlay") is not None and not isinstance(item["motion_overlay"], str):
             raise ValueError(f"{key}: motion overlay must be an image path")
         if len(description(item)) > 5000:
@@ -241,7 +244,9 @@ def render(item, base, folder):
     duration = str(item["duration"])
     scale = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x081b21,setsar=1"
     if item["mode"] == "compose":
-        if item.get("background"):
+        if item.get("background_video"):
+            inputs = ["-stream_loop", "-1", "-i", item["background_video"]]
+        elif item.get("background"):
             background = (base / item["background"]).resolve()
             if not background.is_file():
                 raise FileNotFoundError(f"Background missing: {background}")
@@ -262,6 +267,13 @@ def render(item, base, folder):
     target = folder / "video.mp4"
     temporary = folder / "rendering.mp4"
     filters = ["-vf", scale]
+    if item.get("background_video"):
+        # Use the filmed clip as the moving layer. Crop to fill the Short frame
+        # without stretching, and loop it when the recitation is longer.
+        scale = ("scale=1080:1920:force_original_aspect_ratio=increase,"
+                 "crop=1080:1920,setsar=1")
+        filters = ["-vf", scale]
+        mapping = ["-map", "0:v:0", "-map", "1:a:0"]
     if item.get("background_motion") in ("calm_rain", "premium_motion") and item.get("motion_overlay"):
         # The 3840px rain sheet travels over a 1920px viewport and loops. This
         # creates clearly visible motion while keeping all artwork project-owned.
@@ -281,7 +293,7 @@ def render(item, base, folder):
                "-r", "30", "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
                "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(temporary)])
     validate_video(temporary, item["duration"], minimum=minimum)
-    if item.get("background_motion") == "premium_motion":
+    if item.get("background_motion") in ("premium_motion", "real_video"):
         validate_visible_motion(temporary, item["duration"])
     os.replace(temporary, target)
     atomic_json(folder / "metadata.json", {"title": item["title"], "description": description(item), "rights": item["rights"], "item": item})
