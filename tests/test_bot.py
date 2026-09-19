@@ -169,8 +169,10 @@ class MediaTests(unittest.TestCase):
             (base / "audio.wav").write_bytes(b"audio")
             background = base / "background.mp4"
             background.write_bytes(b"video")
+            card = base / "card.png"
+            card.write_bytes(b"card")
             job = item()
-            job.update(duration=30, background_video=str(background), background_motion="real_video")
+            job.update(duration=30, background=str(card), background_video=str(background), background_motion="real_video")
             captured = {}
 
             def fake_media(args):
@@ -185,10 +187,13 @@ class MediaTests(unittest.TestCase):
 
             self.assertTrue(result.is_file())
             args = captured["args"]
-            self.assertIn("scale=1080:1920:flags=lanczos:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1", args)
+            graph = args[args.index("-filter_complex") + 1]
+            self.assertIn("scale=1080:1920:flags=lanczos:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1", graph)
+            self.assertIn("overlay=0:0:format=auto", graph)
             self.assertIn("-b:v", args)
             self.assertEqual(args[args.index("-b:v") + 1], "10M")
             self.assertEqual(args[args.index("-maxrate") + 1], "12M")
+            self.assertEqual(args[args.index("-map") + 3], "2:a:0")
 
     def test_landscape_video_and_missing_audio(self):
         with tempfile.TemporaryDirectory() as temp:
