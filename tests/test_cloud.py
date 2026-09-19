@@ -300,6 +300,22 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(parts[3], entry['permission_url'])
         self.assertNotIn('ک', job['description'])
 
+    def test_real_video_background_is_selected_for_theme(self):
+        with tempfile.TemporaryDirectory() as temp:
+            original = cloud.ROOT
+            try:
+                cloud.ROOT = Path(temp)
+                asset = Path(temp) / 'assets' / 'backgrounds' / 'video'
+                asset.mkdir(parents=True)
+                (asset / 'forest_rain.mp4').write_bytes(b'video')
+                entry = dict(ENTRY, visual_theme='forest_rain', duration=35)
+                job = cloud.item_for(entry, Path(temp) / 'audio.mp3', Path(temp) / 'card.png')
+                self.assertEqual(job['background_motion'], 'real_video')
+                self.assertTrue(job['background_video'].endswith('forest_rain.mp4'))
+                self.assertNotIn('motion_overlay', job)
+            finally:
+                cloud.ROOT = original
+
     def test_claim_detection_blocks_reciter_and_records_incident(self):
         self.ledger.data['jobs'] = {'job': {'status': 'uploaded', 'video_id': 'blocked-video',
                                                    'reciter_id': 12}}
