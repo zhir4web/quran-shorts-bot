@@ -234,6 +234,25 @@ def source_file(item, base, folder):
     return path
 
 
+def validate_background_source(path):
+    """Reject filmed sources that would need a destructive low-resolution upscale."""
+    import imageio_ffmpeg
+
+    reader = imageio_ffmpeg.read_frames(str(path))
+    try:
+        metadata = next(reader)
+    finally:
+        reader.close()
+    width, height = metadata.get("size", (0, 0))
+    fps = metadata.get("fps")
+    if min(width, height) < 1080:
+        raise ValueError(
+            f"Background source {path} is only {width}x{height}; "
+            "a filmed background must have a shorter dimension of at least 1080px"
+        )
+    LOG.info("Background source %s: %sx%s at %s fps", path, width, height, fps)
+
+
 def render(item, base, folder):
     folder.mkdir(parents=True, exist_ok=True)
     source = source_file(item, base, folder)
@@ -245,6 +264,7 @@ def render(item, base, folder):
     scale = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x081b21,setsar=1"
     if item["mode"] == "compose":
         if item.get("background_video"):
+            validate_background_source(item["background_video"])
             inputs = ["-stream_loop", "-1", "-i", item["background_video"]]
         elif item.get("background"):
             background = (base / item["background"]).resolve()
@@ -270,7 +290,7 @@ def render(item, base, folder):
     if item.get("background_video"):
         # Use the filmed clip as the moving layer. Crop to fill the Short frame
         # without stretching, and loop it when the recitation is longer.
-        scale = ("scale=1080:1920:force_original_aspect_ratio=increase,"
+        scale = ("scale=1080:1920:flags=lanczos:force_original_aspect_ratio=increase,"
                  "crop=1080:1920,setsar=1")
         filters = ["-vf", scale]
         mapping = ["-map", "0:v:0", "-map", "1:a:0"]
@@ -289,8 +309,12 @@ def render(item, base, folder):
                  "x='20+12*sin(t/5)':y='36+10*cos(t/6)',"
                  "noise=alls=5:allf=t+u,eq=brightness='0.008*sin(t/4)',setsar=1")
         filters = ["-vf", scale]
+    encode = (["-c:v", "libx264", "-preset", "medium", "-b:v", "10M",
+               "-maxrate", "12M", "-bufsize", "24M"]
+              if item.get("background_video")
+              else ["-c:v", "libx264", "-preset", "fast", "-crf", "20"])
     run_media(["-y", *inputs, *mapping, "-t", duration, *filters,
-               "-r", "30", "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
+               "-r", "30", *encode, "-pix_fmt", "yuv420p",
                "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(temporary)])
     validate_video(temporary, item["duration"], minimum=minimum)
     if item.get("background_motion") in ("premium_motion", "real_video"):
@@ -476,3 +500,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
+
