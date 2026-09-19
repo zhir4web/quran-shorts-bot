@@ -417,78 +417,17 @@ def download_quran_foundation(entry, destination):
 
 
 def make_card(entry, destination):
-    """Original peaceful forest artwork with only the requested title and name."""
-    from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    """Render the Arabic-only card as a transparent overlay for filmed clips."""
+    from PIL import Image, ImageDraw, ImageFont
     import arabic_reshaper
     from bidi.algorithm import get_display
-    import random
     font = ROOT / 'assets' / 'Amiri-Regular.ttf'
     if not font.is_file():
         raise FileNotFoundError('Arabic font missing: assets/Amiri-Regular.ttf')
-    image = Image.new('RGB', (1080, 1920), '#0a2025')
-    draw = ImageDraw.Draw(image)
-    for y in range(1920):
-        blend = y / 1920
-        draw.line((0, y, 1080, y), fill=(8+int(blend*10), 30+int(blend*22), 38+int(blend*18)))
-    seed = int(hashlib.sha256(entry['id'].encode()).hexdigest()[:16], 16)
-    rng = random.Random(seed)
-    theme = entry.get('visual_theme', 'forest_rain')
-    # Every scene is drawn locally; no downloaded image or video is used.
-    glow = Image.new('RGBA', image.size, (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    glow_color = (229, 224, 193, 125) if theme != 'dawn_mosque' else (255, 198, 125, 150)
-    gd.ellipse((745, 170, 945, 370), fill=glow_color)
-    glow = glow.filter(ImageFilter.GaussianBlur(30))
-    image = Image.alpha_composite(image.convert('RGBA'), glow).convert('RGB')
+    image = Image.new('RGBA', (1080, 1920), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image, 'RGBA')
-    if theme == 'starry_night':
-        for _ in range(115):
-            x, y = rng.randrange(1080), rng.randrange(1000)
-            r = rng.choice((1, 1, 2, 3))
-            draw.ellipse((x-r, y-r, x+r, y+r), fill=(232, 229, 203, rng.randrange(80, 190)))
-    for band in range(5):
-        y = 930 + band * 120
-        draw.ellipse((-250, y-110, 1330, y+180), fill=(174, 195, 187, 10+band*4))
-    def pine(x, base, height, color):
-        width = int(height * .42)
-        draw.rectangle((x-8, base-height*.18, x+8, base), fill=color)
-        for level in range(5):
-            top = base-height + level*height*.16
-            half = width*(.48+level*.13)
-            draw.polygon(((x, top), (x-half, top+height*.36), (x+half, top+height*.36)), fill=color)
-    if theme in ('forest_rain', 'starry_night'):
-        for base, low, high, color in [
-                (1420, 330, 560, (20, 55, 52, 210)),
-                (1600, 430, 720, (11, 42, 40, 235)),
-                (1920, 560, 920, (5, 29, 30, 255))]:
-            x = -80
-            while x < 1160:
-                pine(x, base+rng.randint(-35, 35), rng.randint(low, high), color)
-                x += rng.randint(105, 190)
-    elif theme == 'mist_mountains':
-        draw.polygon(((-100, 1540), (260, 920), (510, 1490), (760, 820), (1200, 1580)),
-                     fill=(19, 52, 57, 235))
-        draw.polygon(((-100, 1800), (340, 1130), (600, 1690), (880, 1080), (1220, 1800)),
-                     fill=(8, 35, 41, 255))
-    elif theme == 'ocean_moon':
-        for y in range(1160, 1920, 34):
-            offset = (y // 34) % 2 * 45
-            for x in range(-80+offset, 1160, 150):
-                draw.arc((x, y, x+180, y+55), 190, 350,
-                         fill=(100, 158, 160, max(35, 125-(y-1160)//8)), width=3)
-    elif theme == 'dawn_mosque':
-        draw.rectangle((0, 1430, 1080, 1920), fill=(9, 37, 42, 255))
-        draw.rectangle((360, 1210, 720, 1660), fill=(7, 31, 36, 255))
-        draw.ellipse((405, 1040, 675, 1340), fill=(7, 31, 36, 255))
-        draw.rectangle((185, 1030, 245, 1660), fill=(7, 31, 36, 255))
-        draw.polygon(((215, 900), (165, 1050), (265, 1050)), fill=(7, 31, 36, 255))
-        draw.rectangle((835, 1030, 895, 1660), fill=(7, 31, 36, 255))
-        draw.polygon(((865, 900), (815, 1050), (915, 1050)), fill=(7, 31, 36, 255))
-    shade = Image.new('RGBA', image.size, (0, 0, 0, 0))
-    sd = ImageDraw.Draw(shade)
-    sd.rounded_rectangle((90, 520, 990, 1270), radius=70, fill=(3, 18, 22, 118), outline=(207, 180, 119, 90), width=2)
-    image = Image.alpha_composite(image.convert('RGBA'), shade).convert('RGB')
-    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((90, 520, 990, 1270), radius=70,
+                           fill=(3, 18, 22, 178), outline=(207, 180, 119, 150), width=3)
     gold = '#dcc58e'
     def centered(text, y, size, color=gold, rtl=False):
         if rtl:
@@ -506,28 +445,39 @@ def make_card(entry, destination):
     if entry.get('verse_number'):
         centered('الآية ' + str(entry['verse_number']), 825, 58, '#e7e9e4', rtl=True)
     draw.line((330, 945, 750, 945), fill=gold, width=2)
-    words = entry.get('ayah_text', '').split()
-    lines, current = [], ''
-    for word in words:
-        candidate = (current + ' ' + word).strip()
-        shaped = get_display(arabic_reshaper.reshape(candidate))
-        face = ImageFont.truetype(str(font), 46, layout_engine=ImageFont.Layout.BASIC)
-        if current and draw.textbbox((0, 0), shaped, font=face)[2] > 800:
+    def wrap_arabic(text, size, width=800):
+        words = text.split()
+        lines, current = [], ''
+        face = ImageFont.truetype(str(font), size, layout_engine=ImageFont.Layout.BASIC)
+        for word in words:
+            candidate = (current + ' ' + word).strip()
+            shaped = get_display(arabic_reshaper.reshape(candidate))
+            box = draw.textbbox((0, 0), shaped, font=face)
+            if current and box[2] - box[0] > width:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        if current:
             lines.append(current)
-            current = word
-        else:
-            current = candidate
-    if current:
-        lines.append(current)
-    if len(lines) <= 3:
-        for index, line in enumerate(lines):
-            centered(line, 990 + index*64, 46, '#f4f1e8', rtl=True)
-        reciter_y = 1010 + len(lines)*72
-    else:
-        reciter_y = 1015
+        return lines
+
+    verse_size = 46
+    lines = wrap_arabic(entry.get('ayah_text', ''), verse_size)
+    # Keep the complete verse visible.  The panel has room for five compact
+    # lines; keep shrinking until that limit is met rather than silently
+    # dropping the end of a long ayah.
+    while len(lines) > 5 and verse_size > 22:
+        verse_size -= 2
+        lines = wrap_arabic(entry.get('ayah_text', ''), verse_size)
+    verse_y = 975
+    line_step = min(62, max(42, verse_size + 14))
+    for index, line in enumerate(lines):
+        centered(line, verse_y + index*line_step, verse_size, '#f4f1e8', rtl=True)
+    reciter_y = verse_y + len(lines)*line_step + 42
     centered(entry['reciter_ar'], reciter_y, 49, gold, rtl=True)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    image.save(destination)
+    image.save(destination, 'PNG')
     return destination
 
 
@@ -615,7 +565,7 @@ def item_for(entry, source, background, motion_overlay=None):
         item['background_video'] = str(filmed.resolve())
         item['background_motion'] = 'real_video'
         item.pop('motion_overlay', None)
-    if motion_overlay:
+    if motion_overlay and not filmed:
         item['motion_overlay'] = str(motion_overlay.resolve())
     return item
 
@@ -975,3 +925,4 @@ def main():
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
