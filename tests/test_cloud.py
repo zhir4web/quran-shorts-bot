@@ -300,6 +300,19 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(parts[3], entry['permission_url'])
         self.assertNotIn('ک', job['description'])
 
+    def test_card_is_transparent_arabic_overlay(self):
+        from PIL import Image
+        font_source = Path(__file__).resolve().parents[1] / 'assets' / 'Amiri-Regular.ttf'
+        font_target = self.root / 'assets' / 'Amiri-Regular.ttf'
+        font_target.parent.mkdir(parents=True)
+        font_target.write_bytes(font_source.read_bytes())
+        entry = dict(ENTRY, verse_number=3, ayah_text='لَمْ يَلِدْ وَلَمْ يُولَدْ')
+        card = cloud.make_card(entry, self.root / 'card.png')
+        image = Image.open(card)
+        self.assertEqual(image.mode, 'RGBA')
+        self.assertEqual(image.getpixel((0, 0))[3], 0)
+        self.assertGreater(image.getpixel((100, 600))[3], 0)
+
     def test_real_video_background_is_selected_for_theme(self):
         with tempfile.TemporaryDirectory() as temp:
             original = cloud.ROOT
@@ -467,3 +480,4 @@ class ScheduledFlowTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
