@@ -163,6 +163,33 @@ class PipelineTests(unittest.TestCase):
 
 
 class MediaTests(unittest.TestCase):
+    def test_real_video_render_uses_high_quality_crop_and_encode(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            (base / "audio.wav").write_bytes(b"audio")
+            background = base / "background.mp4"
+            background.write_bytes(b"video")
+            job = item()
+            job.update(duration=30, background_video=str(background), background_motion="real_video")
+            captured = {}
+
+            def fake_media(args):
+                captured["args"] = args
+                Path(args[-1]).write_bytes(b"rendered")
+
+            with patch.object(bot, "validate_background_source"), \
+                 patch.object(bot, "run_media", side_effect=fake_media), \
+                 patch.object(bot, "validate_video"), \
+                 patch.object(bot, "validate_visible_motion"):
+                result = bot.render(job, base, base / "real-video")
+
+            self.assertTrue(result.is_file())
+            args = captured["args"]
+            self.assertIn("scale=1080:1920:flags=lanczos:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1", args)
+            self.assertIn("-b:v", args)
+            self.assertEqual(args[args.index("-b:v") + 1], "10M")
+            self.assertEqual(args[args.index("-maxrate") + 1], "12M")
+
     def test_landscape_video_and_missing_audio(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
