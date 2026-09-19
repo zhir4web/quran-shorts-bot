@@ -266,6 +266,11 @@ def render(item, base, folder):
         if item.get("background_video"):
             validate_background_source(item["background_video"])
             inputs = ["-stream_loop", "-1", "-i", item["background_video"]]
+            if item.get("background"):
+                card = (base / item["background"]).resolve()
+                if not card.is_file():
+                    raise FileNotFoundError(f"Card overlay missing: {card}")
+                inputs += ["-loop", "1", "-framerate", "30", "-i", str(card)]
         elif item.get("background"):
             background = (base / item["background"]).resolve()
             if not background.is_file():
@@ -292,8 +297,19 @@ def render(item, base, folder):
         # without stretching, and loop it when the recitation is longer.
         scale = ("scale=1080:1920:flags=lanczos:force_original_aspect_ratio=increase,"
                  "crop=1080:1920,setsar=1")
-        filters = ["-vf", scale]
-        mapping = ["-map", "0:v:0", "-map", "1:a:0"]
+        if item.get("background"):
+            # The card is a transparent RGBA PNG; composite it over the filmed
+            # layer after the quality-preserving scale/crop operation.
+            graph = ("[0:v]" + scale + "[background];"
+                     "[1:v]format=rgba[card];"
+                     "[background][card]overlay=0:0:format=auto,setsar=1[v]")
+            filters = ["-filter_complex", graph]
+            # Input 0 is the looped filmed background, input 1 is the PNG
+            # card, and input 2 is the recitation audio.
+            mapping = ["-map", "[v]", "-map", "2:a:0"]
+        else:
+            filters = ["-vf", scale]
+            mapping = ["-map", "0:v:0", "-map", "1:a:0"]
     if item.get("background_motion") in ("calm_rain", "premium_motion") and item.get("motion_overlay"):
         # The 3840px rain sheet travels over a 1920px viewport and loops. This
         # creates clearly visible motion while keeping all artwork project-owned.
