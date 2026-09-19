@@ -9,7 +9,7 @@
   "min_audio_seconds": 30,
   "max_audio_seconds": 58,
   "tail_silence_seconds": 1,
-  "visual_style": "premium_rotating_scenes",
+  "visual_style": "real_video_assets",
   "visual_themes": ["forest_rain", "mist_mountains", "starry_night", "ocean_moon", "dawn_mosque"],
   "show_verified_ayah_text": true,
   "max_ayah_characters": 180,
