@@ -426,25 +426,19 @@ def make_card(entry, destination):
         raise FileNotFoundError('Arabic font missing: assets/Amiri-Regular.ttf')
     image = Image.new('RGBA', (1080, 1920), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image, 'RGBA')
-    draw.rounded_rectangle((90, 520, 990, 1270), radius=70,
-                           fill=(3, 18, 22, 178), outline=(207, 180, 119, 150), width=3)
     gold = '#dcc58e'
     def centered(text, y, size, color=gold, rtl=False):
         if rtl:
             text = get_display(arabic_reshaper.reshape(text))
-        while size > 24:
-            # Arabic is shaped explicitly below. BASIC prevents Linux builds with
-            # RAQM from applying bidi/shaping a second time and scrambling words.
+        # Arabic is shaped explicitly below. BASIC prevents Linux builds with
+        # RAQM from applying bidi/shaping a second time and scrambling words.
+        face = ImageFont.truetype(str(font), size, layout_engine=ImageFont.Layout.BASIC)
+        box = draw.textbbox((0, 0), text, font=face)
+        while size > 18 and box[2]-box[0] > 840:
+            size -= 2
             face = ImageFont.truetype(str(font), size, layout_engine=ImageFont.Layout.BASIC)
             box = draw.textbbox((0, 0), text, font=face)
-            if box[2]-box[0] <= 840:
-                break
-            size -= 2
         draw.text(((1080-(box[2]-box[0]))/2-box[0], y), text, font=face, fill=color)
-    centered('سورة ' + entry['surah_ar'], 665, 96, '#f4f1e8', rtl=True)
-    if entry.get('verse_number'):
-        centered('الآية ' + str(entry['verse_number']), 825, 58, '#e7e9e4', rtl=True)
-    draw.line((330, 945, 750, 945), fill=gold, width=2)
     def wrap_arabic(text, size, width=800):
         words = text.split()
         lines, current = [], ''
@@ -472,9 +466,18 @@ def make_card(entry, destination):
         lines = wrap_arabic(entry.get('ayah_text', ''), verse_size)
     verse_y = 975
     line_step = min(62, max(42, verse_size + 14))
+    reciter_y = verse_y + len(lines)*line_step + 42
+    # Size the panel from the actual wrapped verse so a long verified ayah is
+    # never hidden behind its lower edge or the reciter label.
+    panel_bottom = max(1270, reciter_y + 95)
+    draw.rounded_rectangle((90, 520, 990, panel_bottom), radius=70,
+                           fill=(3, 18, 22, 178), outline=(207, 180, 119, 150), width=3)
+    centered('سورة ' + entry['surah_ar'], 665, 96, '#f4f1e8', rtl=True)
+    if entry.get('verse_number'):
+        centered('الآية ' + str(entry['verse_number']), 825, 58, '#e7e9e4', rtl=True)
+    draw.line((330, 945, 750, 945), fill=gold, width=2)
     for index, line in enumerate(lines):
         centered(line, verse_y + index*line_step, verse_size, '#f4f1e8', rtl=True)
-    reciter_y = verse_y + len(lines)*line_step + 42
     centered(entry['reciter_ar'], reciter_y, 49, gold, rtl=True)
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination, 'PNG')
