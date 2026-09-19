@@ -189,8 +189,8 @@ def validate_verse_catalog(data):
         raise ValueError('Invalid blocked-reciter list')
     if len(set(allowed)) != len(allowed) or set(allowed) & set(blocked):
         raise ValueError('Reciter lists must be unique and disjoint')
-    if data.get('visual_style') != 'premium_rotating_scenes':
-        raise ValueError('The premium original visual style is required')
+    if data.get('visual_style') not in ('premium_rotating_scenes', 'real_video_assets'):
+        raise ValueError('The real-video background style is required')
     themes = data.get('visual_themes')
     supported = {'forest_rain', 'mist_mountains', 'starry_night', 'ocean_moon', 'dawn_mosque'}
     if not isinstance(themes, list) or set(themes) != supported or len(themes) != len(supported):
@@ -565,6 +565,18 @@ def make_motion_overlay(entry, destination):
     return destination
 
 
+def video_background_for(entry):
+    """Return a checked-in filmed clip when one is available for the theme."""
+    theme = entry.get('visual_theme', 'forest_rain')
+    path = ROOT / 'assets' / 'backgrounds' / 'video' / f'{theme}.mp4'
+    if path.is_file():
+        return path
+    # A missing optional theme asset falls back to the verified filmed rain
+    # clip; it never falls back to the old static/overlay renderer.
+    fallback = ROOT / 'assets' / 'backgrounds' / 'video' / 'forest_rain.mp4'
+    return fallback if fallback.is_file() else None
+
+
 def item_for(entry, source, background, motion_overlay=None):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
     cta = bot.CTA_COMMENTS[cta_index]
@@ -598,6 +610,11 @@ def item_for(entry, source, background, motion_overlay=None):
             'cta_description_variant': cta_index,
             'attribution': entry['attribution'], 'rights': entry['rights'],
             'rights_confirmed': True, 'made_for_kids': False}
+    filmed = video_background_for(entry)
+    if filmed:
+        item['background_video'] = str(filmed.resolve())
+        item['background_motion'] = 'real_video'
+        item.pop('motion_overlay', None)
     if motion_overlay:
         item['motion_overlay'] = str(motion_overlay.resolve())
     return item
