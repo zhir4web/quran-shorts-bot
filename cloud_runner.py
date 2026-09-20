@@ -691,9 +691,11 @@ def collect_performance_metrics(service, ledger, expected_privacy, now=None):
     ledger.data['health_flags'] = current_flags
     averages = performance_averages(history, jobs)
     ledger.data['performance_averages'] = averages
+    schedule = schedule_timing_summary(ledger.data.get('schedule_history', []), jobs, now=now)
+    ledger.data['schedule_summary'] = schedule
     ledger.save()
     return {'tracked': len(tracked), 'new_flags': new_flags, 'averages': averages,
-            'timestamp': timestamp}
+            'schedule': schedule, 'timestamp': timestamp}
 
 
 def performance_summary(report):
@@ -713,6 +715,20 @@ def performance_summary(report):
     lines.extend(['', '### Rolling average views by visual theme'])
     themes = report['averages']['visual_themes']
     lines.extend([f'- {name}: {average:.1f}' for name, average in themes.items()] or ['- No data yet'])
+    schedule = report.get('schedule')
+    if schedule:
+        lines.extend(['', f"### Schedule timing (last {schedule['window_days']} days)",
+                      f"- Heartbeat runs observed: {schedule['heartbeat_runs']}",
+                      f"- Scheduled uploads observed: {schedule['uploads']}"])
+        average = schedule.get('average_offset_minutes')
+        maximum = schedule.get('max_offset_minutes')
+        lines.append('- Average target-to-upload offset: ' +
+                     (f'{average:.1f} minutes' if average is not None else 'No upload data yet'))
+        lines.append('- Maximum target-to-upload offset: ' +
+                     (f'{maximum:.1f} minutes' if maximum is not None else 'No upload data yet'))
+        lines.append(f"- Uploads delayed over 30 minutes: {schedule['delayed_uploads']}")
+        if schedule['unresolved']:
+            lines.append(f"- Unresolved scheduled attempts: {schedule['unresolved']}")
     return '\n'.join(lines) + '\n'
 
 
@@ -739,6 +755,92 @@ def run_performance_report(service, ledger):
 
 BAGHDAD = timezone(timedelta(hours=3), 'Asia/Baghdad')
 PUBLICATION_HOURS = (11, 16, 20)
+SCHEDULE_HISTORY_DAYS = 30
+SCHEDULE_REPORT_DAYS = 7
+
+
+def schedule_slot_time(slot):
+    """Convert a durable Baghdad slot label into an aware datetime."""
+    try:
+        return datetime.strptime(slot, '%Y-%m-%d/%H:%M').replace(tzinfo=BAGHDAD)
+    except (TypeError, ValueError):
+        raise CloudError('Invalid schedule slot in the ledger; stopping to prevent extra posts')
+
+
+def record_schedule_event(ledger, target_slot, triggered_at, outcome):
+    """Best-effort durable timing telemetry; never blocks a publication."""
+    event = {'triggered_at': triggered_at.isoformat(), 'outcome': outcome}
+    if target_slot:
+        target_at = schedule_slot_time(target_slot)
+        local_trigger = triggered_at.astimezone(BAGHDAD)
+        event.update({
+            'target_slot': target_slot,
+            'target_at': target_at.isoformat(),
+            'triggered_local_at': local_trigger.isoformat(),
+            'trigger_offset_minutes': round((local_trigger - target_at).total_seconds() / 60, 1),
+        })
+    history = ledger.data.setdefault('schedule_history', [])
+    history.append(event)
+    cutoff = triggered_at - timedelta(days=SCHEDULE_HISTORY_DAYS)
+    kept = []
+    for row in history:
+        try:
+            when = datetime.fromisoformat(row.get('triggered_at', '').replace('Z', '+00:00'))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if when.tzinfo and when >= cutoff:
+            kept.append(row)
+    ledger.data['schedule_history'] = kept[-500:]
+    try:
+        ledger.save()
+    except Exception as error:
+        print('Schedule timing telemetry could not be saved; publication will continue')
+    return event
+
+
+def schedule_timing_summary(history, jobs=None, now=None, days=SCHEDULE_REPORT_DAYS):
+    """Summarize target-to-upload offsets over the recent observation window."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=days)
+    events = list(history or [])
+    # Backfill timing for older scheduled uploads recorded before telemetry was
+    # introduced, so the first report is useful immediately.
+    for row in (jobs or {}).values():
+        slot = row.get('schedule_slot')
+        uploaded = row.get('uploaded_at')
+        if not slot or not uploaded:
+            continue
+        try:
+            uploaded_at = datetime.fromisoformat(uploaded.replace('Z', '+00:00'))
+            target_at = schedule_slot_time(slot).astimezone(timezone.utc)
+        except (AttributeError, TypeError, ValueError, CloudError):
+            continue
+        if uploaded_at.tzinfo and uploaded_at >= cutoff:
+            events.append({'triggered_at': uploaded_at.isoformat(), 'outcome': 'uploaded',
+                           'target_slot': slot, 'target_at': target_at.isoformat(),
+                           'uploaded_at': uploaded_at.isoformat(),
+                           'upload_offset_minutes': round((uploaded_at - target_at).total_seconds() / 60, 1)})
+    recent = []
+    for event in events:
+        try:
+            when = datetime.fromisoformat(event.get('triggered_at', '').replace('Z', '+00:00'))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if when.tzinfo and when >= cutoff:
+            recent.append(event)
+    uploads = [event for event in recent
+               if event.get('outcome') == 'uploaded' and event.get('upload_offset_minutes') is not None]
+    offsets = [float(event['upload_offset_minutes']) for event in uploads]
+    unresolved = sum(event.get('outcome') == 'selected' for event in recent)
+    return {
+        'window_days': days,
+        'heartbeat_runs': len(recent),
+        'uploads': len(uploads),
+        'unresolved': unresolved,
+        'average_offset_minutes': round(sum(offsets) / len(offsets), 1) if offsets else None,
+        'max_offset_minutes': round(max(offsets), 1) if offsets else None,
+        'delayed_uploads': sum(offset > 30 for offset in offsets),
+    }
 
 
 def next_schedule_slot(jobs, now=None):
@@ -788,6 +890,7 @@ def next_schedule_slot(jobs, now=None):
 
 
 def run(args, ledger=None, service=None):
+    run_started_at = datetime.now(timezone.utc)
     config = bot.read_json(ROOT / 'automation.json')
     if config.get('privacy', 'private') not in ('private', 'unlisted', 'public'):
         raise CloudError('Invalid publication privacy setting')
@@ -811,6 +914,8 @@ def run(args, ledger=None, service=None):
         message = ('Schedule: catching up slot ' + schedule_slot if schedule_slot else
                    'Schedule: no slot due (completed, spacing limit, or outside 11:00-22:00 Baghdad).')
         print(message)
+        schedule_event = record_schedule_event(ledger, schedule_slot, run_started_at,
+                                               'selected' if schedule_slot else 'no_slot')
         if os.environ.get('GITHUB_STEP_SUMMARY'):
             with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as handle:
                 handle.write('## Publication schedule\n\n' + message + '\n')
@@ -883,10 +988,16 @@ def run(args, ledger=None, service=None):
     ledger.save()  # Must succeed BEFORE sending any upload bytes.
     video_id = bot.upload(service, job, target, config.get('privacy', 'private'))
     cta_index, comment_ok = bot.post_cta_comment(service, video_id)
+    uploaded_at = datetime.now(timezone.utc)
     jobs[entry['id']].update(status='uploaded', video_id=video_id,
-                             uploaded_at=datetime.now(timezone.utc).isoformat(),
+                             uploaded_at=uploaded_at.isoformat(),
                              cta_comment_variant=cta_index,
                              cta_comment_succeeded=comment_ok)
+    if args.mode == 'scheduled' and schedule_slot:
+        schedule_event.update({'outcome': 'uploaded', 'uploaded_at': uploaded_at.isoformat(),
+                               'upload_offset_minutes': round(
+                                   (uploaded_at.astimezone(BAGHDAD) -
+                                    schedule_slot_time(schedule_slot)).total_seconds() / 60, 1)})
     ledger.save()
     print('Uploaded: https://www.youtube.com/watch?v=' + video_id)
     # Processing signals can appear shortly after upload. This check is best-effort;
