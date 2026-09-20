@@ -385,12 +385,16 @@ class CloudTests(unittest.TestCase):
         report = {'timestamp': '2026-09-18T00:00:00+00:00', 'tracked': 2,
                   'new_flags': [{'video_id': 'abc', 'flag': 'no traction'}],
                   'averages': {'reciters': {'Reader': 42.5},
-                               'visual_themes': {'starry_night': 55.0}}}
+                               'visual_themes': {'starry_night': 55.0}},
+                  'schedule': {'window_days': 7, 'heartbeat_runs': 20, 'uploads': 3,
+                               'unresolved': 0, 'average_offset_minutes': 18.0,
+                               'max_offset_minutes': 42.0, 'delayed_uploads': 1}}
         text = cloud.performance_summary(report)
         self.assertIn('Total uploaded videos tracked: 2', text)
         self.assertIn('https://www.youtube.com/watch?v=abc', text)
         self.assertIn('Reader: 42.5', text)
         self.assertIn('starry_night: 55.0', text)
+        self.assertIn('Average target-to-upload offset: 18.0 minutes', text)
 
     def test_failed_statistics_api_is_nonfatal(self):
         self.ledger.data = {'schema': 1, 'jobs': {
@@ -449,6 +453,28 @@ class ScheduleTests(unittest.TestCase):
         with self.assertRaises(cloud.CloudError):
             cloud.next_schedule_slot({'a': row}, self.now(14))
 
+    def test_schedule_timing_summary_reports_recent_offset(self):
+        target = self.now(11)
+        triggered = target + timedelta(minutes=7)
+        uploaded = target + timedelta(minutes=19)
+        history = [{'triggered_at': triggered.astimezone(timezone.utc).isoformat(),
+                    'target_slot': '2026-09-18/11:00', 'outcome': 'uploaded',
+                    'uploaded_at': uploaded.astimezone(timezone.utc).isoformat(),
+                    'upload_offset_minutes': 19.0}]
+        report = cloud.schedule_timing_summary(history, now=self.now(18))
+        self.assertEqual(report['heartbeat_runs'], 1)
+        self.assertEqual(report['uploads'], 1)
+        self.assertEqual(report['average_offset_minutes'], 19.0)
+        self.assertEqual(report['delayed_uploads'], 0)
+
+    def test_record_schedule_event_is_trimmed_and_durable(self):
+        ledger = Mock(data={'schema': 1, 'jobs': {}})
+        event = cloud.record_schedule_event(ledger, '2026-09-18/11:00',
+                                            self.now(11).astimezone(timezone.utc), 'selected')
+        self.assertEqual(event['trigger_offset_minutes'], 0.0)
+        self.assertEqual(ledger.data['schedule_history'][0]['outcome'], 'selected')
+        ledger.save.assert_called_once()
+
 
 class ScheduledFlowTests(unittest.TestCase):
     setUp = CloudTests.setUp
@@ -462,7 +488,7 @@ class ScheduledFlowTests(unittest.TestCase):
             uploader = self.execute(mode='scheduled')
         render.assert_not_called()
         uploader.assert_not_called()
-        self.ledger.save.assert_not_called()
+        self.ledger.save.assert_called_once()
 
     def test_slot_is_saved_before_upload_and_survives_completion(self):
         slot = '2026-09-18/11:00'
