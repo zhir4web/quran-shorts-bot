@@ -1,10 +1,18 @@
 name: Quran Shorts - 3 Daily
 on:
   schedule:
-    # UTC heartbeat: 11:07-21:47 Baghdad, away from busy minute zero.
-    # Runner catches up 11:00/16:00/20:00 slots, at most three daytime posts.
-    # Durable slot records make repeated triggers safe.
-    - cron: '7,27,47 8-18 * * *'
+    # Baghdad windows: 10:55-11:45, 15:55-16:45, and 19:55-20:45.
+    # The first heartbeat starts five minutes before each target so a small
+    # GitHub queue delay does not push the post into the next window. The
+    # runner catches up 11:00/16:00/20:00 slots and the durable ledger makes
+    # repeated triggers safe. GitHub cron is still best-effort; the timing
+    # report measures any remaining platform delay.
+    - cron: '55 7 * * *'
+    - cron: '0,15,30,45 8 * * *'
+    - cron: '55 12 * * *'
+    - cron: '0,15,30,45 13 * * *'
+    - cron: '55 16 * * *'
+    - cron: '0,15,30,45 17 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -26,6 +34,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+      - name: Cache Python packages
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
       - name: Check activation
         id: gate
         env:
@@ -66,3 +82,4 @@ jobs:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python cloud_runner.py report
+
