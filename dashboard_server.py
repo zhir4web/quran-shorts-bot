@@ -276,7 +276,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         content_types = {'.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
-                         '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml'}
+                         '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml',
+                         '.webmanifest': 'application/manifest+json; charset=utf-8'}
         raw = candidate.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header('Content-Type', content_types.get(candidate.suffix, 'application/octet-stream'))
