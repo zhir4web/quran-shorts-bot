@@ -189,6 +189,14 @@ def validate_verse_catalog(data):
         raise ValueError('Invalid blocked-reciter list')
     if len(set(allowed)) != len(allowed) or set(allowed) & set(blocked):
         raise ValueError('Reciter lists must be unique and disjoint')
+    selection = data.get('reciter_selection', {})
+    if not isinstance(selection, dict):
+        raise ValueError('Invalid reciter selection configuration')
+    weight = float(selection.get('tajwid_weight', 0.35))
+    keywords = selection.get('tajwid_keywords', ['tajwid', 'tajweed', 'mujawwad', 'mujawid'])
+    if not 0 < weight <= 1 or (not isinstance(keywords, list) or
+                               not all(isinstance(value, str) and value.strip() for value in keywords)):
+        raise ValueError('Invalid tajwid reciter selection configuration')
     if data.get('visual_style') not in ('premium_rotating_scenes', 'real_video_assets'):
         raise ValueError('The real-video background style is required')
     themes = data.get('visual_themes')
@@ -201,6 +209,34 @@ def validate_verse_catalog(data):
     if isinstance(maximum_text, bool) or not isinstance(maximum_text, int) or not 80 <= maximum_text <= 240:
         raise ValueError('Invalid ayah text limit')
     return data
+
+
+def _is_tajwid_reciter(reciter, catalog):
+    """Identify the slower rotation class from Quran Foundation metadata."""
+    selection = catalog.get('reciter_selection', {})
+    keywords = selection.get('tajwid_keywords', ['tajwid', 'tajweed', 'mujawwad', 'mujawid'])
+    text = ' '.join(str(reciter.get(field) or '') for field in ('style', 'reciter_name')).casefold()
+    return any(str(keyword).casefold() in text for keyword in keywords)
+
+
+def _reciter_order(reciters, jobs, position, catalog):
+    """Return a fair order that favours variety and slows tajwid repeats."""
+    selection = catalog.get('reciter_selection', {})
+    tajwid_weight = float(selection.get('tajwid_weight', 0.35))
+    usage = {reciter.get('id'): 0 for reciter in reciters}
+    for row in jobs.values():
+        reciter_id = row.get('reciter_id')
+        if reciter_id in usage:
+            usage[reciter_id] += 1
+    ranked = []
+    for index, reciter in enumerate(reciters):
+        weight = tajwid_weight if _is_tajwid_reciter(reciter, catalog) else 1.0
+        score = (usage[reciter.get('id')] + weight) / weight
+        tajwid_first = 1 if _is_tajwid_reciter(reciter, catalog) else 0
+        tie_break = (position + index) % max(1, len(reciters))
+        ranked.append((score, tajwid_first, tie_break, index, reciter))
+    ranked.sort(key=lambda item: item[:4])
+    return [item[4] for item in ranked]
 
 
 def verse_entry_for_position(catalog, jobs, position):
@@ -217,7 +253,9 @@ def verse_entry_for_position(catalog, jobs, position):
     if total_verses < 6000:
         raise RuntimeError('Quran Foundation chapter metadata is incomplete')
     for _ in range(total_verses * len(english)):
-        reciter_index = position % len(english)
+        ordered_reciters = _reciter_order(english, jobs, position, catalog)
+        reciter = ordered_reciters[0]
+        reciter_index = english.index(reciter)
         batch = position // len(english)
         # Every adjacent post changes both reciter and verse. Each reciter still
         # visits every Quran verse exactly once before the sequence repeats.
@@ -231,7 +269,6 @@ def verse_entry_for_position(catalog, jobs, position):
                 verse_number = remaining + 1
                 break
             remaining -= count
-        reciter = english[reciter_index]
         reciter_id = reciter['id']
         chapter_id = int(chapter['id'])
         key = f'qf-v-r{reciter_id}-a{chapter_id}-{verse_number}'
@@ -519,16 +556,24 @@ def make_motion_overlay(entry, destination):
 
 
 def video_background_for(entry):
-    """Return a checked-in filmed clip when one is available for the theme."""
+    """Return a varied checked-in filmed clip for the requested theme.
+
+    If a theme-specific asset is absent, rotate through the other reviewed
+    clips instead of silently reusing forest_rain for every post.
+    """
     theme = entry.get('visual_theme', 'forest_rain')
-    path = ROOT / 'assets' / 'backgrounds' / 'video' / f'{theme}.mp4'
+    video_root = ROOT / 'assets' / 'backgrounds' / 'video'
+    path = video_root / f'{theme}.mp4'
     if path.is_file():
         return path
-    # A missing optional theme asset falls back to the verified filmed rain
-    # clip; it never falls back to the old static/overlay renderer.
-    fallback = ROOT / 'assets' / 'backgrounds' / 'video' / 'forest_rain.mp4'
-    return fallback if fallback.is_file() else None
-
+    pool = sorted(path for path in video_root.glob('*.mp4')
+                  if 'micro' not in path.stem.casefold() and path.is_file())
+    if not pool:
+        return None
+    themes = ('forest_rain', 'mist_mountains', 'starry_night', 'ocean_moon', 'dawn_mosque')
+    theme_index = themes.index(theme) if theme in themes else 0
+    digest = int(hashlib.sha256(str(entry.get('id', theme)).encode('utf-8')).hexdigest()[:8], 16)
+    return pool[(theme_index + digest) % len(pool)]
 
 def item_for(entry, source, background, motion_overlay=None):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)

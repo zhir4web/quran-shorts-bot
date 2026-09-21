@@ -5,6 +5,10 @@
   "allowed_reciter_ids": [1, 2, 3, 4, 12],
   "blocked_reciter_ids": [5],
   "proposed_reciter_ids_for_review": [6, 7, 8, 9, 10, 11],
+  "reciter_selection": {
+    "tajwid_weight": 0.35,
+    "tajwid_keywords": ["tajwid", "tajweed", "mujawwad", "mujawid"]
+  },
   "content": "complete_verses",
   "min_audio_seconds": 30,
   "max_audio_seconds": 58,
