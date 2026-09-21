@@ -34,14 +34,6 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Cache Python packages
-        if: steps.gate.outputs.run == 'true'
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
       - name: Check activation
         id: gate
         env:
@@ -56,6 +48,14 @@ jobs:
           if not should_run:
               print('Publishing is inactive pending source and channel verification.')
           PY
+      - name: Cache Python packages
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
       - name: Install dependencies
         if: steps.gate.outputs.run == 'true'
         run: python -m pip install -r requirements.txt
