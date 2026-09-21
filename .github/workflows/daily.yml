@@ -13,6 +13,9 @@ on:
     - cron: '0,15,30,45 13 * * *'
     - cron: '55 16 * * *'
     - cron: '0,15,30,45 17 * * *'
+    # Recovery heartbeats after the final target let a delayed runner catch up
+    # all due slots with the ledger's twenty-minute spacing protection.
+    - cron: '0,15,30,45 18,19,20 * * *'
   workflow_dispatch:
     inputs:
       mode:
