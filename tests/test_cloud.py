@@ -419,8 +419,13 @@ class ScheduleTests(unittest.TestCase):
         self.assertIsNone(cloud.next_schedule_slot({}, self.now(10, 59)))
         self.assertEqual(cloud.next_schedule_slot({}, self.now(11).astimezone(timezone.utc)),
                          '2026-09-18/11:00')
-        self.assertIsNone(cloud.next_schedule_slot({}, self.now(22)))
+        self.assertEqual(cloud.next_schedule_slot({}, self.now(22)),
+                         '2026-09-18/11:00')
         self.assertIsNone(cloud.next_schedule_slot({}, self.now(2)))
+
+    def test_late_heartbeat_catches_up_after_final_target(self):
+        self.assertEqual(cloud.next_schedule_slot({}, self.now(23, 45)),
+                         '2026-09-18/11:00')
 
     def test_duplicate_triggers_wait_for_next_slot(self):
         jobs = {'a': self.row()}
