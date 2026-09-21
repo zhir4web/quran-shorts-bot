@@ -1,0 +1,7 @@
+*
+!Dockerfile
+!requirements-dashboard.txt
+!dashboard_server.py
+!dashboard/
+!dashboard/*
+
