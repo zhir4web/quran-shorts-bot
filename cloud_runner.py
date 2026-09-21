@@ -844,13 +844,16 @@ def schedule_timing_summary(history, jobs=None, now=None, days=SCHEDULE_REPORT_D
 
 
 def next_schedule_slot(jobs, now=None):
-    """Catch up daytime slots once; overnight manual tests are separate.
+    """Catch up today's due slots once the first target time has passed.
 
-    Legacy/manual daytime uploads count toward the target. No catch-up after
-    22:00 or across dates. Space delayed uploads at least twenty minutes apart.
+    GitHub's scheduled runners can start well after the requested cron minute.
+    Keep accepting today's oldest missed slot after the final target instead of
+    dropping it at an arbitrary 22:00 cutoff. Legacy/manual daytime uploads
+    still count toward the target, and delayed uploads remain spaced at least
+    twenty minutes apart.
     """
     local = (now or datetime.now(timezone.utc)).astimezone(BAGHDAD)
-    if not PUBLICATION_HOURS[0] <= local.hour < 22:
+    if local.hour < PUBLICATION_HOURS[0]:
         return None
     prefix = local.date().isoformat() + '/'
     completed = set()
@@ -912,7 +915,7 @@ def run(args, ledger=None, service=None):
             raise CloudError('An earlier upload is uncertain; review it before retrying')
         schedule_slot = next_schedule_slot(jobs)
         message = ('Schedule: catching up slot ' + schedule_slot if schedule_slot else
-                   'Schedule: no slot due (completed, spacing limit, or outside 11:00-22:00 Baghdad).')
+                   'Schedule: no slot due (before first target, completed, or spacing limit).')
         print(message)
         schedule_event = record_schedule_event(ledger, schedule_slot, run_started_at,
                                                'selected' if schedule_slot else 'no_slot')
