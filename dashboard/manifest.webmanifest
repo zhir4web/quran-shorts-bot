@@ -1,0 +1,17 @@
+{
+  "name": "Quran Shorts Control Center",
+  "short_name": "Quran Shorts",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#080d18",
+  "theme_color": "#0b1220",
+  "dir": "rtl",
+  "lang": "ku",
+  "icons": [{
+    "src": "/icon.svg",
+    "sizes": "any",
+    "type": "image/svg+xml",
+    "purpose": "any maskable"
+  }]
+}
+
