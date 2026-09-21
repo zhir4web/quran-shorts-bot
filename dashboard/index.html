@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ku" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1220">
+  <title>Quran Shorts · Control Center</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <div class="mobile-backdrop" data-close-menu></div>
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark">۞</div>
+        <div>
+          <strong>Quran Shorts</strong>
+          <span>Control Center</span>
+        </div>
+        <button class="icon-button sidebar-close" aria-label="داخستنی مینو" data-close-menu>×</button>
+      </div>
+      <div class="workspace-switcher">
+        <span class="status-dot"></span>
+        <div><small>Workspace</small><strong>zhir4web / quran-shorts</strong></div>
+        <span class="chevron">⌄</span>
+      </div>
+      <nav class="main-nav" aria-label="مینی سەرەکی">
+        <p class="nav-label">بەڕێوەبردن</p>
+        <button class="nav-item active" data-section="overview"><span class="nav-icon">⌂</span> داشبۆرد</button>
+        <button class="nav-item" data-section="youtube"><span class="nav-icon">▶</span> YouTube</button>
+        <button class="nav-item" data-section="tiktok"><span class="nav-icon">♪</span> TikTok <em class="soon">بەم زووانە</em></button>
+        <button class="nav-item" data-section="schedule"><span class="nav-icon">◷</span> خشتەی کات</button>
+        <p class="nav-label nav-label-spaced">چاودێری</p>
+        <button class="nav-item" data-section="library"><span class="nav-icon">▣</span> ڤیدیۆکان</button>
+        <button class="nav-item" data-section="health"><span class="nav-icon">✦</span> تەندروستی سیستەم</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <button class="nav-item" data-section="settings"><span class="nav-icon">⚙</span> ڕێکخستن</button>
+        <div class="account-card">
+          <div class="avatar">ZJ</div>
+          <div><strong>Zhir Jalal</strong><span>Admin</span></div>
+          <span class="more">•••</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <button class="icon-button menu-button" aria-label="کردنەوەی مینو" data-open-menu>☰</button>
+        <div class="breadcrumbs"><span>Quran Shorts</span><b>/</b><strong id="page-title">داشبۆرد</strong></div>
+        <div class="topbar-actions">
+          <span class="live-status"><span class="status-dot"></span> سیستەم چالاکە</span>
+          <button class="icon-button" aria-label="ئاگادارییەکان">♢<i></i></button>
+          <button class="profile-button" aria-label="پرۆفایل"><span class="avatar small">ZJ</span><span>ژیر</span><b>⌄</b></button>
+        </div>
+      </header>
+
+      <div class="page-wrap">
+        <section class="section-panel active-section" data-panel="overview">
+          <div class="page-heading">
+            <div><p class="eyebrow">بەخێربێیتەوە، ژیر 👋</p><h1>کۆنترۆڵی بڵاوکردنەوە</h1><p class="muted">هەموو شتێک لە یەک شوێنەوە چاودێری و بەڕێوەببە.</p></div>
+            <button class="button primary" data-action="publish" data-count="1"><span>＋</span> پۆستکردنی ئێستا</button>
+          </div>
+          <div class="stat-grid">
+            <article class="stat-card accent-blue"><div class="stat-top"><span>پۆستەکانی ئەمڕۆ</span><span class="stat-icon">◷</span></div><strong id="today-count">—</strong><div class="stat-foot"><span id="today-target">لە — ئامانج</span><span class="progress-track"><i id="today-progress"></i></span></div></article>
+            <article class="stat-card accent-green"><div class="stat-top"><span>کۆی ڤیدیۆ بڵاوکراوەکان</span><span class="stat-icon">▶</span></div><strong id="tracked-count">—</strong><div class="stat-foot"><span class="positive">Ledger ـەکە پارێزراوە</span><span class="trend">↗</span></div></article>
+            <article class="stat-card accent-purple"><div class="stat-top"><span>بینینی کۆتا پشکنین</span><span class="stat-icon">◉</span></div><strong id="avg-views">—</strong><div class="stat-foot"><span>تێکڕای دوا snapshot</span><span class="trend">↗</span></div></article>
+            <article class="stat-card accent-amber"><div class="stat-top"><span>دۆخی سیستەم</span><span class="stat-icon">✦</span></div><strong id="health-state">—</strong><div class="stat-foot"><span id="health-detail">چاوەڕوانی داتا</span><span class="health-badge" id="health-badge">●</span></div></article>
+          </div>
+
+          <div class="dashboard-grid">
+            <article class="panel action-panel">
+              <div class="panel-heading"><div><h2>کردارە خێراکان</h2><p class="muted">هەڵبژێرە چی دەته‌وێت بکرێت.</p></div><span class="panel-kicker">SAFE ACTIONS</span></div>
+              <div class="action-list">
+                <button class="action-row" data-action="publish" data-count="1"><span class="action-symbol blue">▶</span><span><strong>یەک پۆست بکە ئێستا</strong><small>ڤیدیۆ دروست دەکات و بۆ YouTube دەنێرێت</small></span><b>←</b></button>
+                <button class="action-row" data-action="preview" data-count="1"><span class="action-symbol purple">▧</span><span><strong>دروستکردنی preview</strong><small>تەنها ڤیدیۆ دروست دەکات، upload ناکات</small></span><b>←</b></button>
+                <button class="action-row" data-action="scheduled" data-count="1"><span class="action-symbol green">◷</span><span><strong>گرتنەوەی schedule</strong><small>ئەو slot ـانەی لەدەستچوون بە ledger دەگرێتەوە</small></span><b>←</b></button>
+              </div>
+              <div class="action-note"><span>ⓘ</span> هەر کردارێک لە GitHub Actions ـەوە جێبەجێ دەکرێت و ledger پێش upload نوێ دەکرێتەوە.</div>
+            </article>
+            <article class="panel schedule-card">
+              <div class="panel-heading"><div><h2>خشتەی ئەمڕۆ</h2><p class="muted">کاتی بەغدا · UTC+3</p></div><button class="text-button" data-section-jump="schedule">بینینی هەموو ←</button></div>
+              <div id="schedule-list" class="schedule-list"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
+            </article>
+          </div>
+
+          <article class="panel recent-panel">
+            <div class="panel-heading"><div><h2>کۆتا پۆستەکان</h2><p class="muted">دواین گۆڕانکارییەکانی ledger</p></div><button class="text-button" data-section-jump="library">هەمووی ببینە ←</button></div>
+            <div class="table-wrap"><table><thead><tr><th>ڤیدیۆ</th><th>قورئان‌خوێن</th><th>Theme</th><th>کات</th><th>دۆخ</th><th></th></tr></thead><tbody id="recent-table"><tr><td colspan="6" class="empty">داتا بار دەکرێت...</td></tr></tbody></table></div>
+          </article>
+        </section>
+
+        <section class="section-panel" data-panel="youtube"><div class="page-heading"><div><p class="eyebrow">پلاتفۆرم</p><h1>YouTube</h1><p class="muted">بڵاوکردنەوە، schedule و کارایی کەناڵەکەت لێرە کۆنترۆڵ بکە.</p></div><button class="button primary" data-action="publish" data-count="1">＋ پۆستکردنی ئێستا</button></div><div class="platform-grid"><article class="platform-hero youtube-hero"><span class="platform-logo">▶</span><div><span class="platform-label">CONNECTED</span><h2>YouTube کەناڵەکەت</h2><p id="youtube-channel">کەناڵ بار دەکرێت...</p></div><span class="connection-pill" id="youtube-connection">● پەیوەستە</span></article><article class="panel"><div class="panel-heading"><div><h2>کردارەکان</h2><p class="muted">هەموو کردارەکان ledger ـەکەش نوێ دەکەنەوە.</p></div></div><div class="button-stack"><button class="button primary wide" data-action="publish" data-count="1">▶ پۆستی نوێ بکە</button><button class="button secondary wide" data-action="scheduled" data-count="1">◷ schedule بگرەوە</button><button class="button ghost wide" data-action="preview" data-count="1">▧ preview دروست بکە</button></div></article></div></section>
+
+        <section class="section-panel" data-panel="tiktok"><div class="page-heading"><div><p class="eyebrow">پلاتفۆرمێکی نوێ</p><h1>TikTok</h1><p class="muted">هەمان ڤیدیۆی پاک و vertical بە شێوەی جیاواز بگەیەنە بە بینەر.</p></div></div><article class="platform-hero tiktok-hero"><span class="platform-logo">♪</span><div><span class="platform-label">MODULE READY</span><h2>بەشی TikTok ئامادەیە بۆ پەیوەستکردن</h2><p>بۆ upload ـی ڕاستەوخۆ، TikTok Content Posting API و OAuth ـی تایبەت پێویستە. هیچ token ـێک لە browser نادرێت.</p></div><span class="connection-pill neutral">○ پەیوەست نەکراوە</span></article><article class="panel info-panel"><span class="info-icon">i</span><div><h3>پاراستنی داتا</h3><p class="muted">کاتێک token ـی TikTok لە server ـدا ڕێکخرابێت، هەمان queue و ledger بەکار دەهێنین بۆ ئەوەی ڤیدیۆ دووجار upload نەکرێت.</p></div></article></section>
+
+        <section class="section-panel" data-panel="schedule"><div class="page-heading"><div><p class="eyebrow">بەڕێوەبردنی کات</p><h1>خشتەی بڵاوکردنەوە</h1><p class="muted">کاتەکان بە کاتی بەغدان و GitHub heartbeat ـەکان خۆکارانە catch-up دەکەن.</p></div></div><div class="schedule-editor-grid"><article class="panel"><div class="panel-heading"><div><h2>کاتە چالاکەکان</h2><p class="muted">ئامانجی ئێستا ٣ پۆستە لە ڕۆژێکدا.</p></div><span class="schedule-zone">Asia/Baghdad</span></div><div id="schedule-editor-list" class="editor-slots"></div><div class="action-note"><span>✓</span> پۆستی دواخراو بە ledger دەگیرێتەوە و duplicate درووست ناکرێت.</div></article><article class="panel"><div class="panel-heading"><div><h2>پۆستی دەستی</h2><p class="muted">بۆ ڕۆژێکی تایبەت دەتوانیت زیاتر لە ٣ پۆست بنێریت.</p></div></div><label class="field-label">ژمارەی پۆستەکان</label><div class="count-picker"><button data-count-adjust="-1">−</button><strong id="manual-count">1</strong><button data-count-adjust="1">＋</button></div><button class="button primary wide" id="manual-publish">▶ پۆستکردنی ئەم ژمارەیە ئێستا</button><p class="tiny-note">زۆرترین ٥ workflow لە یەک کلیکدا dispatch دەکرێن و GitHub بە شێوەی safe ـەوە serial ـیان دەکات.</p></article></div></section>
+
+        <section class="section-panel" data-panel="library"><div class="page-heading"><div><p class="eyebrow">کتێبخانە</p><h1>ڤیدیۆ بڵاوکراوەکان</h1><p class="muted">هەموو تۆمارە upload کراوەکان لە remote ledger ـەوە.</p></div></div><article class="panel"><div class="table-wrap"><table><thead><tr><th>ڤیدیۆ</th><th>قورئان‌خوێن</th><th>Theme</th><th>کات</th><th>CTA</th><th>بەستەر</th></tr></thead><tbody id="library-table"><tr><td colspan="6" class="empty">داتا بار دەکرێت...</td></tr></tbody></table></div></article></section>
+
+        <section class="section-panel" data-panel="health"><div class="page-heading"><div><p class="eyebrow">چاودێری</p><h1>تەندروستی سیستەم</h1><p class="muted">دۆخی upload، ledger و metrics بە شێوەی ڕوون.</p></div></div><div class="health-grid"><article class="panel health-big"><span class="health-ring" id="health-ring">✓</span><div><span class="platform-label">CURRENT STATUS</span><h2 id="health-heading">سیستەم لە بارکردندا</h2><p id="health-copy" class="muted">پشکنین لە remote ledger ـەوە دەکرێت.</p></div></article><article class="panel checklist"><h2>پشکنینەکان</h2><div class="check-row"><span>✓</span><div><strong>Ledger و duplicate protection</strong><small>چالاکە</small></div></div><div class="check-row"><span>✓</span><div><strong>GitHub workflow</strong><small>بەردەستە</small></div></div><div class="check-row"><span id="metrics-check">○</span><div><strong>Performance metrics</strong><small id="metrics-copy">داتا بار دەکرێت...</small></div></div></article></div></section>
+
+        <section class="section-panel" data-panel="settings"><div class="page-heading"><div><p class="eyebrow">کۆنترۆڵ</p><h1>ڕێکخستن</h1><p class="muted">زانیارییەکانی dashboard ـەکە و پەیوەندییەکان.</p></div></div><div class="settings-grid"><article class="panel"><h2>پاراستنی dashboard</h2><p class="muted">GitHub token تەنها لە server ـدا دەمێنێتەوە؛ frontend هیچ token ـێک نابینێت.</p><div class="security-line"><span class="security-icon">⌁</span><div><strong>Server-side secrets</strong><small>چالاک</small></div><span class="health-badge">●</span></div><div class="security-line"><span class="security-icon">◈</span><div><strong>Workflow dispatch</strong><small>لە ڕێگەی API ـی GitHub</small></div><span class="health-badge">●</span></div></article><article class="panel"><h2>پلاتفۆرمەکان</h2><div class="integration-row"><span class="integration-logo youtube">▶</span><div><strong>YouTube</strong><small id="settings-youtube">پەیوەستە</small></div><span class="connection-pill">چالاک</span></div><div class="integration-row"><span class="integration-logo tiktok">♪</span><div><strong>TikTok</strong><small>OAuth پێویستە</small></div><span class="connection-pill neutral">بەم زووانە</span></div></article></div></section>
+      </div>
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+      <dialog class="key-dialog" id="key-dialog">
+        <form method="dialog" id="key-form">
+          <span class="info-icon">⌁</span>
+          <h3>کلیلی dashboard</h3>
+          <p class="muted">کلیلەکە تەنها بۆ پەیوەندی بە server ـە و لە هیچ شوێنێکی تر نانێردرێت.</p>
+          <input id="key-input" type="password" autocomplete="off" placeholder="DASHBOARD_KEY">
+          <div class="dialog-actions"><button value="cancel" class="button ghost">داخستن</button><button value="save" class="button primary">پاشەکەوتکردن</button></div>
+        </form>
+      </dialog>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
+
