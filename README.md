@@ -32,6 +32,27 @@
 - `.github/workflows/quran-shorts.yml`: schedule و جێبەجێکردن.
 - `cloud_runner.py`: هەڵبژاردن، دروستکردن، پشکنین و upload.
 
+## داشبۆردی بەڕێوەبردن
+
+داشبۆردێکی responsive لە `dashboard/` هەیە کە لە مۆبایل و لاپتۆپ کار دەکات.
+`dashboard_server.py` داتا لە remote ledger ـەوە دەخوێنێتەوە و کردارەکان بە شێوەی
+پارێزراو workflow ـی هەمان GitHub بەڕێوە دەبات؛ هیچ GitHub یان YouTube token ـێک
+بۆ browser نانێردرێت.
+
+بۆ دەستپێکردن بە شێوەی local:
+
+```powershell
+$env:GITHUB_TOKEN = "token-with-actions-write-and-contents-read"
+$env:DASHBOARD_KEY = "a-long-random-key"
+python dashboard_server.py
+```
+
+پاشان `http://127.0.0.1:8787` بکەرەوە. داشبۆردەکە preview، پۆستکردنی
+دەستی، schedule catch-up، ledger، health و کۆتا پۆستەکان نیشان دەدات. ژمارەی
+پۆستی دەستی تا 5 ـە و هەر dispatch ـێک بە concurrency و remote ledger ـی
+ئێستا پارێزراوە. بەشی TikTok وەک integration ـێکی جیاواز ئامادەکراوە و تا
+OAuth و Content Posting API ـی TikTok ڕێک نەخرێت، هیچ upload ـێکی نادیار ناکات.
+
 ## پشکنین
 
 ```text
