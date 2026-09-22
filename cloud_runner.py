@@ -58,6 +58,7 @@ class RemoteLedger:
             raise ValueError('Invalid repository')
         self.url = f'https://api.github.com/repos/{repository}/contents/{STATE_PATH}'
         self.catalog_url = f'https://api.github.com/repos/{repository}/contents/catalog.json'
+        self.clip_base_url = f'https://api.github.com/repos/{repository}/contents/.bot-state/clip-submissions'
         self.branch = branch
         self.session = requests.Session()
         self.session.headers.update({'Authorization': f'Bearer {token}',
@@ -98,6 +99,33 @@ class RemoteLedger:
         if response.status_code not in (200, 201):
             raise RuntimeError(f'Remote ledger not saved (HTTP {response.status_code}); no new upload will start')
         self.sha = response.json()['content']['sha']
+
+    def load_custom_clip(self, clip_id):
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', str(clip_id or '')):
+            raise CloudError('Invalid custom video id')
+        response = self.session.get(f'{self.clip_base_url}/{clip_id}.json',
+                                    params={'ref': self.branch}, timeout=30)
+        if response.status_code != 200:
+            raise CloudError('Custom video submission was not found')
+        try:
+            payload = response.json()
+            record = json.loads(base64.b64decode(payload['content']))
+        except (KeyError, ValueError, TypeError):
+            raise CloudError('Custom video submission is invalid') from None
+        if (record.get('id') != clip_id or record.get('status') not in {'queued', 'processing'} or
+                record.get('license_confirmed') is not True):
+            raise CloudError('Custom video is not queued with licence confirmation')
+        return record, payload['sha']
+
+    def save_custom_clip(self, record, sha, message):
+        clip_id = record.get('id')
+        content = base64.b64encode(json.dumps(record, ensure_ascii=False, indent=2).encode()).decode()
+        payload = {'message': message, 'content': content, 'branch': self.branch, 'sha': sha}
+        response = self.session.put(f'{self.clip_base_url}/{clip_id}.json', json=payload, timeout=30)
+        if response.status_code not in (200, 201):
+            print('Custom video status could not be saved; ledger remains authoritative')
+            return sha
+        return response.json().get('content', {}).get('sha', sha)
 
     def block_reciter(self, catalog, reciter_id):
         """Persist a newly unsafe reciter without changing the reviewed allowlist."""
@@ -395,6 +423,43 @@ def download_recording(entry, destination):
     return destination
 
 
+CUSTOM_CLIP_URL = re.compile(r'^https://[^ ]+\.(?:mp4|mov|webm)(?:\?.*)?$', re.IGNORECASE)
+MAX_CUSTOM_VIDEO_BYTES = 60 * 1024 * 1024
+
+
+def download_custom_video(record, destination):
+    url = str(record.get('url') or '')
+    if not CUSTOM_CLIP_URL.fullmatch(url):
+        raise CloudError('Custom video URL must be a direct HTTPS MP4, MOV, or WebM link')
+    if record.get('license_confirmed') is not True:
+        raise CloudError('Custom video licence confirmation is required')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix('.part')
+    total = 0
+    try:
+        with requests.get(url, stream=True, timeout=(15, 120),
+                          headers={'User-Agent': 'quran-shorts-bot/4.0'}) as response:
+            response.raise_for_status()
+            declared = int(response.headers.get('content-length', '0') or 0)
+            if declared > MAX_CUSTOM_VIDEO_BYTES:
+                raise CloudError('Custom video exceeds the 60 MB limit')
+            with temporary.open('wb') as handle:
+                for block in response.iter_content(1024 * 1024):
+                    total += len(block)
+                    if total > MAX_CUSTOM_VIDEO_BYTES:
+                        raise CloudError('Custom video exceeds the 60 MB limit')
+                    handle.write(block)
+    except requests.RequestException:
+        raise CloudError('Custom video source is temporarily unavailable') from None
+    if total < 1024:
+        raise CloudError('Custom video is empty')
+    duration = media_duration(temporary)
+    if duration < 1:
+        raise CloudError('Custom video has no moving video track')
+    os.replace(temporary, destination)
+    return destination
+
+
 def media_duration(path):
     result = subprocess.run([bot.ffmpeg(), '-hide_banner', '-nostdin', '-i', str(path),
                              '-f', 'null', '-'], capture_output=True, text=True,
@@ -630,7 +695,7 @@ def video_background_for(entry):
         raise FileNotFoundError(f'Reviewed filmed background missing: {path}')
     return None
 
-def item_for(entry, source, background, motion_overlay=None):
+def item_for(entry, source, background, motion_overlay=None, background_video=None):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
     cta = bot.CTA_COMMENTS[cta_index]
     verse_caption = verse_label(entry)
@@ -670,7 +735,9 @@ def item_for(entry, source, background, motion_overlay=None):
         item['verse_start'], item['verse_end'] = span
     if entry.get('verse_key'):
         item['verse_key'] = entry['verse_key']
-    filmed = video_background_for(entry)
+    filmed = Path(background_video).resolve() if background_video else video_background_for(entry)
+    if filmed and not filmed.is_file():
+        raise FileNotFoundError(f'Reviewed filmed background missing: {filmed}')
     if filmed:
         item['background_video'] = str(filmed.resolve())
         item['background_motion'] = 'real_video'
@@ -1214,6 +1281,23 @@ def run(args, ledger=None, service=None):
     if ledger:
         ledger.load()
     jobs = ledger.data['jobs'] if ledger else {}
+    custom_id = os.environ.get('CUSTOM_VIDEO_ID', '').strip()
+    custom_clip = None
+    custom_clip_sha = None
+    if custom_id:
+        if args.mode != 'publish' or not ledger or not service:
+            raise CloudError('Custom video submissions require publish mode')
+        for row in jobs.values():
+            if row.get('custom_clip_id') == custom_id:
+                if row.get('status') == 'uploaded' and row.get('video_id'):
+                    print('Custom video already uploaded: https://www.youtube.com/watch?v=' + row['video_id'])
+                    return row['video_id']
+                if row.get('status') == 'uploading':
+                    raise CloudError('This custom video already has an uncertain upload')
+        custom_clip, custom_clip_sha = ledger.load_custom_clip(custom_id)
+        custom_clip['status'] = 'processing'
+        custom_clip_sha = ledger.save_custom_clip(custom_clip, custom_clip_sha,
+                                                   f'Process custom video {custom_id} [skip ci]')
     schedule_slot = None
     if args.mode == 'scheduled':
         if not ledger or not service:
@@ -1278,10 +1362,14 @@ def run(args, ledger=None, service=None):
     # Enforce the policy for every source type, including legacy catalogs.
     if media_duration(source) < 30 or float(entry['duration']) < 30:
         raise TooShortRecording('Recitation must be at least 30 seconds before rendering')
+    custom_background = None
+    if custom_clip:
+        entry['visual_theme'] = custom_clip['theme']
+        custom_background = download_custom_video(custom_clip, workspace / 'custom-background.mp4')
     card = make_card(entry, workspace / 'background.png')
-    motion = (None if video_background_for(entry) else
+    motion = (None if custom_background or video_background_for(entry) else
               make_motion_overlay(entry, workspace / 'moving-rain.png'))
-    job = item_for(entry, source, card, motion)
+    job = item_for(entry, source, card, motion, background_video=custom_background)
     queue = workspace / 'queue.json'
     bot.atomic_json(queue, {'items': [job]})
     bot.load_queue(queue)  # Apply the same metadata and permission checks as local runs.
@@ -1299,6 +1387,9 @@ def run(args, ledger=None, service=None):
                          'visual_theme': job.get('visual_theme'),
                          'render_sha256': bot.file_hash(target),
                          'started_at': datetime.now(timezone.utc).isoformat()}
+    if custom_id:
+        jobs[entry['id']]['custom_clip_id'] = custom_id
+        jobs[entry['id']]['custom_source_url'] = custom_clip['url']
     if schedule_slot:
         jobs[entry['id']]['schedule_slot'] = schedule_slot
     if next_cursor is not None:
@@ -1314,6 +1405,11 @@ def run(args, ledger=None, service=None):
                                    (uploaded_at.astimezone(BAGHDAD) -
                                     schedule_slot_time(schedule_slot)).total_seconds() / 60, 1)})
     ledger.save()
+    if custom_clip and custom_clip_sha:
+        custom_clip.update(status='uploaded', video_id=video_id,
+                           uploaded_at=uploaded_at.isoformat())
+        ledger.save_custom_clip(custom_clip, custom_clip_sha,
+                                f'Complete custom video {custom_id} [skip ci]')
     print('Uploaded: https://www.youtube.com/watch?v=' + video_id)
     notifications.notify(
         f"Uploaded {entry['id']}\n{entry['surah_en']} — {entry.get('reciter_en', '')}"
@@ -1396,4 +1492,3 @@ def main(argv=None):
 
 if __name__ == '__main__':
     raise SystemExit(main())
-
