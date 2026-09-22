@@ -10,6 +10,12 @@ synced to the GitHub `main` branch. The production automation configuration,
 channel identity and existing publication ledger were preserved. External
 account connectivity was not inferred from local files.
 
+The tracked publication ledger currently contains 22 completed uploaded jobs
+and no unresolved `uploading` rows. That is the repository's existing state;
+this repair did not start a new live YouTube upload. The local review video is
+the synthetic test-tone fixture described below, so it is not counted as a
+published Quran video.
+
 ## Repairs
 
 ### Publication and scheduling
