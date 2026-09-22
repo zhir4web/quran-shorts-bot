@@ -204,16 +204,17 @@ class HttpTests(unittest.TestCase):
                 self.assertEqual(status, 400)
                 client.write_file.assert_not_called()
             status, _, raw = self.request('POST', '/api/submit-clip',
-                '{"url":"https://videos.pexels.com/video-files/x/y.mp4","theme":"forest_rain","title":"Ocean waves"}',
+                '{"url":"https://videos.pexels.com/video-files/x/y.mp4","theme":"forest_rain","title":"Ocean waves","license_confirmed":true}',
                 headers)
             self.assertEqual(status, 202)
             result = json.loads(raw)
             self.assertTrue(result['ok'])
-            self.assertEqual(result['status'], 'pending')
+            self.assertEqual(result['status'], 'queued')
             path = client.write_file.call_args[0][0]
             self.assertTrue(path.startswith('.bot-state/clip-submissions/'))
             record = json.loads(client.write_file.call_args[0][1])
-            self.assertFalse(record['license_confirmed'])
+            self.assertTrue(record['license_confirmed'])
+            client.dispatch.assert_called_once()
             self.assertEqual(record['theme'], 'forest_rain')
 
     def test_clip_submission_blocked_when_publishing_disabled(self):
@@ -229,4 +230,3 @@ class HttpTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
