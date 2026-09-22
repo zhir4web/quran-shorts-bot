@@ -7,9 +7,11 @@ Run locally with ``python dashboard_server.py``.
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import os
 import re
+import socket
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -256,7 +258,7 @@ class GitHubClient:
         if response.status_code not in (HTTPStatus.OK, HTTPStatus.CREATED):
             raise DashboardError(f'Cannot write {path} (HTTP {response.status_code})')
 
-    def dispatch(self, mode, count=1, custom_id=''):
+    def dispatch(self, mode, count=1, custom_id='')
         if not isinstance(mode, str) or mode not in {'publish', 'preview', 'scheduled'}:
             raise BadRequest('Unsupported workflow mode')
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 5:
@@ -280,8 +282,51 @@ class GitHubClient:
         return count
 
 
-
 class DashboardHandler(BaseHTTPRequestHandler):
+    server_version = 'QuranShortsDashboard/1.0'
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(30)
+
+    def _json(self, status, payload):
+        raw = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(raw)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _authorized(self):
+        expected = self.server.dashboard_key
+        if not expected:
+            host = urlparse('//' + self.headers.get('Host', '')).hostname
+            return host in ('127.0.0.1', 'localhost', '::1')
+        actual = self.headers.get('X-Dashboard-Key', '')
+        return hmac.compare_digest(actual.encode('utf-8'), expected.encode('utf-8'))
+
+    def _body(self):
+        if self.headers.get_content_type() != 'application/json' or self.headers.get('Transfer-Encoding'):
+            raise BadRequest('Request must use application/json without Transfer-Encoding')
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+        except ValueError:
+            raise BadRequest('Invalid request length')
+        if not 0 < length <= MAX_REQUEST_BYTES:
+            raise BadRequest('Request length must be between 1 and 65536 bytes')
+        try:
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise BadRequest('Incomplete request body')
+            body = json.loads(raw)
+        except (ValueError, socket.timeout) as error:
+            raise BadRequest('Request must contain valid JSON') from error
+        if not isinstance(body, dict):
+            raise BadRequest('Request body must be an object')
+        return body
+
     def _read_model(self):
         client = GitHubClient(self.server.github_token, self.server.repository, self.server.branch)
         automation = client.file_json('automation.json')
