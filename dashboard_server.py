@@ -258,7 +258,7 @@ class GitHubClient:
         if response.status_code not in (HTTPStatus.OK, HTTPStatus.CREATED):
             raise DashboardError(f'Cannot write {path} (HTTP {response.status_code})')
 
-    def dispatch(self, mode, count=1, custom_id='')
+    def dispatch(self, mode, count=1, custom_id=''):
         if not isinstance(mode, str) or mode not in {'publish', 'preview', 'scheduled'}:
             raise BadRequest('Unsupported workflow mode')
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 5:
