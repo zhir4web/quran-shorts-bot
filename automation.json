@@ -1,5 +1,6 @@
 {
   "enabled": true,
   "channel_id": "UCFrBgGfylAm18PWF1YgoQTg",
-  "privacy": "public"
+  "privacy": "public",
+  "playlist_privacy": "public"
 }

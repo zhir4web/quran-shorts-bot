@@ -104,3 +104,38 @@ test('rapid repeated clicks create only one publication request', async () => {
   await first;
   assert.equal(ui.action.disabled, false);
 });
+
+test('analytics section renders retention bars, CTA variants and playlists safely', async () => {
+  const data = overview();
+  data.analytics = {
+    retention: [
+      { id: 'a', url: 'https://www.youtube.com/shorts/a', reciter: 'Reader <b>', percentage: 72, views: 500 },
+      { id: 'b', url: null, reciter: 'No link', percentage: 140, views: 5 },
+    ],
+    cta_variants: [{ variant: 0, videos: 5, avg_view_percentage: 61, avg_views: 150.5 }],
+    playlists: [{ surah: 'Al-Ikhlas', url: 'https://www.youtube.com/playlist?list=PL1' },
+                { surah: 'Broken <img>', url: null }],
+  };
+  const ui = boot(async () => response(200, data));
+  await flush();
+  const retention = ui.ids.get('#retention-list').innerHTML;
+  assert.match(retention, /Reader &lt;b&gt;/);
+  assert.match(retention, /width:100%/);
+  assert.match(retention, /width:72%/);
+  assert.doesNotMatch(retention, /<b>/);
+  const cta = ui.ids.get('#cta-list').innerHTML;
+  assert.match(cta, /جۆر 0/);
+  assert.match(cta, /150\.5/);
+  const playlists = ui.ids.get('#playlist-list').innerHTML;
+  assert.match(playlists, /playlist\?list=PL1/);
+  assert.match(playlists, /Broken &lt;img&gt;/);
+  assert.doesNotMatch(playlists, /<img>/);
+});
+
+test('analytics section shows empty-state copy when the ledger has no analytics yet', async () => {
+  const ui = boot(async () => response(200, overview()));
+  await flush();
+  assert.match(ui.ids.get('#retention-list').innerHTML, /بەردەست نییە/);
+  assert.match(ui.ids.get('#cta-list').innerHTML, /کۆ نەبووەتەوە/);
+  assert.match(ui.ids.get('#playlist-list').innerHTML, /دروست نەبووە/);
+});

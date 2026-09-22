@@ -135,6 +135,22 @@
     return `<tr><td><div class="video-cell"><span class="video-thumb">▶</span><span>${escapeHtml(row.video_id)}</span></div></td><td>${escapeHtml(row.reciter)}</td><td>${escapeHtml(row.theme)}</td><td>${escapeHtml(date)}</td><td><span class="status-pill">uploaded</span></td><td><a class="table-link" href="${escapeHtml(row.url)}" target="_blank" rel="noreferrer">بینین ↗</a></td></tr>`;
   }
 
+  function renderAnalytics(data) {
+    const analytics = data.analytics || {};
+    const retention = analytics.retention || [];
+    $('#retention-list').innerHTML = retention.length ? retention.map((row) =>
+      `<div class="retention-row"><a class="retention-link" href="${escapeHtml(row.url || '#')}" target="_blank" rel="noreferrer">${escapeHtml(row.reciter)}</a><div class="retention-bar"><span style="width:${Math.min(100, row.percentage)}%"></span></div><strong>${row.percentage}%</strong><small>${row.views.toLocaleString('en-US')} بینین</small></div>`
+    ).join('') : '<div class="empty">هێشتا داتای retention بەردەست نییە؛ scope ـی yt-analytics.readonly پێویستە.</div>';
+    const cta = analytics.cta_variants || [];
+    $('#cta-list').innerHTML = cta.length ? cta.map((row) =>
+      `<div class="cta-row"><strong>جۆر ${row.variant}</strong><small>${row.videos} ڤیدیۆ · مامناوەندی ماوە ${row.avg_view_percentage}% · ${row.avg_views.toLocaleString('en-US')} بینین</small></div>`
+    ).join('') : '<div class="empty">هێشتا داتای جۆرەکانی CTA کۆ نەبووەتەوە.</div>';
+    const playlists = analytics.playlists || [];
+    $('#playlist-list').innerHTML = playlists.length ? playlists.map((row) =>
+      row.url ? `<a class="playlist-link" href="${escapeHtml(row.url)}" target="_blank" rel="noreferrer">${escapeHtml(row.surah)} ↗</a>` : `<span>${escapeHtml(row.surah)}</span>`
+    ).join('') : '<div class="empty">هێشتا playlist ـێک دروست نەبووە.</div>';
+  }
+
   function renderTables(data) {
     const rows = data.recent || [];
     const html = rows.length ? rows.map(rowHtml).join('') : '<tr><td colspan="6" class="empty">هێشتا هیچ پۆستێک نییە.</td></tr>';
@@ -148,7 +164,7 @@
     try {
       const data = await api('/api/overview');
       state.overview = data;
-      renderStats(data); renderSchedule(data); renderTables(data);
+      renderStats(data); renderSchedule(data); renderTables(data); renderAnalytics(data);
       $('#metrics-check').textContent = '✓';
       $('#metrics-copy').textContent = 'کۆتا داتا بەردەستە';
       $('#health-heading').textContent = ({ attention: 'پێویستی بە سەرنج هەیە', healthy: 'پشکنینەکان باشن', unknown: 'دۆخی سیستەم تەواو نەپشکنراوە' })[data.health?.state] || 'نادیارە';
@@ -189,7 +205,29 @@
     finally { state.busy = false; updateButtons(); }
   }
 
+  async function submitClip() {
+    if (state.busy) return;
+    const url = $('#clip-url').value.trim();
+    const theme = $('#clip-theme').value || '';
+    const title = $('#clip-title').value.trim();
+    if (!url || !theme || !title) { toast('لینک، theme و ناونیشان پێویستن.', true); return; }
+    state.busy = true;
+    try {
+      const result = await api('/api/submit-clip', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, theme, title }) });
+      toast(result.note || 'کلیپەکە نێردرا بۆ پێداچوونەوە.');
+      $('#clip-url').value = ''; $('#clip-title').value = '';
+    } catch (error) { toast(`نەتوانرا بینێردرێت: ${error.message}`, true); }
+    finally { state.busy = false; updateButtons(); }
+  }
+
   function bind() {
+    const themeSelect = $('#clip-theme');
+    if (themeSelect) {
+      themeSelect.innerHTML = ['forest_rain', 'mist_mountains', 'starry_night', 'ocean_moon', 'dawn_mosque']
+        .map((theme) => `<option value="${theme}">${theme}</option>`).join('');
+      $('#submit-clip').addEventListener('click', submitClip);
+    }
     $$('.nav-item[data-section]').forEach((item) => item.addEventListener('click', () => setSection(item.dataset.section)));
     $$('[data-section-jump]').forEach((item) => item.addEventListener('click', () => setSection(item.dataset.sectionJump)));
     $('[data-open-menu]').addEventListener('click', () => $('#sidebar').classList.add('open'));

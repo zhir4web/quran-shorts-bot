@@ -88,6 +88,42 @@ class DashboardTests(unittest.TestCase):
         with self.assertRaises(dashboard.DashboardError):
             dashboard.build_overview({}, {}, {'jobs': []})
 
+    def test_analytics_section_surfaces_retention_cta_and_playlists(self):
+        now = datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc)
+        automation = {'enabled': True, 'channel_id': 'channel', 'privacy': 'public'}
+        ledger = {
+            'jobs': {
+                'job-1': {'status': 'uploaded', 'video_id': 'abc123',
+                          'uploaded_at': '2026-09-21T09:30:00+00:00',
+                          'reciter_name': 'Strong', 'analytics': {
+                              'average_view_percentage': 61.2, 'views': 400}},
+                'job-2': {'status': 'uploaded', 'video_id': 'def456',
+                          'uploaded_at': '2026-09-20T09:30:00+00:00',
+                          'reciter_name': 'Weak', 'analytics': {
+                              'average_view_percentage': 42.0, 'views': 900}},
+            },
+            'playlists': {'Al-Ikhlas': 'PLgood123456', 'broken': 'bad id with spaces'},
+            'cta_performance': {'0': {'videos': 5, 'avg_view_percentage': 61.3, 'avg_views': 150.5},
+                                '9': {'videos': 1, 'avg_view_percentage': 10, 'avg_views': 5},
+                                'bogus': {'videos': 2}},
+        }
+        result = dashboard.build_overview(automation, {}, ledger, now=now)
+        retention = result['analytics']['retention']
+        self.assertEqual([row['reciter'] for row in retention], ['Strong', 'Weak'])
+        self.assertEqual(retention[0]['percentage'], 61)
+        playlists = result['analytics']['playlists']
+        self.assertEqual(len(playlists), 2)
+        self.assertIsNotNone(playlists[0]['url'])
+        self.assertIsNone(playlists[1]['url'])
+        cta = result['analytics']['cta_variants']
+        self.assertEqual([row['variant'] for row in cta], [0])
+        self.assertEqual(cta[0]['videos'], 5)
+
+    def test_analytics_section_is_safe_when_ledger_has_no_new_fields(self):
+        result = dashboard.build_overview({'enabled': True}, {},
+                                          {'jobs': {'j': {'status': 'uploaded', 'video_id': 'x'}}})
+        self.assertEqual(result['analytics'], {'retention': [], 'cta_variants': [], 'playlists': []})
+
 
 class HttpTests(unittest.TestCase):
     def setUp(self):
@@ -154,6 +190,41 @@ class HttpTests(unittest.TestCase):
             self.assertEqual(self.request('POST', '/api/workflow', '{"mode":"publish"}',
                 {'Content-Type': 'application/json', 'X-Dashboard-Key': 'test-key'})[0], 409)
             self.assertEqual(client.dispatch.call_count, 1)
+
+    def test_clip_submission_requires_direct_media_link_and_theme(self):
+        overview = {'channel': {'enabled': True}, 'health': {'uncertain_uploads': []}}
+        client = Mock(repository='owner/repo')
+        client.write_file.return_value = None
+        headers = {'Content-Type': 'application/json', 'X-Dashboard-Key': 'test-key'}
+        with patch.object(dashboard.DashboardHandler, '_read_model', return_value=(overview, client)):
+            for body in ('{"url":"https://evil.example/page","theme":"forest_rain","title":"T"}',
+                         '{"url":"https://x.example/a.mp4","theme":"unknown","title":"T"}',
+                         '{"url":"https://x.example/a.mp4","theme":"forest_rain","title":""}'):
+                status, _, _ = self.request('POST', '/api/submit-clip', body, headers)
+                self.assertEqual(status, 400)
+                client.write_file.assert_not_called()
+            status, _, raw = self.request('POST', '/api/submit-clip',
+                '{"url":"https://videos.pexels.com/video-files/x/y.mp4","theme":"forest_rain","title":"Ocean waves"}',
+                headers)
+            self.assertEqual(status, 202)
+            result = json.loads(raw)
+            self.assertTrue(result['ok'])
+            self.assertEqual(result['status'], 'pending')
+            path = client.write_file.call_args[0][0]
+            self.assertTrue(path.startswith('.bot-state/clip-submissions/'))
+            record = json.loads(client.write_file.call_args[0][1])
+            self.assertFalse(record['license_confirmed'])
+            self.assertEqual(record['theme'], 'forest_rain')
+
+    def test_clip_submission_blocked_when_publishing_disabled(self):
+        overview = {'channel': {'enabled': False}, 'health': {'uncertain_uploads': []}}
+        client = Mock(repository='owner/repo')
+        headers = {'Content-Type': 'application/json', 'X-Dashboard-Key': 'test-key'}
+        with patch.object(dashboard.DashboardHandler, '_read_model', return_value=(overview, client)):
+            status, _, _ = self.request('POST', '/api/submit-clip',
+                '{"url":"https://x.example/a.mp4","theme":"forest_rain","title":"T"}', headers)
+        self.assertEqual(status, 400)
+        client.write_file.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -67,6 +67,7 @@ class CloudTests(unittest.TestCase):
         entry = dict(ENTRY, audio_url='https://example.com/verse.mp3',
                      max_audio_seconds=58, tail_silence_seconds=1)
         response = Mock()
+        response.status_code = 200
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
         response.iter_content.return_value = [b'audio']
@@ -137,6 +138,31 @@ class CloudTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'uncertain'):
             self.execute(upload=uploader)
         uploader.assert_not_called()
+
+    def test_published_video_joins_surah_playlist(self):
+        service = self.service
+        service.playlists.return_value.list.return_value.execute.return_value = {'items': []}
+        service.playlists.return_value.insert.return_value.execute.return_value = {'id': 'PL-run'}
+        service.playlistItems.return_value.list.return_value.execute.return_value = {'items': []}
+        self.execute()
+        body = service.playlistItems.return_value.insert.call_args[1]['body']
+        self.assertEqual(body['snippet']['resourceId'],
+                         {'kind': 'youtube#video', 'videoId': 'video123'})
+        self.assertEqual(self.ledger.data['playlists']['Al-Ikhlas'], 'PL-run')
+
+    def test_playlist_failure_does_not_affect_the_upload(self):
+        service = self.service
+        service.playlists.return_value.list.return_value.execute.side_effect = RuntimeError('down')
+        self.execute()
+        row = self.ledger.data['jobs'][ENTRY['id']]
+        self.assertEqual(row['status'], 'uploaded')
+        self.assertEqual(row['video_id'], 'video123')
+
+    def test_invalid_playlist_privacy_fails_closed(self):
+        self.config['playlist_privacy'] = 'weird'
+        self.persist()
+        with self.assertRaisesRegex(cloud.CloudError, 'playlist privacy'):
+            self.execute()
 
     def test_completed_recording_is_skipped(self):
         self.execute()
@@ -260,6 +286,7 @@ class CloudTests(unittest.TestCase):
         entry = dict(ENTRY, source_type='quran_verse', audio_url='https://verses.quran.foundation/test.mp3',
                      max_audio_seconds=58, tail_silence_seconds=1)
         response = Mock()
+        response.status_code = 200
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
         response.raise_for_status = Mock()
@@ -278,6 +305,7 @@ class CloudTests(unittest.TestCase):
         entry = dict(ENTRY, source_type='quran_verse', audio_url='https://verses.quran.foundation/test.mp3',
                      max_audio_seconds=58, tail_silence_seconds=1)
         response = Mock()
+        response.status_code = 200
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
         response.raise_for_status = Mock()
@@ -478,7 +506,8 @@ class ScheduleTests(unittest.TestCase):
                          '2026-09-18/16:00')
 
     def test_malformed_timestamp_fails_closed(self):
-        row = self.row(); row['uploaded_at'] = 'not-a-date'
+        row = self.row()
+        row['uploaded_at'] = 'not-a-date'
         with self.assertRaises(cloud.CloudError):
             cloud.next_schedule_slot({'a': row}, self.now(14))
 
@@ -532,6 +561,228 @@ class ScheduledFlowTests(unittest.TestCase):
         self.ledger.data['jobs']['uncertain'] = {'status': 'uploading'}
         with self.assertRaises(cloud.CloudError):
             self.execute(mode='scheduled')
+
+class AnalyticsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.addCleanup(self.temp.cleanup)
+        bot.atomic_json(self.root / 'automation.json',
+                        {'enabled': True, 'channel_id': 'expected', 'privacy': 'public'})
+        patcher = patch.object(cloud, 'ROOT', self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.service = Mock()
+        self.service.channels.return_value.list.return_value.execute.return_value = {
+            'items': [{'id': 'expected'}]}
+        self.service.videos.return_value.list.return_value.execute.return_value = {'items': []}
+
+    def analytics_service(self, payload=None, error=None, status=None):
+        service = Mock()
+        query = Mock()
+        if error is not None:
+            error.resp = SimpleNamespace(status=status)
+            query.execute.side_effect = error
+        else:
+            query.execute.return_value = payload
+        service.reports.return_value.query.return_value = query
+        return service
+
+    def payload(self, rows):
+        return {'columnHeaders': [{'name': name} for name in
+                                  ('views', 'estimatedMinutesWatched', 'averageViewDuration',
+                                   'averageViewPercentage', 'likes', 'comments', 'shares',
+                                   'subscribersGained')],
+                'rows': [rows]}
+
+    def ledger_with(self, row):
+        ledger = Mock(data={'schema': 1, 'jobs': {'job': row}})
+        return ledger
+
+    def recent_row(self, **overrides):
+        row = {'status': 'uploaded', 'video_id': 'vid1', 'uploaded_at':
+               (datetime(2026, 9, 18, tzinfo=timezone.utc) - timedelta(days=2)).isoformat()}
+        row.update(overrides)
+        return row
+
+    def test_retention_snapshot_is_recorded_on_the_job(self):
+        now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+        ledger = self.ledger_with(self.recent_row(cta_comment_variant=0))
+        analytics = self.analytics_service(self.payload([100, 55.5, 33.2, 62.4, 8, 2, 1, 3]))
+        report = cloud.collect_retention_metrics(analytics, ledger, now=now)
+        self.assertTrue(report['available'])
+        self.assertEqual(report['queried'], 1)
+        snapshot = ledger.data['jobs']['job']['analytics']
+        self.assertEqual(snapshot['views'], 100)
+        self.assertEqual(snapshot['average_view_percentage'], 62.4)
+        self.assertEqual(snapshot['subscribers_gained'], 3)
+        self.assertEqual(snapshot['checked_at'], now.isoformat())
+        self.assertEqual(report['variants']['0']['videos'], 1)
+        self.assertEqual(report['variants']['0']['avg_view_percentage'], 62.4)
+        ledger.save.assert_called_once()
+
+    def test_older_than_window_videos_are_not_queried(self):
+        now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+        ledger = self.ledger_with(self.recent_row(
+            uploaded_at=(now - timedelta(days=45)).isoformat()))
+        analytics = self.analytics_service()
+        report = cloud.collect_retention_metrics(analytics, ledger, now=now)
+        self.assertEqual(report['queried'], 0)
+        analytics.reports.return_value.query.assert_not_called()
+        ledger.save.assert_not_called()
+
+    def test_missing_analytics_scope_reports_unavailable(self):
+        now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+        ledger = self.ledger_with(self.recent_row())
+        error = RuntimeError('insufficient permissions')
+        analytics = self.analytics_service(error=error, status=403)
+        report = cloud.collect_retention_metrics(analytics, ledger, now=now)
+        self.assertFalse(report['available'])
+        self.assertIn('yt-analytics.readonly', report['reason'])
+        self.assertEqual(report['queried'], 0)
+
+    def test_other_api_errors_are_skipped_without_stopping(self):
+        now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+        ledger = self.ledger_with(self.recent_row())
+        error = RuntimeError('temporary')
+        analytics = self.analytics_service(error=error, status=500)
+        report = cloud.collect_retention_metrics(analytics, ledger, now=now)
+        self.assertEqual(report['queried'], 0)
+        self.assertTrue(report['available'])
+        ledger.save.assert_not_called()
+
+    def test_missing_rows_are_tolerated(self):
+        now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+        ledger = self.ledger_with(self.recent_row())
+        analytics = self.analytics_service({'columnHeaders': [{'name': 'views'}], 'rows': None})
+        report = cloud.collect_retention_metrics(analytics, ledger, now=now)
+        self.assertEqual(report['queried'], 0)
+
+    def test_invalid_cta_variant_is_ignored(self):
+        now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+        ledger = self.ledger_with(self.recent_row(cta_comment_variant=99))
+        analytics = self.analytics_service(self.payload([100, 55.5, 33.2, 62.4, 8, 2, 1, 3]))
+        report = cloud.collect_retention_metrics(analytics, ledger, now=now)
+        self.assertEqual(report['queried'], 1)
+        self.assertEqual(report['variants'], {})
+
+    def test_variant_averages_are_aggregated(self):
+        now = datetime(2026, 9, 18, tzinfo=timezone.utc)
+        rows = {'jobs': {}}
+        for index, variant in enumerate((0, 0, 2)):
+            rows['jobs'][f'job{index}'] = self.recent_row(
+                video_id=f'vid{index}', cta_comment_variant=variant)
+        ledger = Mock(data=rows)
+        analytics = self.analytics_service()
+        analytics.reports.return_value.query.return_value.execute.side_effect = [
+            self.payload([100, 55.5, 33.2, 60.0, 8, 2, 1, 3]),
+            self.payload([200, 55.5, 33.2, 70.0, 8, 2, 1, 3]),
+            self.payload([50, 55.5, 33.2, 50.0, 8, 2, 1, 3])]
+        report = cloud.collect_retention_metrics(analytics, ledger, now=now)
+        self.assertEqual(report['variants']['0']['videos'], 2)
+        self.assertEqual(report['variants']['0']['avg_view_percentage'], 65.0)
+        self.assertEqual(report['variants']['2']['videos'], 1)
+        ledger.save.assert_called_once()
+
+    def test_none_service_degrades_cleanly(self):
+        report = cloud.collect_retention_metrics(None, self.ledger_with(self.recent_row()))
+        self.assertFalse(report['available'])
+        self.assertEqual(report['reason'], 'analytics service not configured')
+
+    def test_summary_includes_analytics_section(self):
+        report = {'timestamp': 'now', 'tracked': 1, 'new_flags': [],
+                  'averages': {'reciters': {}, 'visual_themes': {}},
+                  'analytics': {'available': True, 'queried': 2,
+                                'variants': {'0': {'videos': 2, 'avg_view_percentage': 61.3,
+                                                   'avg_views': 150.5}}}}
+        text = cloud.performance_summary(report)
+        self.assertIn('Watch-through analytics', text)
+        self.assertIn('Videos queried: 2', text)
+        self.assertIn('Variant 0: 2 videos, avg retention 61.3%, avg views 150.5', text)
+
+    def test_summary_reports_unavailable_reason(self):
+        report = {'timestamp': 'now', 'tracked': 1, 'new_flags': [],
+                  'averages': {'reciters': {}, 'visual_themes': {}},
+                  'analytics': {'available': False, 'queried': 0,
+                                'reason': 'YouTube refused analytics access'}}
+        text = cloud.performance_summary(report)
+        self.assertIn('Unavailable: YouTube refused analytics access', text)
+
+    def test_report_failure_path_still_works_without_analytics(self):
+        ledger = Mock(data={'schema': 1, 'jobs': {
+            'job': {'status': 'uploaded', 'video_id': 'video123'}}})
+        self.service.videos.return_value.list.return_value.execute.side_effect = RuntimeError('temporary')
+        text = cloud.run_performance_report(self.service, ledger, analytics=None)
+        self.assertIn('temporarily unavailable', text)
+
+
+class PlaylistTests(unittest.TestCase):
+    def service_with_playlists(self, existing=(), created_id='PL-new'):
+        service = Mock()
+        service.playlists.return_value.list.return_value.execute.return_value = {'items': list(existing)}
+        service.playlists.return_value.insert.return_value.execute.return_value = {'id': created_id}
+        return service
+
+    def entry(self):
+        return dict(surah_ar='الإخلاص', surah_en='Al-Ikhlas', attribution='Attr')
+
+    def test_playlist_is_created_with_bilingual_title(self):
+        ledger = Mock(data={'schema': 1, 'jobs': {}})
+        service = self.service_with_playlists()
+        playlist_id = cloud.ensure_playlist(service, ledger, self.entry(), 'public')
+        self.assertEqual(playlist_id, 'PL-new')
+        body = service.playlists.return_value.insert.call_args[1]['body']
+        self.assertEqual(body['snippet']['title'], 'سورة الإخلاص | Al-Ikhlas — Quran Shorts')
+        self.assertEqual(body['status']['privacyStatus'], 'public')
+        self.assertEqual(ledger.data['playlists']['Al-Ikhlas'], 'PL-new')
+
+    def test_existing_playlist_is_matched_by_title(self):
+        ledger = Mock(data={'schema': 1, 'jobs': {}})
+        existing = [{'id': 'PL-old',
+                     'snippet': {'title': 'سورة الإخلاص | Al-Ikhlas — Quran Shorts'}}]
+        service = self.service_with_playlists(existing=existing)
+        self.assertEqual(cloud.ensure_playlist(service, ledger, self.entry()), 'PL-old')
+        service.playlists.return_value.insert.assert_not_called()
+
+    def test_cached_playlist_skips_listing(self):
+        ledger = Mock(data={'schema': 1, 'jobs': {},
+                            'playlists': {'Al-Ikhlas': 'PL-cached'}})
+        service = self.service_with_playlists()
+        self.assertEqual(cloud.ensure_playlist(service, ledger, self.entry()), 'PL-cached')
+        service.playlists.return_value.list.assert_not_called()
+
+    def test_missing_surah_names_fail_closed(self):
+        ledger = Mock(data={'schema': 1, 'jobs': {}})
+        with self.assertRaisesRegex(cloud.CloudError, 'surah'):
+            cloud.ensure_playlist(Mock(), ledger, {'surah_ar': 'الإخلاص'})
+
+    def test_video_is_added_when_not_a_member(self):
+        ledger = Mock(data={'schema': 1, 'jobs': {},
+                            'playlists': {'Al-Ikhlas': 'PL-cached'}})
+        service = self.service_with_playlists()
+        service.playlistItems.return_value.list.return_value.execute.return_value = {'items': []}
+        result = cloud.add_video_to_playlist(service, ledger, self.entry(), 'video123')
+        self.assertEqual(result, 'PL-cached')
+        body = service.playlistItems.return_value.insert.call_args[1]['body']
+        self.assertEqual(body['snippet']['resourceId'],
+                         {'kind': 'youtube#video', 'videoId': 'video123'})
+        ledger.save.assert_called_once()
+
+    def test_existing_membership_is_not_duplicated(self):
+        ledger = Mock(data={'schema': 1, 'jobs': {},
+                            'playlists': {'Al-Ikhlas': 'PL-cached'}})
+        service = self.service_with_playlists()
+        service.playlistItems.return_value.list.return_value.execute.return_value = {
+            'items': [{'id': 'pi1'}]}
+        cloud.add_video_to_playlist(service, ledger, self.entry(), 'video123')
+        service.playlistItems.return_value.insert.assert_not_called()
+
+    def test_playlist_failure_never_raises(self):
+        ledger = Mock(data={'schema': 1, 'jobs': {}})
+        service = self.service_with_playlists()
+        service.playlists.return_value.list.return_value.execute.side_effect = RuntimeError('down')
+        self.assertIsNone(cloud.add_video_to_playlist(service, ledger, self.entry(), 'video123'))
+
 
 if __name__ == '__main__':
     unittest.main()

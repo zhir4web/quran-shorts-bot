@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parent
 LOG = logging.getLogger("quran-bot")
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload",
           "https://www.googleapis.com/auth/youtube.readonly",
-          "https://www.googleapis.com/auth/youtube.force-ssl"]
+          "https://www.googleapis.com/auth/youtube.force-ssl",
+          "https://www.googleapis.com/auth/yt-analytics.readonly"]
 
 CTA_COMMENTS = (
     "اذكر الله بكلمة طيبة في التعليقات، واشترك ليصلك المزيد من القرآن. 🤍\nLeave a short dhikr below and subscribe for more Quran recitations.",
@@ -94,6 +95,13 @@ def load_queue(path):
         if item.get("background_video") is not None:
             if not isinstance(item["background_video"], str) or not item["background_video"].strip():
                 raise ValueError(f"{key}: background video must be a file path")
+        playlist = item.get("background_playlist")
+        if playlist is not None:
+            if (not isinstance(playlist, list) or not playlist or len(playlist) > 8
+                    or any(not isinstance(clip, str) or not clip.strip() for clip in playlist)):
+                raise ValueError(f"{key}: background_playlist must be a short list of clip paths")
+            if not item.get("background_video"):
+                raise ValueError(f"{key}: background_playlist requires background_video")
         if item.get("motion_overlay") is not None and not isinstance(item["motion_overlay"], str):
             raise ValueError(f"{key}: motion overlay must be an image path")
         if item['mode'] == 'video' and any(item.get(field) for field in
@@ -247,17 +255,106 @@ def source_file(item, base, folder):
     return path
 
 
+def theme_clips(theme, base):
+    """List every reviewed clip of a theme, deterministic order, primary first.
+
+    ``<theme>.mp4`` is the reviewed primary clip. Additional clips follow the
+    ``<theme>_2.mp4`` naming scheme and are only used when they are listed in
+    the reviewed LICENSES.md; unknown files are ignored, never auto-trusted.
+    """
+    folder = Path(base) / "assets" / "backgrounds" / "video"
+    primary = folder / f"{theme}.mp4"
+    clips = [primary] if primary.is_file() else []
+    extra = folder / f"{theme}_2.mp4"
+    if extra.is_file():
+        clips.append(extra)
+    return clips
+
+
+def split_background_segments(clips, total_seconds):
+    """Assign each reviewed clip an equal share of the recitation duration.
+
+    Every clip is used before any clip repeats, so a Short built from three
+    clips shows three different scenes instead of one clip looping.
+    """
+    if not clips:
+        raise ValueError("A background playlist needs at least one reviewed clip")
+    total = float(total_seconds)
+    if not math.isfinite(total) or total <= 0:
+        raise ValueError("Background segments need a positive duration")
+    share = total / len(clips)
+    return [(clip, share) for clip in clips]
+
+
+def submit_video(source, theme, queue_path, title, attribution, rights, *, min_duration=30,
+                 made_for_kids=False, base=None, state=None):
+    """Register a user-provided clip for review, rendering and publication.
+
+    The clip is copied into the reviewed theme folder as the next numbered
+    clip, its probe metadata is recorded, and a queue item is appended. The
+    item stays pending until the operator confirms the licence row, so nothing
+    reaches a scheduled render before a human has reviewed the source.
+    """
+    import shutil
+    base = Path(base or ROOT)
+    state = Path(state or (base / "state"))
+    if not re.fullmatch(r"[a-z_]+", str(theme or "")):
+        raise ValueError("Theme must be a lowercase theme name such as forest_rain")
+    source = Path(source).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Clip not found: {source}")
+    if source.suffix.lower() != ".mp4":
+        raise ValueError("Background clips must be MP4 files")
+    destination_dir = base / "assets" / "backgrounds" / "video"
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    index = 2
+    while (destination_dir / f"{theme}_{index}.mp4").is_file():
+        index += 1
+    destination = destination_dir / f"{theme}_{index}.mp4"
+    if destination.exists():
+        raise RuntimeError("Clip destination already exists")
+    item = {"id": f"clip-{theme}-{index}", "mode": "video", "source": str(source),
+            "title": str(title or "").strip(), "attribution": str(attribution or "").strip(),
+            "rights": str(rights or "").strip(), "rights_confirmed": False,
+            "made_for_kids": bool(made_for_kids), "duration": 60, "min_duration_seconds": min_duration,
+            "background_motion": "real_video", "submit_theme": theme}
+    # Validate the probe the same way a real render would.
+    validate_background_source(source)
+    shutil.copyfile(source, destination)
+    item["source"] = str(destination)
+    pending = state / "submissions"
+    pending.mkdir(parents=True, exist_ok=True)
+    record = dict(item)
+    record["license_confirmed"] = False
+    atomic_json(pending / f"{item['id']}.json", record)
+    queue_path = Path(queue_path)
+    queue = read_json(queue_path) if queue_path.is_file() else {"items": []}
+    if not isinstance(queue, dict) or not isinstance(queue.get("items"), list):
+        raise ValueError("Queue file must contain an items array")
+    queue["items"].append(dict(item))
+    atomic_json(queue_path, queue)
+    print(f"Submitted: {destination.name} — add a licence row to LICENSES.md and confirm it before publishing")
+    return destination
+
+
 def validate_background_source(path):
     """Reject filmed sources that would need a destructive low-resolution upscale."""
     import imageio_ffmpeg
 
-    reader = imageio_ffmpeg.read_frames(str(path))
+    try:
+        reader = imageio_ffmpeg.read_frames(str(path))
+    except RuntimeError:
+        raise ValueError(f"Background source {path} is not a readable MP4 video") from None
     try:
         metadata = next(reader)
+    except StopIteration:
+        raise ValueError(f"Background source {path} has no readable video frames") from None
     finally:
         reader.close()
     width, height = metadata.get("size", (0, 0))
     fps = metadata.get("fps")
+    if not width or not height:
+        raise ValueError(f"Background source {path} has no readable video dimensions")
     if min(width, height) < 1080:
         raise ValueError(
             f"Background source {path} is only {width}x{height}; "
@@ -277,9 +374,14 @@ def render(item, base, folder):
     scale = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x081b21,setsar=1"
     if item["mode"] == "compose":
         if item.get("background_video"):
-            filmed = (base / item['background_video']).resolve()
-            validate_background_source(filmed)
-            inputs = ["-stream_loop", "-1", "-i", str(filmed)]
+            playlist = item.get("background_playlist") or [item["background_video"]]
+            inputs = []
+            for clip in playlist:
+                clip_path = (base / clip).resolve()
+                if not clip_path.is_file():
+                    raise FileNotFoundError(f"Background clip missing: {clip_path}")
+                validate_background_source(clip_path)
+                inputs += ["-stream_loop", "-1", "-i", str(clip_path)]
             if item.get("background"):
                 card = (base / item["background"]).resolve()
                 if not card.is_file():
@@ -307,23 +409,30 @@ def render(item, base, folder):
     temporary = folder / "rendering.mp4"
     filters = ["-vf", scale]
     if item.get("background_video"):
-        # Use the filmed clip as the moving layer. Crop to fill the Short frame
-        # without stretching, and loop it when the recitation is longer.
-        scale = ("scale=1080:1920:flags=lanczos:force_original_aspect_ratio=increase,"
-                 "crop=1080:1920,setsar=1")
-        if item.get("background"):
-            # The card is a transparent RGBA PNG; composite it over the filmed
-            # layer after the quality-preserving scale/crop operation.
-            graph = ("[0:v]" + scale + "[background];"
-                     "[1:v]format=rgba[card];"
-                     "[background][card]overlay=0:0:format=auto,setsar=1[v]")
-            filters = ["-filter_complex", graph]
-            # Input 0 is the looped filmed background, input 1 is the PNG
-            # card, and input 2 is the recitation audio.
-            mapping = ["-map", "[v]", "-map", "2:a:0"]
+        # Concatenate every reviewed clip of the theme: each clip covers its
+        # share of the recitation, so a Short shows several scenes instead of
+        # one clip restarting. The slow crop drift also hides any loop point.
+        playlist = item.get("background_playlist") or [item["background_video"]]
+        card_index = len(playlist) if item.get("background") else None
+        audio_index = len(playlist) + (1 if card_index is not None else 0)
+        chains = []
+        for index, (clip, share) in enumerate(split_background_segments(playlist, item["duration"])):
+            chains.append(
+                f"[{index}:v]scale=1120:1992:flags=lanczos:force_original_aspect_ratio=increase,"
+                f"crop=1080:1920:x='20+12*sin(t/5)':y='36+10*cos(t/6)',setsar=1,"
+                f"trim=duration={float(share):.3f},setpts=PTS-STARTPTS[seg{index}]")
+        joined = "".join(f"[seg{index}]" for index in range(len(playlist)))
+        if card_index is not None:
+            # The card is a transparent RGBA PNG; composite it over the
+            # stitched background after the quality-preserving scale/crop.
+            chains.append(joined + f"concat=n={len(playlist)}:v=1:a=0[basev]")
+            chains.append(f"[{card_index}:v]format=rgba[card]")
+            chains.append("[basev][card]overlay=0:0:format=auto,setsar=1[v]")
+            mapping = ["-map", "[v]", "-map", f"{audio_index}:a:0"]
         else:
-            filters = ["-vf", scale]
-            mapping = ["-map", "0:v:0", "-map", "1:a:0"]
+            chains.append(joined + f"concat=n={len(playlist)}:v=1:a=0,setsar=1[v]")
+            mapping = ["-map", "[v]", "-map", f"{audio_index}:a:0"]
+        filters = ["-filter_complex", ";".join(chains)]
     if item.get("background_motion") in ("calm_rain", "premium_motion") and item.get("motion_overlay"):
         # The 3840px rain sheet travels over a 1920px viewport and loops. This
         # creates clearly visible motion while keeping all artwork project-owned.
@@ -478,9 +587,14 @@ def run_queue(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["doctor", "auth", "preview", "run", "status", "resolve"])
+    parser.add_argument("command", choices=["doctor", "auth", "preview", "run", "status", "resolve", "submit"])
     parser.add_argument("--queue", default=str(ROOT / "queue.json"))
     parser.add_argument("--state", default=str(ROOT / "state"))
+    parser.add_argument("--source")
+    parser.add_argument("--theme")
+    parser.add_argument("--title")
+    parser.add_argument("--attribution", default="")
+    parser.add_argument("--rights", default="")
     parser.add_argument("--limit", type=int, default=1)
     parser.add_argument("--privacy", choices=["private", "unlisted", "public"], default="private")
     parser.add_argument("--id")
@@ -509,6 +623,11 @@ def main(argv=None):
             with process_lock(Path(args.state) / "run.lock"):
                 youtube_service(Path(args.state), interactive=True)
             LOG.info("YouTube login saved locally")
+        elif args.command == "submit":
+            if not args.source or not args.theme or not args.title:
+                raise ValueError("submit needs --source, --theme and --title")
+            submit_video(args.source, args.theme, args.queue, args.title,
+                         args.attribution, args.rights, base=ROOT, state=Path(args.state))
         elif args.command == "status":
             ledger = Ledger(Path(args.state) / "jobs.sqlite3")
             try:

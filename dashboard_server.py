@@ -33,6 +33,14 @@ WORKFLOW_FILE = 'daily.yml'
 # tzdata package on the small hosted runner or a fresh local Python install.
 DEFAULT_SLOTS = PUBLICATION_HOURS
 MAX_REQUEST_BYTES = 64 * 1024
+# Background clips travel through a JSON URL, not a binary upload: GitHub
+# contents-API payloads stay tiny and the Actions runner downloads the file
+# itself. Direct peer-to-peer binary uploads would need storage this project
+# deliberately does not run.
+MAX_CLIP_MB = 60
+CLIP_URL = re.compile(r'https://[A-Za-z0-9._~:/?#@!$&()*+,;=%\-]+\.(mp4|mov|webm)(\?[A-Za-z0-9._~:/?#@!$&()*+,;=%\-]*)?', re.IGNORECASE)
+CLIP_NAME = re.compile(r'[A-Za-z0-9_-]{1,80}')
+SUGGESTED_THEMES = ('forest_rain', 'mist_mountains', 'starry_night', 'ocean_moon', 'dawn_mosque')
 
 
 class DashboardError(RuntimeError):
@@ -83,6 +91,16 @@ def build_overview(automation, catalog, ledger, now=None, workflow=None):
             'cta_ok': row.get('cta_comment_succeeded'),
         })
     uploaded.sort(key=lambda row: row.get('uploaded_at') or '', reverse=True)
+    retention = []
+    for row in uploaded:
+        snapshot = jobs.get(row['id'], {}).get('analytics') if isinstance(jobs, dict) else None
+        if not isinstance(snapshot, dict):
+            continue
+        percentage = safe_int(snapshot.get('average_view_percentage'), default=0)
+        retention.append({'id': row['id'], 'url': row['url'], 'reciter': row['reciter'],
+                          'percentage': percentage,
+                          'views': safe_int(snapshot.get('views'), default=0)})
+    retention.sort(key=lambda row: (row['percentage'], row['views']), reverse=True)
     today_count = sum(row['uploaded_today'] for row in uploaded)
     slots, target = list(DEFAULT_SLOTS), len(DEFAULT_SLOTS)
     issues = []
@@ -121,6 +139,22 @@ def build_overview(automation, catalog, ledger, now=None, workflow=None):
         issues.append('workflow_unknown')
     if automation.get('enabled') is not True:
         issues.append('automation_disabled')
+    playlists = ledger.get('playlists', {}) if isinstance(ledger, dict) else {}
+    playlist_rows = [{'surah': str(surah)[:60], 'url': f'https://www.youtube.com/playlist?list={pid}' if re.fullmatch(r'[A-Za-z0-9_-]{10,80}', str(pid)) else None}
+                     for surah, pid in playlists.items() if isinstance(pid, str)]
+    playlist_rows.sort(key=lambda row: row['surah'])
+    cta = ledger.get('cta_performance', {}) if isinstance(ledger, dict) else {}
+    cta_rows = []
+    for variant, stats in cta.items():
+        if isinstance(variant, bool) or not str(variant).isdigit() or not isinstance(stats, dict):
+            continue
+        if int(variant) >= 8:
+            continue
+        cta_rows.append({'variant': int(variant),
+                         'videos': safe_int(stats.get('videos')),
+                         'avg_view_percentage': safe_int(stats.get('avg_view_percentage')),
+                         'avg_views': safe_int(stats.get('avg_views'))})
+    cta_rows.sort(key=lambda row: row['variant'])
     latest_run = uploaded[0]['uploaded_at'] if uploaded else None
     return {
         'generated_at': now.isoformat(),
@@ -150,6 +184,11 @@ def build_overview(automation, catalog, ledger, now=None, workflow=None):
             'youtube_configured': bool(automation.get('channel_id')),
             'youtube_checked_at': checked_at.isoformat() if checked_at else None,
             'tiktok': False,
+        },
+        'analytics': {
+            'retention': retention[:12],
+            'cta_variants': cta_rows,
+            'playlists': playlist_rows,
         },
         'workflow': workflow or {'status': 'unknown'},
         'latest_upload': latest_run,
@@ -198,6 +237,26 @@ class GitHubClient:
             return {'status': 'unknown'}
         row = runs[0]
         return {key: row.get(key) for key in ('status', 'conclusion', 'updated_at', 'html_url')}
+
+    def repo_root_sha(self):
+        response = self.session.get(f'{self.base}/contents/', params={'ref': self.branch}, timeout=20)
+        if response.status_code != HTTPStatus.OK:
+            raise DashboardError(f'Repository root unavailable (HTTP {response.status_code})')
+        return response.json()
+
+    def write_file(self, path, content_bytes, message):
+        """Create or update one file through the contents API."""
+        existing = self.session.get(f'{self.base}/contents/{path}', params={'ref': self.branch}, timeout=20)
+        body = {'message': message,
+                'content': base64.b64encode(content_bytes).decode('ascii'),
+                'branch': self.branch}
+        if existing.status_code == HTTPStatus.OK:
+            body['sha'] = existing.json()['sha']
+        elif existing.status_code != HTTPStatus.NOT_FOUND:
+            raise DashboardError(f'Cannot read {path} (HTTP {existing.status_code})')
+        response = self.session.put(f'{self.base}/contents/{path}', json=body, timeout=30)
+        if response.status_code not in (HTTPStatus.OK, HTTPStatus.CREATED):
+            raise DashboardError(f'Cannot write {path} (HTTP {response.status_code})')
 
     def dispatch(self, mode, count=1):
         if not isinstance(mode, str) or mode not in {'publish', 'preview', 'scheduled'}:
@@ -307,6 +366,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.UNAUTHORIZED, {'error': 'Dashboard key required'})
             return
         path = urlparse(self.path).path
+        if path == '/api/submit-clip':
+            self._submit_clip()
+            return
         if path != '/api/workflow':
             self._json(HTTPStatus.NOT_FOUND, {'error': 'Not found'})
             return
@@ -328,6 +390,48 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 'requested_count': dispatched,
                 'workflow_url': f'https://github.com/{client.repository}/actions/workflows/{WORKFLOW_FILE}',
             })
+        except BadRequest as error:
+            self._json(HTTPStatus.BAD_REQUEST, {'error': str(error)})
+        except (DashboardError, requests.RequestException, ValueError, TypeError) as error:
+            self._json(HTTPStatus.BAD_GATEWAY, {'error': str(error) if isinstance(error, DashboardError) else 'Remote request failed'})
+
+    def _submit_clip(self):
+        """Queue a user-found clip: store its URL for review, never auto-publish.
+
+        A bot worker later validates the clip, and the operator confirms the
+        licence row before the clip can appear in any scheduled render.
+        """
+        try:
+            body = self._body()
+            url = str(body.get('url') or '').strip()
+            theme = str(body.get('theme') or '').strip()
+            title = str(body.get('title') or '').strip()
+            source_page = str(body.get('source_page') or '').strip()
+            if not CLIP_URL.fullmatch(url):
+                raise BadRequest('Provide a direct MP4/MOV/WebM link from the clip page')
+            if theme not in SUGGESTED_THEMES:
+                raise BadRequest('Pick one of the five reviewed themes')
+            if not title or len(title) > 120:
+                raise BadRequest('A short clip title is required (max 120 characters)')
+            if source_page and not source_page.startswith('https://'):
+                raise BadRequest('The source page must be an HTTPS link')
+            overview, client = self._read_model()
+            if not overview['channel']['enabled']:
+                raise BadRequest('Publishing is disabled; enable it before submitting clips')
+            client.repo_root_sha()  # Confirms token write access early.
+            slug = CLIP_NAME.fullmatch(title.replace(' ', '-'))
+            clip_id = (slug.group(0) if slug else 'clip') + '-' + datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
+            record = {'id': clip_id, 'url': url, 'theme': theme, 'title': title,
+                      'source_page': source_page or None,
+                      'submitted_at': datetime.now(timezone.utc).isoformat(),
+                      'status': 'pending', 'license_confirmed': False,
+                      'max_mb': MAX_CLIP_MB}
+            client.write_file(f'.bot-state/clip-submissions/{clip_id}.json',
+                              json.dumps(record, ensure_ascii=False, indent=2).encode('utf-8'),
+                              f'Submit background clip {clip_id} [skip ci]')
+            self._json(HTTPStatus.ACCEPTED, {'ok': True, 'id': clip_id,
+                                             'status': 'pending',
+                                             'note': 'کلیپەکە پێداچوونەوەی دەوێت: پشکنینی مۆڵەت و کوالیتی. دوای پەسەندکردن بۆ هەر theme ـێکی ئەو جۆرە بەکار دەهێنرێت.'})
         except BadRequest as error:
             self._json(HTTPStatus.BAD_REQUEST, {'error': str(error)})
         except (DashboardError, requests.RequestException, ValueError, TypeError) as error:

@@ -20,6 +20,7 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 import bot
+import notifications
 from schedule_policy import BAGHDAD, PUBLICATION_HOURS as PUBLICATION_HOURS, schedule_state
 
 ROOT = Path(__file__).resolve().parent
@@ -408,9 +409,14 @@ def media_duration(path):
 def download_quran_verse(entry, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
     raw = destination.with_name('recitation-source.mp3')
-    with requests.get(entry['audio_url'], stream=True, timeout=(15, 60),
-                      headers={'User-Agent': 'quran-shorts-bot/3.0'}) as response:
-        response.raise_for_status()
+    response = requests.get(entry['audio_url'], stream=True, timeout=(15, 60),
+                            headers={'User-Agent': 'quran-shorts-bot/3.0'})
+    if response.status_code >= 400:
+        # An HTML error page saved as .mp3 would fail downstream with a confusing
+        # decode error; stop here with the real cause instead.
+        response.close()
+        raise RuntimeError(f'Verse audio source returned HTTP {response.status_code}')
+    with response:
         total = 0
         with raw.open('wb') as handle:
             for block in response.iter_content(65536):
@@ -624,7 +630,6 @@ def video_background_for(entry):
         raise FileNotFoundError(f'Reviewed filmed background missing: {path}')
     return None
 
-
 def item_for(entry, source, background, motion_overlay=None):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
     cta = bot.CTA_COMMENTS[cta_index]
@@ -670,12 +675,73 @@ def item_for(entry, source, background, motion_overlay=None):
         item['background_video'] = str(filmed.resolve())
         item['background_motion'] = 'real_video'
         item['visual_theme'] = filmed.stem
+        # Stitch every reviewed extra clip of this theme into the render so a
+        # Short shows several scenes instead of one clip looping.
+        extras = sorted((ROOT / 'assets' / 'backgrounds' / 'video').glob(f'{filmed.stem}_*.mp4'))
+        if extras:
+            item['background_playlist'] = [str(filmed.resolve())] + [str(extra.resolve()) for extra in extras]
         item.pop('motion_overlay', None)
     if not filmed and entry.get('visual_style') == 'real_video_assets':
         raise ValueError('No reviewed filmed background is available')
     if motion_overlay and not filmed:
         item['motion_overlay'] = str(motion_overlay.resolve())
     return item
+
+
+def surah_playlist_title(entry):
+    return f"سورة {entry['surah_ar']} | {entry['surah_en']} — Quran Shorts"
+
+
+def ensure_playlist(youtube, ledger, entry, privacy='public'):
+    """Return the surah playlist id, reusing or creating it exactly once."""
+    surah_en = str(entry.get('surah_en') or '').strip()
+    surah_ar = str(entry.get('surah_ar') or '').strip()
+    if not surah_en or not surah_ar:
+        raise CloudError('Playlist organization needs verified surah names')
+    playlists = ledger.data.setdefault('playlists', {})
+    playlist_id = playlists.get(surah_en)
+    if playlist_id:
+        return playlist_id
+    title = surah_playlist_title(entry)
+    response = youtube.playlists().list(part='snippet', mine=True, maxResults=50).execute()
+    for row in response.get('items', []):
+        if row.get('snippet', {}).get('title') == title:
+            playlists[surah_en] = row['id']
+            return row['id']
+    created = youtube.playlists().insert(part='snippet,status', body={
+        'snippet': {'title': title,
+                    'description': ('Complete-verse Quran Shorts for this surah. '
+                                    + str(entry.get('attribution') or '')).strip()},
+        'status': {'privacyStatus': privacy}}).execute()
+    if not created.get('id'):
+        raise CloudError('YouTube did not return a playlist id')
+    playlists[surah_en] = created['id']
+    return created['id']
+
+
+def add_video_to_playlist(youtube, ledger, entry, video_id, privacy='public'):
+    """Best-effort playlist membership for a published video.
+
+    Playlist operations can fail for many transient reasons; they must never
+    invalidate a recorded upload, so every failure is swallowed here.
+    """
+    try:
+        playlist_id = ensure_playlist(youtube, ledger, entry, privacy)
+        existing = youtube.playlistItems().list(
+            part='id', playlistId=playlist_id, videoId=video_id, maxResults=1).execute()
+        if not existing.get('items'):
+            youtube.playlistItems().insert(part='snippet', body={
+                'snippet': {'playlistId': playlist_id,
+                            'resourceId': {'kind': 'youtube#video', 'videoId': video_id}}}).execute()
+            print('Added to playlist:', playlist_id)
+        try:
+            ledger.save()  # Persist the playlist id cache for future runs.
+        except Exception:
+            print('Playlist cache could not be saved; it will be rebuilt next run')
+        return playlist_id
+    except Exception as error:
+        print('Playlist update skipped:', type(error).__name__)
+        return None
 
 
 def restriction_reason(video):
@@ -723,6 +789,11 @@ def check_upload_restrictions(service, ledger, catalog):
     if incidents:
         ledger.data.setdefault('incidents', []).extend(incidents)
         ledger.save()
+        for incident in incidents:
+            notifications.notify(
+                f"Reciter {incident['reciter_id']} was restricted: {incident['reason']}"
+                f"\nhttps://www.youtube.com/watch?v={incident['video_id']}",
+                kind="safety", key=f"safety:{incident['video_id']}:{incident['reason']}")
     return incidents
 
 
@@ -750,6 +821,119 @@ def performance_averages(history, jobs, window=10):
     return {kind: {name: round(sum(values) / len(values), 1)
                    for name, values in sorted(rows.items())}
             for kind, rows in groups.items()}
+
+
+# Retention analytics from the interactive YouTube Analytics API. Thumbnail
+# impressions and CTR exist only in the bulk Reporting API, so watch-through
+# percentage is the actionable retention proxy collected here.
+ANALYTICS_METRICS = ('views,estimatedMinutesWatched,averageViewDuration,'
+                     'averageViewPercentage,likes,comments,shares,subscribersGained')
+ANALYTICS_FALLBACK_METRICS = 'views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage'
+RETENTION_WINDOW_DAYS = 30
+RETENTION_MAX_VIDEOS = 30
+
+
+def _http_status(error):
+    status = getattr(getattr(error, 'resp', None), 'status', None)
+    return status if isinstance(status, int) else None
+
+
+def _parse_analytics_rows(payload):
+    if not isinstance(payload, dict):
+        return None
+    headers = [str(row.get('name') or '') for row in payload.get('columnHeaders', [])]
+    rows = payload.get('rows') or []
+    if not headers or not rows or not isinstance(rows[0], list) or len(rows[0]) != len(headers):
+        return None
+    parsed = {}
+    for name, value in zip(headers, rows[0]):
+        try:
+            parsed[name] = float(value)
+        except (TypeError, ValueError):
+            parsed[name] = 0.0
+    return parsed
+
+
+def collect_retention_metrics(analytics, ledger, now=None, window_days=RETENTION_WINDOW_DAYS,
+                              max_videos=RETENTION_MAX_VIDEOS):
+    """Best-effort watch-through analytics; never raises and never blocks publishing.
+
+    Updates each recent uploaded job with the latest retention snapshot and
+    aggregates the recorded CTA comment variants so the report can finally
+    compare them. A missing scope degrades to an explicit "unavailable" reason.
+    """
+    now = now or datetime.now(timezone.utc)
+    result = {'available': analytics is not None, 'queried': 0, 'variants': {}, 'reason': None}
+    if analytics is None:
+        result['reason'] = 'analytics service not configured'
+        return result
+    tracked = []
+    for row in ledger.data['jobs'].values():
+        if row.get('status') != 'uploaded' or not row.get('video_id'):
+            continue
+        uploaded = row.get('uploaded_at') or row.get('started_at')
+        try:
+            when = datetime.fromisoformat(str(uploaded).replace('Z', '+00:00'))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if not when.tzinfo:
+            when = when.replace(tzinfo=timezone.utc)
+        if now - when <= timedelta(days=window_days):
+            tracked.append((when, row))
+    tracked.sort(key=lambda pair: pair[0], reverse=True)  # newest uploads first
+    metrics = ANALYTICS_METRICS
+    for when, row in tracked[:max_videos]:
+        video_id = row['video_id']
+        query = dict(ids='channel==MINE', startDate=when.date().isoformat(),
+                     endDate=now.date().isoformat(), metrics=metrics,
+                     filters='video==' + video_id)
+        try:
+            payload = analytics.reports().query(**query).execute()
+        except Exception as error:
+            status = _http_status(error)
+            if status == 403:
+                result['available'] = False
+                result['reason'] = ('YouTube refused analytics access; re-authorize the '
+                                    'token with the yt-analytics.readonly scope')
+                break
+            if status == 400 and metrics != ANALYTICS_FALLBACK_METRICS:
+                # Some channel configurations reject one optional metric; retry
+                # with the compatible core retention set before giving up.
+                metrics = ANALYTICS_FALLBACK_METRICS
+                try:
+                    payload = analytics.reports().query(**{**query, 'metrics': metrics}).execute()
+                except Exception:
+                    continue
+            else:
+                continue
+        parsed = _parse_analytics_rows(payload)
+        if not parsed:
+            continue  # A brand-new video has no analytics rows yet.
+        row['analytics'] = {'checked_at': now.isoformat(),
+                            'views': int(parsed.get('views') or 0),
+                            'estimated_minutes_watched': round(parsed.get('estimatedMinutesWatched') or 0.0, 1),
+                            'average_view_duration_seconds': round(parsed.get('averageViewDuration') or 0.0, 1),
+                            'average_view_percentage': round(parsed.get('averageViewPercentage') or 0.0, 1),
+                            'subscribers_gained': int(parsed.get('subscribersGained') or 0)}
+        result['queried'] += 1
+        variant = row.get('cta_comment_variant')
+        if isinstance(variant, bool) or not isinstance(variant, int) or not 0 <= variant < len(bot.CTA_COMMENTS):
+            continue
+        stats = result['variants'].setdefault(variant, {'videos': 0, 'view_percentage': [], 'views': []})
+        stats['videos'] += 1
+        stats['view_percentage'].append(row['analytics']['average_view_percentage'])
+        stats['views'].append(row['analytics']['views'])
+    if result['variants']:
+        result['variants'] = {str(variant): {'videos': stats['videos'],
+                                             'avg_view_percentage': round(sum(stats['view_percentage']) / len(stats['view_percentage']), 1),
+                                             'avg_views': round(sum(stats['views']) / len(stats['views']), 1)}
+                              for variant, stats in sorted(result['variants'].items())}
+        ledger.data['cta_performance'] = dict(result['variants'], checked_at=now.isoformat())
+        try:
+            ledger.save()
+        except Exception:
+            print('Retention analytics could not be saved; the next report retries')
+    return result
 
 
 def collect_performance_metrics(service, ledger, expected_privacy, now=None):
@@ -844,16 +1028,38 @@ def performance_summary(report):
         lines.append(f"- Uploads delayed over 30 minutes: {schedule['delayed_uploads']}")
         if schedule['unresolved']:
             lines.append(f"- Unresolved scheduled attempts: {schedule['unresolved']}")
+    analytics = report.get('analytics')
+    if analytics is not None:
+        lines.extend(['', '### Watch-through analytics (uploads of the last 30 days)'])
+        if not analytics.get('available'):
+            lines.append('- Unavailable: ' + str(analytics.get('reason') or 'unknown'))
+        else:
+            lines.append(f"- Videos queried: {analytics.get('queried', 0)}")
+            variants = analytics.get('variants') or {}
+            if variants:
+                lines.append('- CTA comment variants (correlation, not proof):')
+                for variant, stats in sorted(variants.items(), key=lambda row: int(row[0])):
+                    lines.append(f"  - Variant {variant}: {stats['videos']} videos, "
+                                 f"avg retention {stats['avg_view_percentage']}%, "
+                                 f"avg views {stats['avg_views']}")
+            else:
+                lines.append('- No CTA variant data yet')
     return '\n'.join(lines) + '\n'
 
 
-def run_performance_report(service, ledger):
+def run_performance_report(service, ledger, analytics=None):
     """Best-effort reporting entry point; monitoring must never fail publishing."""
     try:
         config = bot.read_json(ROOT / 'automation.json')
         ledger.load()
         verify_channel(service, ledger, config)
         report = collect_performance_metrics(service, ledger, config.get('privacy', 'private'))
+        for row in report['new_flags']:
+            notifications.notify(
+                f"Health flag: {row['flag']}"
+                f"\nhttps://www.youtube.com/watch?v={row['video_id']}",
+                kind="health", key=f"health:{row['video_id']}:{row['flag']}")
+        report['analytics'] = collect_retention_metrics(analytics, ledger)
         summary = performance_summary(report)
     except Exception:
         try:
@@ -995,6 +1201,9 @@ def run(args, ledger=None, service=None):
         raise CloudError('Invalid automation configuration')
     if config.get('privacy', 'private') not in ('private', 'unlisted', 'public'):
         raise CloudError('Invalid publication privacy setting')
+    playlist_privacy = config.get('playlist_privacy', 'public')
+    if playlist_privacy not in ('private', 'unlisted', 'public'):
+        raise CloudError('Invalid playlist privacy setting')
     catalog = load_catalog(ROOT / 'catalog.json')
     if not catalog:
         raise RuntimeError('No verified recordings configured. Publishing remains inactive.')
@@ -1106,6 +1315,10 @@ def run(args, ledger=None, service=None):
                                     schedule_slot_time(schedule_slot)).total_seconds() / 60, 1)})
     ledger.save()
     print('Uploaded: https://www.youtube.com/watch?v=' + video_id)
+    notifications.notify(
+        f"Uploaded {entry['id']}\n{entry['surah_en']} — {entry.get('reciter_en', '')}"
+        f"\nhttps://www.youtube.com/watch?v={video_id}",
+        kind="success", key="upload:" + entry['id'])
     # Save the video ID before optional comments: an interrupted comment must
     # never leave a completed upload marked uncertain.
     try:
@@ -1114,6 +1327,7 @@ def run(args, ledger=None, service=None):
         ledger.save()
     except Exception:
         print('Optional comment metadata could not be saved; upload is recorded')
+    add_video_to_playlist(service, ledger, entry, video_id, playlist_privacy)
     # Processing signals can appear shortly after upload. This check is best-effort;
     # the next scheduled run checks every tracked upload again.
     time.sleep(12)
@@ -1161,15 +1375,25 @@ def main(argv=None):
             ledger = RemoteLedger(os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_TOKEN'],
                                   os.environ.get('GITHUB_REF_NAME', 'main'))
             if args.mode == 'report':
-                run_performance_report(service, ledger)
+                try:
+                    analytics = build('youtubeAnalytics', 'v2', credentials=credentials,
+                                      cache_discovery=False)
+                except Exception:
+                    analytics = None
+                run_performance_report(service, ledger, analytics=analytics)
             else:
                 run_batch(args, ledger, service)
         return 0
     except Exception as error:
         # External exception bodies can contain secrets. Print only our own diagnostics.
-        print(str(error) if isinstance(error, CloudError) else type(error).__name__ + ': cloud run failed; check configuration, source availability and authorization')
+        detail = str(error) if isinstance(error, CloudError) else type(error).__name__ + ': cloud run failed; check configuration, source availability and authorization'
+        print(detail)
+        if args.mode != 'preview':
+            # Preview failures are reported by the workflow's always() step.
+            notifications.notify(detail, kind="failure", key="run-failure:" + args.mode)
         return 1
 
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
