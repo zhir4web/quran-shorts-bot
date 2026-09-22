@@ -7,11 +7,9 @@ Run locally with ``python dashboard_server.py``.
 from __future__ import annotations
 
 import base64
-import hmac
 import json
 import os
 import re
-import socket
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -281,6 +279,9 @@ class GitHubClient:
             raise DashboardError(f'Workflow dispatch failed (HTTP {response.status_code})')
         return count
 
+
+
+class DashboardHandler(BaseHTTPRequestHandler):
     def _read_model(self):
         client = GitHubClient(self.server.github_token, self.server.repository, self.server.branch)
         automation = client.file_json('automation.json')
