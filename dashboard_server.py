@@ -258,69 +258,28 @@ class GitHubClient:
         if response.status_code not in (HTTPStatus.OK, HTTPStatus.CREATED):
             raise DashboardError(f'Cannot write {path} (HTTP {response.status_code})')
 
-    def dispatch(self, mode, count=1):
+    def dispatch(self, mode, count=1, custom_id=''):
         if not isinstance(mode, str) or mode not in {'publish', 'preview', 'scheduled'}:
             raise BadRequest('Unsupported workflow mode')
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 5:
             raise BadRequest('count must be an integer between 1 and 5')
         if mode != 'publish' and count != 1:
             raise BadRequest('Only publish supports multiple posts')
+        if custom_id and not CLIP_NAME.fullmatch(custom_id):
+            raise BadRequest('Invalid custom video id')
         url = f'{self.base}/actions/workflows/{WORKFLOW_FILE}/dispatches'
+        inputs = {'mode': mode, 'count': str(count)}
+        if custom_id:
+            inputs['custom_id'] = custom_id
         try:
             response = self.session.post(url, json={
-                'ref': self.branch, 'inputs': {'mode': mode, 'count': str(count)},
+                'ref': self.branch, 'inputs': inputs,
             }, timeout=20)
         except requests.RequestException:
             raise DashboardError('Dispatch outcome unknown; check GitHub Actions before retrying') from None
         if response.status_code != HTTPStatus.NO_CONTENT:
             raise DashboardError(f'Workflow dispatch failed (HTTP {response.status_code})')
         return count
-
-
-class DashboardHandler(BaseHTTPRequestHandler):
-    server_version = 'QuranShortsDashboard/1.0'
-
-    def setup(self):
-        super().setup()
-        self.connection.settimeout(30)
-
-    def _json(self, status, payload):
-        raw = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Content-Length', str(len(raw)))
-        self.send_header('Cache-Control', 'no-store')
-        self.send_header('X-Content-Type-Options', 'nosniff')
-        self.end_headers()
-        self.wfile.write(raw)
-
-    def _authorized(self):
-        expected = self.server.dashboard_key
-        if not expected:
-            host = urlparse('//' + self.headers.get('Host', '')).hostname
-            return host in ('127.0.0.1', 'localhost', '::1')
-        actual = self.headers.get('X-Dashboard-Key', '')
-        return hmac.compare_digest(actual.encode('utf-8'), expected.encode('utf-8'))
-
-    def _body(self):
-        if self.headers.get_content_type() != 'application/json' or self.headers.get('Transfer-Encoding'):
-            raise BadRequest('Request must use application/json without Transfer-Encoding')
-        try:
-            length = int(self.headers.get('Content-Length', '0'))
-        except ValueError:
-            raise BadRequest('Invalid request length')
-        if not 0 < length <= MAX_REQUEST_BYTES:
-            raise BadRequest('Request length must be between 1 and 65536 bytes')
-        try:
-            raw = self.rfile.read(length)
-            if len(raw) != length:
-                raise BadRequest('Incomplete request body')
-            body = json.loads(raw)
-        except (ValueError, socket.timeout) as error:
-            raise BadRequest('Request must contain valid JSON') from error
-        if not isinstance(body, dict):
-            raise BadRequest('Request body must be an object')
-        return body
 
     def _read_model(self):
         client = GitHubClient(self.server.github_token, self.server.repository, self.server.branch)
@@ -396,10 +355,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_GATEWAY, {'error': str(error) if isinstance(error, DashboardError) else 'Remote request failed'})
 
     def _submit_clip(self):
-        """Queue a user-found clip: store its URL for review, never auto-publish.
+        """Queue an owned/licensed user video and start one publish run.
 
-        A bot worker later validates the clip, and the operator confirms the
-        licence row before the clip can appear in any scheduled render.
+        The manifest stores only a direct HTTPS media URL; the Actions runner
+        downloads and validates it, then uses the normal Quran card, metadata,
+        CTA and copyright checks. Nothing is published unless the owner checks
+        the licence confirmation in the dashboard.
         """
         try:
             body = self._body()
@@ -408,30 +369,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
             title = str(body.get('title') or '').strip()
             source_page = str(body.get('source_page') or '').strip()
             if not CLIP_URL.fullmatch(url):
-                raise BadRequest('Provide a direct MP4/MOV/WebM link from the clip page')
+                raise BadRequest('Provide a direct HTTPS MP4/MOV/WebM link')
             if theme not in SUGGESTED_THEMES:
                 raise BadRequest('Pick one of the five reviewed themes')
             if not title or len(title) > 120:
                 raise BadRequest('A short clip title is required (max 120 characters)')
             if source_page and not source_page.startswith('https://'):
                 raise BadRequest('The source page must be an HTTPS link')
+            if body.get('license_confirmed') is not True:
+                raise BadRequest('Confirm that you own or are licensed to use this video')
             overview, client = self._read_model()
             if not overview['channel']['enabled']:
-                raise BadRequest('Publishing is disabled; enable it before submitting clips')
+                raise BadRequest('Publishing is disabled; enable it before submitting videos')
             client.repo_root_sha()  # Confirms token write access early.
-            slug = CLIP_NAME.fullmatch(title.replace(' ', '-'))
-            clip_id = (slug.group(0) if slug else 'clip') + '-' + datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
+            slug_text = re.sub(r'[^A-Za-z0-9_-]+', '-', title.replace(' ', '-')).strip('-')
+            slug = CLIP_NAME.fullmatch(slug_text)
+            clip_id = (slug.group(0) if slug else 'custom-video') + '-' + datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
             record = {'id': clip_id, 'url': url, 'theme': theme, 'title': title,
                       'source_page': source_page or None,
                       'submitted_at': datetime.now(timezone.utc).isoformat(),
-                      'status': 'pending', 'license_confirmed': False,
+                      'status': 'queued', 'license_confirmed': True,
                       'max_mb': MAX_CLIP_MB}
             client.write_file(f'.bot-state/clip-submissions/{clip_id}.json',
                               json.dumps(record, ensure_ascii=False, indent=2).encode('utf-8'),
-                              f'Submit background clip {clip_id} [skip ci]')
+                              f'Queue custom video {clip_id} [skip ci]')
+            try:
+                client.dispatch('publish', 1, custom_id=clip_id)
+            except Exception:
+                self._json(HTTPStatus.BAD_GATEWAY, {
+                    'error': f'Video saved as {clip_id}, but the publish job could not be started. Retry from GitHub Actions.',
+                    'id': clip_id})
+                return
             self._json(HTTPStatus.ACCEPTED, {'ok': True, 'id': clip_id,
-                                             'status': 'pending',
-                                             'note': 'کلیپەکە پێداچوونەوەی دەوێت: پشکنینی مۆڵەت و کوالیتی. دوای پەسەندکردن بۆ هەر theme ـێکی ئەو جۆرە بەکار دەهێنرێت.'})
+                                             'status': 'queued',
+                                             'note': 'ڤیدیۆکە وەرگیرا و بۆ edit و بڵاوکردنەوە نێردرا؛ بەرنامەکە کارت و دەنگی قورئان لەسەری دادەنێت.'})
         except BadRequest as error:
             self._json(HTTPStatus.BAD_REQUEST, {'error': str(error)})
         except (DashboardError, requests.RequestException, ValueError, TypeError) as error:
@@ -499,4 +470,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
