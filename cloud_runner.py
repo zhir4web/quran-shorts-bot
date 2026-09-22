@@ -10,15 +10,17 @@ import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import subprocess
 import time
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 import bot
+from schedule_policy import BAGHDAD, PUBLICATION_HOURS as PUBLICATION_HOURS, schedule_state
 
 ROOT = Path(__file__).resolve().parent
 STATE_PATH = '.bot-state/published.json'
@@ -43,6 +45,12 @@ class TooLongRecording(RuntimeError):
     """The complete recording cannot fit safely in a YouTube Short."""
 
 
+class NoEligibleVerse(CloudError):
+    def __init__(self, cursor):
+        super().__init__('No eligible verse found in this bounded scan; the next publication resumes the search')
+        self.cursor = cursor
+
+
 class RemoteLedger:
     def __init__(self, repository, token, branch='main'):
         if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
@@ -59,13 +67,15 @@ class RemoteLedger:
     def load(self):
         response = self.session.get(self.url, params={'ref': self.branch}, timeout=30)
         if response.status_code == 404:
+            if self.sha or self.data.get('jobs'):
+                raise CloudError('Remote ledger disappeared; stopping to prevent duplicates')
             return
         if response.status_code != 200:
             raise RuntimeError(f'Cannot read remote ledger (HTTP {response.status_code})')
         payload = response.json()
         self.sha = payload['sha']
         self.data = json.loads(base64.b64decode(payload['content']))
-        if self.data.get('schema') != 1 or not isinstance(self.data.get('jobs'), dict):
+        if not isinstance(self.data, dict) or self.data.get('schema') != 1 or not isinstance(self.data.get('jobs'), dict):
             raise ValueError('Remote ledger is invalid; stopping to prevent duplicates')
         for row in self.data['jobs'].values():
             if not isinstance(row, dict) or row.get('status') not in ('uploading', 'uploaded'):
@@ -73,7 +83,7 @@ class RemoteLedger:
             if row['status'] == 'uploaded' and not row.get('video_id'):
                 raise ValueError('Remote ledger is missing an uploaded video ID')
         cursor = self.data.get('cursor', len(self.data['jobs']))
-        if not isinstance(cursor, int) or cursor < 0:
+        if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
             raise ValueError('Remote ledger cursor is invalid')
         self.data['cursor'] = cursor
 
@@ -114,17 +124,16 @@ class RemoteLedger:
 
 
 def get_json(url, params=None):
-    """Read Quran Foundation metadata with bounded retries."""
-    for attempt in range(2):
+    for attempt in range(3):
         try:
-            response = requests.get(url, params=params, timeout=(10, 30),
+            response = requests.get(url, params=params, timeout=(15, 60),
                                     headers={'User-Agent': 'quran-shorts-bot/2.0'})
             response.raise_for_status()
             return response.json()
         except (requests.RequestException, ValueError):
-            if attempt == 1:
+            if attempt == 2:
                 raise RuntimeError('Quran Foundation source is temporarily unavailable') from None
-            time.sleep(1)
+            time.sleep(2 ** attempt)
 
 
 def api_entries(data):
@@ -173,7 +182,7 @@ def validate_verse_catalog(data):
     minimum = float(data.get('min_audio_seconds', 30))
     if not 30 <= minimum <= limit:
         raise ValueError('Minimum recitation duration must be at least 30 seconds and within the maximum')
-    if limit <= 0 or limit + tail > 60 or tail < 0.5:
+    if not all(math.isfinite(value) for value in (limit, tail, minimum)) or limit <= 0 or limit + tail > 60 or tail < 0.5:
         raise ValueError('Invalid Short duration or ending-silence configuration')
     if not str(data.get('permission_url', '')).startswith('https://api-docs.quran.com/'):
         raise ValueError('Quran Foundation permission URL required')
@@ -221,12 +230,7 @@ def _is_tajwid_reciter(reciter, catalog):
 
 
 def _reciter_order(reciters, jobs, position, catalog):
-    """Return a fair order that favours variety and slows tajwid repeats.
-
-    Every allowed reciter remains eligible.  The small weight penalty only
-    changes how often a tajwid-labelled reciter is selected after the other
-    reciters have had a turn; it never blocks one permanently.
-    """
+    """Return a fair order that favours variety and slows tajwid repeats."""
     selection = catalog.get('reciter_selection', {})
     tajwid_weight = float(selection.get('tajwid_weight', 0.35))
     usage = {reciter.get('id'): 0 for reciter in reciters}
@@ -234,13 +238,9 @@ def _reciter_order(reciters, jobs, position, catalog):
         reciter_id = row.get('reciter_id')
         if reciter_id in usage:
             usage[reciter_id] += 1
-
     ranked = []
     for index, reciter in enumerate(reciters):
         weight = tajwid_weight if _is_tajwid_reciter(reciter, catalog) else 1.0
-        # The weight acts as a virtual first turn: normal reciters get a turn
-        # before a reduced-weight reciter, then the usage term keeps every
-        # class in the rotation without excluding anyone.
         score = (usage[reciter.get('id')] + weight) / weight
         tajwid_first = 1 if _is_tajwid_reciter(reciter, catalog) else 0
         tie_break = (position + index) % max(1, len(reciters))
@@ -250,7 +250,6 @@ def _reciter_order(reciters, jobs, position, catalog):
 
 
 def verse_entry_for_position(catalog, jobs, position):
-    print('Loading Quran Foundation reciter and chapter metadata...', flush=True)
     english = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'en'}).get('recitations', [])
     arabic = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'ar'}).get('recitations', [])
     chapters = get_json(urljoin(QURAN_API, 'chapters'), {'language': 'en'}).get('chapters', [])
@@ -263,25 +262,10 @@ def verse_entry_for_position(catalog, jobs, position):
     total_verses = sum(int(row['verses_count']) for row in chapters)
     if total_verses < 6000:
         raise RuntimeError('Quran Foundation chapter metadata is incomplete')
-    # Bound upstream candidate search so Actions never waits silently for the
-    # job timeout. A later run can retry safely when the API is unavailable.
-    try:
-        max_candidates = max(30, int(os.environ.get('QURAN_MAX_CANDIDATES', '180')))
-    except (TypeError, ValueError):
-        max_candidates = 180
-    try:
-        search_timeout = max(60.0, float(os.environ.get('QURAN_SEARCH_TIMEOUT_SECONDS', '480')))
-    except (TypeError, ValueError):
-        search_timeout = 480.0
-    candidate_limit = min(total_verses * len(english), max_candidates)
-    deadline = time.monotonic() + search_timeout
-    for attempt in range(candidate_limit):
-        if time.monotonic() >= deadline:
-            raise CloudError('Quran Foundation verse search timed out; the next run will retry safely')
-        if attempt == 0 or attempt % 10 == 0:
-            print(f'Checking complete-verse candidate {attempt + 1}/{candidate_limit}...', flush=True)
-        ordered_reciters = _reciter_order(english, jobs, position, catalog)
-        reciter = ordered_reciters[0]
+    ordered_reciters = _reciter_order(english, jobs, position, catalog)
+    for attempt in range(min(120, total_verses * len(english))):
+        # Try other reciters when the preferred one's candidates are unsuitable.
+        reciter = ordered_reciters[attempt % len(ordered_reciters)]
         reciter_index = english.index(reciter)
         batch = position // len(english)
         # Every adjacent post changes both reciter and verse. Each reciter still
@@ -303,12 +287,8 @@ def verse_entry_for_position(catalog, jobs, position):
         position = next_position
         if key in jobs:
             continue
-        try:
-            payload = get_json(urljoin(QURAN_API, f'recitations/{reciter_id}/by_ayah/{chapter_id}:{verse_number}'),
-                               {'fields': 'chapter_id,verse_number,verse_key,duration,url'})
-        except RuntimeError:
-            print('Candidate audio metadata unavailable; trying the next candidate.', flush=True)
-            continue
+        payload = get_json(urljoin(QURAN_API, f'recitations/{reciter_id}/by_ayah/{chapter_id}:{verse_number}'),
+                           {'fields': 'chapter_id,verse_number,verse_key,duration,url'})
         files = payload.get('audio_files', [])
         if len(files) != 1:
             continue
@@ -317,15 +297,15 @@ def verse_entry_for_position(catalog, jobs, position):
         if not float(catalog.get('min_audio_seconds', 30)) <= hint <= float(catalog['max_audio_seconds']):
             continue
         relative_url = audio.get('url', '')
-        if not relative_url or '://' in relative_url or '..' in relative_url:
-            raise ValueError('Quran Foundation returned an invalid audio path')
-        try:
-            text_payload = get_json(urljoin(QURAN_API, 'quran/verses/uthmani'),
-                                    {'verse_key': f'{chapter_id}:{verse_number}'})
-        except RuntimeError:
-            print('Candidate Uthmani text unavailable; trying the next candidate.', flush=True)
-            continue
+        audio_url = quran_audio_url(relative_url)
+        expected_key = f'{chapter_id}:{verse_number}'
+        if audio.get('verse_key', expected_key) != expected_key:
+            raise ValueError('Audio verse does not match the requested verse')
+        text_payload = get_json(urljoin(QURAN_API, 'quran/verses/uthmani'),
+                                {'verse_key': f'{chapter_id}:{verse_number}'})
         text_rows = text_payload.get('verses', [])
+        if len(text_rows) == 1 and text_rows[0].get('verse_key', expected_key) != expected_key:
+            raise ValueError('Quran text does not match the requested verse')
         ayah_text = text_rows[0].get('text_uthmani', '').strip() if len(text_rows) == 1 else ''
         if not ayah_text or len(ayah_text) > catalog['max_ayah_characters']:
             continue
@@ -333,7 +313,7 @@ def verse_entry_for_position(catalog, jobs, position):
         reciter_ar = arabic_names.get(reciter_id) or reciter.get('reciter_name')
         return ({
             'id': key, 'source_type': 'quran_verse', 'recitation_id': reciter_id,
-            'audio_url': urljoin(QURAN_AUDIO, relative_url),
+            'audio_url': audio_url,
             'surah_ar': chapter['name_arabic'], 'surah_en': chapter['name_simple'],
             'verse_number': verse_number, 'verse_key': f'{chapter_id}:{verse_number}',
             'ayah_text': ayah_text,
@@ -348,84 +328,13 @@ def verse_entry_for_position(catalog, jobs, position):
             # same visual theme, even after a restart.
             'visual_theme': catalog['visual_themes'][(next_position - 1) % len(catalog['visual_themes'])],
         }, next_position)
-    # Individual ayahs are often only a few seconds long.  If none of the
-    # sampled ayahs reaches the 30-second policy, build one complete,
-    # consecutive passage from the same reciter and chapter instead of
-    # padding a short clip or silently publishing an under-length Short.
-    reciter = _reciter_order(english, jobs, position, catalog)[0]
-    reciter_id = reciter['id']
-    verse_index = (position // len(english) + english.index(reciter) * 521) % total_verses
-    remaining = verse_index
-    chapter = None
-    verse_number = 1
-    for row in chapters:
-        count = int(row['verses_count'])
-        if remaining < count:
-            chapter = row
-            verse_number = remaining + 1
-            break
-        remaining -= count
-    if chapter is None:
-        raise CloudError('Quran Foundation chapter metadata is incomplete; the next run will retry safely')
-    chapter_id = int(chapter['id'])
-    try:
-        payload = get_json(urljoin(QURAN_API, f'recitations/{reciter_id}/by_chapter/{chapter_id}'),
-                           {'per_page': 300, 'fields': 'chapter_id,verse_number,verse_key,duration,url'})
-        files = sorted(payload.get('audio_files', []), key=lambda row: int(row.get('verse_number') or 0))
-        text_payload = get_json(urljoin(QURAN_API, 'quran/verses/uthmani'),
-                                {'chapter_number': chapter_id, 'per_page': 300})
-    except RuntimeError:
-        raise CloudError('Quran Foundation passage search is temporarily unavailable; the next run will retry safely')
-    texts = {int(row.get('verse_number')): row.get('text_uthmani', '').strip()
-             for row in text_payload.get('verses', []) if row.get('verse_number')}
-    parts = []
-    total = 0.0
-    for audio in files:
-        number = int(audio.get('verse_number') or 0)
-        if number < verse_number:
-            continue
-        relative_url = audio.get('url', '')
-        duration = float(audio.get('duration') or 0)
-        if (not relative_url or '://' in relative_url or '..' in relative_url or
-                duration <= 0 or duration > float(catalog['max_audio_seconds'])):
-            continue
-        parts.append({'verse_number': number, 'verse_key': f'{chapter_id}:{number}',
-                      'url': relative_url, 'duration': duration})
-        total += duration
-        if total >= float(catalog.get('min_audio_seconds', 30)):
-            break
-        if total >= float(catalog['max_audio_seconds']) - float(catalog.get('tail_silence_seconds', 1)):
-            break
-    if total < float(catalog.get('min_audio_seconds', 30)) or not parts:
-        raise CloudError('No complete Quran passage between 30 seconds and the Shorts limit was found; the next run will retry safely')
-    first = parts[0]['verse_number']
-    last = parts[-1]['verse_number']
-    first_text = texts.get(first, '')
-    key = f'qf-p-r{reciter_id}-s{chapter_id}-a{first}-{last}'
-    if key in jobs:
-        raise CloudError('The next complete Quran passage was already published; the next run will retry safely')
-    style = reciter.get('style') or ''
-    reciter_ar = arabic_names.get(reciter_id) or reciter.get('reciter_name')
-    next_position = position + 1
-    return ({
-        'id': key, 'source_type': 'quran_passage', 'recitation_id': reciter_id,
-        'audio_parts': parts, 'surah_ar': chapter['name_arabic'],
-        'surah_en': chapter['name_simple'], 'verse_number': first,
-        'verse_end_number': last, 'verse_key': f'{chapter_id}:{first}-{last}',
-        'ayah_text': first_text, 'reciter_ar': reciter_ar,
-        'reciter_en': reciter.get('reciter_name', ''), 'style': style,
-        'permission_url': catalog['permission_url'], 'attribution': catalog['attribution'],
-        'rights': catalog['rights'], 'verified': True, 'whole_recording': True,
-        'min_audio_seconds': max(30, float(catalog.get('min_audio_seconds', 30))),
-        'max_audio_seconds': float(catalog['max_audio_seconds']),
-        'tail_silence_seconds': float(catalog['tail_silence_seconds']),
-        'visual_style': catalog['visual_style'],
-        'visual_theme': catalog['visual_themes'][(next_position - 1) % len(catalog['visual_themes'])],
-    }, next_position)
+    raise NoEligibleVerse(position)
 
 
 def load_catalog(path):
     data = bot.read_json(path)
+    if not isinstance(data, dict):
+        raise ValueError('Invalid recording catalog')
     if data.get('schema') == 3:
         return validate_verse_catalog(data)
     if data.get('schema') == 2:
@@ -434,8 +343,10 @@ def load_catalog(path):
         raise ValueError('Invalid recording catalog')
     seen = set()
     for entry in data['recordings']:
+        if not isinstance(entry, dict):
+            raise ValueError('Recording must be an object')
         key = entry.get('id', '')
-        if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', key) or key in seen:
+        if not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', key) or key in seen:
             raise ValueError('Recording IDs must be safe and unique')
         seen.add(key)
         if entry.get('verified') is not True or entry.get('whole_recording') is not True:
@@ -453,8 +364,6 @@ def load_catalog(path):
 
 
 def download_recording(entry, destination):
-    if entry.get('source_type') == 'quran_passage':
-        return download_quran_passage(entry, destination)
     if entry.get('source_type') == 'quran_verse':
         return download_quran_verse(entry, destination)
     if entry.get('source_type') == 'quran_foundation':
@@ -490,7 +399,7 @@ def media_duration(path):
                              '-f', 'null', '-'], capture_output=True, text=True,
                             encoding='utf-8', errors='replace', timeout=180)
     match = re.search(r'Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)', result.stderr)
-    if not match:
+    if result.returncode or not match:
         raise RuntimeError('Cannot measure the complete audio recording')
     hours, minutes, seconds = match.groups()
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
@@ -527,6 +436,14 @@ def download_quran_verse(entry, destination):
     return destination
 
 
+def quran_audio_url(relative_url):
+    if (not isinstance(relative_url, str) or not relative_url or relative_url.startswith(('/', '\\'))
+            or '\\' in relative_url or '..' in relative_url
+            or urlparse(relative_url).scheme or any(ord(char) < 32 for char in relative_url)):
+        raise ValueError('Quran Foundation returned an invalid audio path')
+    return urljoin(QURAN_AUDIO, relative_url)
+
+
 def download_quran_foundation(entry, destination):
     payload = get_json(urljoin(QURAN_API, f"recitations/{entry['recitation_id']}/by_chapter/{entry['chapter']}"),
                        {'per_page': 50, 'fields': 'chapter_id,verse_number,verse_key,duration,url'})
@@ -540,14 +457,17 @@ def download_quran_foundation(entry, destination):
     parts = []
     for index, row in enumerate(audio_files, 1):
         relative_url = row.get('url', '')
-        if not relative_url or '://' in relative_url or '..' in relative_url:
-            raise ValueError('Quran Foundation returned an invalid audio path')
+        audio_url = quran_audio_url(relative_url)
         part = destination.parent / f'verse-{index:03}.mp3'
-        with requests.get(urljoin(QURAN_AUDIO, relative_url), stream=True, timeout=(15, 60),
+        with requests.get(audio_url, stream=True, timeout=(15, 60),
                           headers={'User-Agent': 'quran-shorts-bot/2.0'}) as response:
             response.raise_for_status()
+            total = 0
             with part.open('wb') as handle:
                 for block in response.iter_content(65536):
+                    total += len(block)
+                    if total > 20 * 1024 * 1024:
+                        raise ValueError('Verse recording exceeds the size limit')
                     handle.write(block)
         parts.append(part)
     command = []
@@ -558,50 +478,29 @@ def download_quran_foundation(entry, destination):
     bot.run_media(['-y', *command, '-filter_complex', filters, '-map', '[out]',
                    '-c:a', 'libmp3lame', '-b:a', '192k', str(temporary)])
     os.replace(temporary, destination)
-    entry['duration'] = duration
+    measured = media_duration(destination)
+    if measured > 60:
+        raise TooLongRecording('Complete recording is too long for a Short')
+    entry['duration'] = measured
     entry['sha256'] = bot.file_hash(destination)
     return destination
 
 
 def make_card(entry, destination):
     """Render the Arabic-only card as a transparent overlay for filmed clips."""
-    from PIL import Image, ImageDraw, ImageFont
-    import arabic_reshaper
-    from bidi.algorithm import get_display
+    from PIL import Image, ImageDraw
+    from arabic_text import ArabicText
     font = ROOT / 'assets' / 'Amiri-Regular.ttf'
     if not font.is_file():
         raise FileNotFoundError('Arabic font missing: assets/Amiri-Regular.ttf')
     image = Image.new('RGBA', (1080, 1920), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image, 'RGBA')
     gold = '#dcc58e'
+    typography = ArabicText(font)
     def centered(text, y, size, color=gold, rtl=False):
-        if rtl:
-            text = get_display(arabic_reshaper.reshape(text))
-        # Arabic is shaped explicitly below. BASIC prevents Linux builds with
-        # RAQM from applying bidi/shaping a second time and scrambling words.
-        face = ImageFont.truetype(str(font), size, layout_engine=ImageFont.Layout.BASIC)
-        box = draw.textbbox((0, 0), text, font=face)
-        while size > 18 and box[2]-box[0] > 840:
-            size -= 2
-            face = ImageFont.truetype(str(font), size, layout_engine=ImageFont.Layout.BASIC)
-            box = draw.textbbox((0, 0), text, font=face)
-        draw.text(((1080-(box[2]-box[0]))/2-box[0], y), text, font=face, fill=color)
+        typography.draw_centered(image, text, y, size, color)
     def wrap_arabic(text, size, width=800):
-        words = text.split()
-        lines, current = [], ''
-        face = ImageFont.truetype(str(font), size, layout_engine=ImageFont.Layout.BASIC)
-        for word in words:
-            candidate = (current + ' ' + word).strip()
-            shaped = get_display(arabic_reshaper.reshape(candidate))
-            box = draw.textbbox((0, 0), shaped, font=face)
-            if current and box[2] - box[0] > width:
-                lines.append(current)
-                current = word
-            else:
-                current = candidate
-        if current:
-            lines.append(current)
-        return lines
+        return typography.wrap(text, size, width)
 
     verse_size = 46
     lines = wrap_arabic(entry.get('ayah_text', ''), verse_size)
@@ -611,12 +510,16 @@ def make_card(entry, destination):
     while len(lines) > 5 and verse_size > 22:
         verse_size -= 2
         lines = wrap_arabic(entry.get('ayah_text', ''), verse_size)
+    if len(lines) > 5:
+        raise ValueError('Complete Quran verse does not fit on the card')
     verse_y = 975
-    line_step = min(62, max(42, verse_size + 14))
+    line_step = max(verse_size + 14, max((typography.mask(line, verse_size).height + 12 for line in lines), default=42))
     reciter_y = verse_y + len(lines)*line_step + 42
     # Size the panel from the actual wrapped verse so a long verified ayah is
     # never hidden behind its lower edge or the reciter label.
     panel_bottom = max(1270, reciter_y + 95)
+    if panel_bottom > 1780:
+        raise ValueError('Complete Quran verse would extend outside the safe card area')
     draw.rounded_rectangle((90, 520, 990, panel_bottom), radius=70,
                            fill=(3, 18, 22, 178), outline=(207, 180, 119, 150), width=3)
     centered('سورة ' + entry['surah_ar'], 665, 96, '#f4f1e8', rtl=True)
@@ -628,48 +531,6 @@ def make_card(entry, destination):
     centered(entry['reciter_ar'], reciter_y, 49, gold, rtl=True)
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination, 'PNG')
-    return destination
-
-
-def download_quran_passage(entry, destination):
-    """Download and concatenate complete consecutive ayahs without trimming."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    parts = []
-    for index, item in enumerate(entry.get('audio_parts', []), 1):
-        relative_url = item.get('url', '')
-        if not relative_url or '://' in relative_url or '..' in relative_url:
-            raise ValueError('Quran Foundation returned an invalid passage audio path')
-        part = destination.parent / f'passage-{index:03}.mp3'
-        with requests.get(urljoin(QURAN_AUDIO, relative_url), stream=True, timeout=(15, 60),
-                          headers={'User-Agent': 'quran-shorts-bot/3.0'}) as response:
-            response.raise_for_status()
-            with part.open('wb') as handle:
-                for block in response.iter_content(65536):
-                    handle.write(block)
-        parts.append(part)
-    if not parts:
-        raise TooShortRecording('The complete Quran passage has no audio parts')
-    command = []
-    for part in parts:
-        command.extend(['-i', str(part)])
-    filters = ''.join(f'[{index}:a]' for index in range(len(parts))) + f'concat=n={len(parts)}:v=0:a=1[out]'
-    joined = destination.with_suffix('.joined.mp3')
-    bot.run_media(['-y', *command, '-filter_complex', filters, '-map', '[out]',
-                   '-c:a', 'libmp3lame', '-b:a', '192k', str(joined)])
-    actual = media_duration(joined)
-    minimum = max(30, float(entry.get('min_audio_seconds', 30)))
-    if actual < minimum:
-        raise TooShortRecording('Complete Quran passage is shorter than 30 seconds')
-    tail = float(entry.get('tail_silence_seconds', 1))
-    temporary = destination.with_suffix('.part.mp3')
-    bot.run_media(['-y', '-i', str(joined), '-af', f'apad=pad_dur={tail}',
-                   '-c:a', 'libmp3lame', '-b:a', '192k', str(temporary)])
-    padded = media_duration(temporary)
-    if padded > 60 or padded > float(entry['max_audio_seconds']):
-        raise TooLongRecording('Complete Quran passage with its ending is too long for a Short')
-    os.replace(temporary, destination)
-    entry['duration'] = round(padded, 2)
-    entry['sha256'] = bot.file_hash(destination)
     return destination
 
 
@@ -710,11 +571,8 @@ def make_motion_overlay(entry, destination):
 def video_background_for(entry):
     """Return a varied checked-in filmed clip for the requested theme.
 
-    Older deployments only shipped two theme-named files, so the old fallback
-    silently reused forest_rain for every missing theme.  That made the feed
-    look repetitive.  We now use the exact theme asset when present and rotate
-    through the remaining reviewed video pool for themes whose asset has not
-    been added yet.  Micro/test files are excluded from the publishing pool.
+    If a theme-specific asset is absent, rotate through the other reviewed
+    clips instead of silently reusing forest_rain for every post.
     """
     theme = entry.get('visual_theme', 'forest_rain')
     video_root = ROOT / 'assets' / 'backgrounds' / 'video'
@@ -729,7 +587,6 @@ def video_background_for(entry):
     theme_index = themes.index(theme) if theme in themes else 0
     digest = int(hashlib.sha256(str(entry.get('id', theme)).encode('utf-8')).hexdigest()[:8], 16)
     return pool[(theme_index + digest) % len(pool)]
-
 
 def item_for(entry, source, background, motion_overlay=None):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
@@ -768,7 +625,10 @@ def item_for(entry, source, background, motion_overlay=None):
     if filmed:
         item['background_video'] = str(filmed.resolve())
         item['background_motion'] = 'real_video'
+        item['visual_theme'] = filmed.stem
         item.pop('motion_overlay', None)
+    if not filmed and entry.get('visual_style') == 'real_video_assets':
+        raise ValueError('No reviewed filmed background is available')
     if motion_overlay and not filmed:
         item['motion_overlay'] = str(motion_overlay.resolve())
     return item
@@ -806,9 +666,14 @@ def check_upload_restrictions(service, ledger, catalog):
             if not reason or row.get('safety_incident'):
                 continue
             reciter_id = int(row['reciter_id'])
-            ledger.block_reciter(catalog, reciter_id)
+            # A user deletion or encoding failure is not evidence against
+            # every recording by that reciter.
+            block = reason == 'copyright' or reason.startswith('region ')
+            if block:
+                ledger.block_reciter(catalog, reciter_id)
             incident = {'video_id': row['video_id'], 'reciter_id': reciter_id,
-                        'reason': reason, 'timestamp': datetime.now(timezone.utc).isoformat()}
+                        'reason': reason, 'reciter_blocked': block,
+                        'timestamp': datetime.now(timezone.utc).isoformat()}
             row['safety_incident'] = incident
             incidents.append(incident)
     if incidents:
@@ -863,6 +728,9 @@ def collect_performance_metrics(service, ledger, expected_privacy, now=None):
         video_id = row['video_id']
         video = videos.get(video_id)
         if not video:
+            current_flags[video_id] = ['video unavailable']
+            if 'video unavailable' not in previous_flags.get(video_id, []):
+                new_flags.append({'video_id': video_id, 'flag': 'video unavailable'})
             continue
         statistics = video.get('statistics', {})
         privacy = video.get('status', {}).get('privacyStatus', 'unknown')
@@ -872,6 +740,7 @@ def collect_performance_metrics(service, ledger, expected_privacy, now=None):
                     'comment_count': _count(statistics.get('commentCount')),
                     'privacy_status': privacy}
         history.setdefault(video_id, []).append(snapshot)
+        history[video_id] = history[video_id][-30:]
         flags = []
         uploaded = row.get('uploaded_at') or row.get('started_at')
         if uploaded:
@@ -894,6 +763,7 @@ def collect_performance_metrics(service, ledger, expected_privacy, now=None):
     ledger.data['performance_averages'] = averages
     schedule = schedule_timing_summary(ledger.data.get('schedule_history', []), jobs, now=now)
     ledger.data['schedule_summary'] = schedule
+    ledger.data['metrics_checked_at'] = timestamp
     ledger.save()
     return {'tracked': len(tracked), 'new_flags': new_flags, 'averages': averages,
             'schedule': schedule, 'timestamp': timestamp}
@@ -938,11 +808,17 @@ def run_performance_report(service, ledger):
     try:
         config = bot.read_json(ROOT / 'automation.json')
         ledger.load()
+        verify_channel(service, ledger, config)
         report = collect_performance_metrics(service, ledger, config.get('privacy', 'private'))
         summary = performance_summary(report)
     except Exception:
+        try:
+            ledger.data['youtube_check'] = {'ok': False, 'checked_at': datetime.now(timezone.utc).isoformat()}
+            ledger.save()
+        except Exception:
+            pass
         summary = ('## Quran Shorts performance report\n\n'
-                   'Metrics are temporarily unavailable; the upload workflow remains healthy.\n')
+                   'Metrics are temporarily unavailable; upload and connection health are unknown.\n')
     print(summary)
     step_summary = os.environ.get('GITHUB_STEP_SUMMARY')
     if step_summary:
@@ -954,8 +830,6 @@ def run_performance_report(service, ledger):
     return summary
 
 
-BAGHDAD = timezone(timedelta(hours=3), 'Asia/Baghdad')
-PUBLICATION_HOURS = (11, 16, 20)
 SCHEDULE_HISTORY_DAYS = 30
 SCHEDULE_REPORT_DAYS = 7
 
@@ -994,7 +868,7 @@ def record_schedule_event(ledger, target_slot, triggered_at, outcome):
     ledger.data['schedule_history'] = kept[-500:]
     try:
         ledger.save()
-    except Exception as error:
+    except Exception:
         print('Schedule timing telemetry could not be saved; publication will continue')
     return event
 
@@ -1003,13 +877,14 @@ def schedule_timing_summary(history, jobs=None, now=None, days=SCHEDULE_REPORT_D
     """Summarize target-to-upload offsets over the recent observation window."""
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=days)
-    events = list(history or [])
+    events = [dict(event) for event in (history or []) if isinstance(event, dict)]
+    completed_slots = {event.get('target_slot') for event in events if event.get('outcome') == 'uploaded'}
     # Backfill timing for older scheduled uploads recorded before telemetry was
     # introduced, so the first report is useful immediately.
     for row in (jobs or {}).values():
         slot = row.get('schedule_slot')
         uploaded = row.get('uploaded_at')
-        if not slot or not uploaded:
+        if not slot or not uploaded or slot in completed_slots:
             continue
         try:
             uploaded_at = datetime.fromisoformat(uploaded.replace('Z', '+00:00'))
@@ -1017,10 +892,11 @@ def schedule_timing_summary(history, jobs=None, now=None, days=SCHEDULE_REPORT_D
         except (AttributeError, TypeError, ValueError, CloudError):
             continue
         if uploaded_at.tzinfo and uploaded_at >= cutoff:
-            events.append({'triggered_at': uploaded_at.isoformat(), 'outcome': 'uploaded',
+            events.append({'triggered_at': uploaded_at.isoformat(), 'outcome': 'uploaded', 'backfilled': True,
                            'target_slot': slot, 'target_at': target_at.isoformat(),
                            'uploaded_at': uploaded_at.isoformat(),
                            'upload_offset_minutes': round((uploaded_at - target_at).total_seconds() / 60, 1)})
+            completed_slots.add(slot)
     recent = []
     for event in events:
         try:
@@ -1032,10 +908,10 @@ def schedule_timing_summary(history, jobs=None, now=None, days=SCHEDULE_REPORT_D
     uploads = [event for event in recent
                if event.get('outcome') == 'uploaded' and event.get('upload_offset_minutes') is not None]
     offsets = [float(event['upload_offset_minutes']) for event in uploads]
-    unresolved = sum(event.get('outcome') == 'selected' for event in recent)
+    unresolved = sum(event.get('outcome') == 'selected' and event.get('target_slot') not in completed_slots for event in recent)
     return {
         'window_days': days,
-        'heartbeat_runs': len(recent),
+        'heartbeat_runs': sum(not event.get('backfilled') for event in recent),
         'uploads': len(uploads),
         'unresolved': unresolved,
         'average_offset_minutes': round(sum(offsets) / len(offsets), 1) if offsets else None,
@@ -1053,49 +929,26 @@ def next_schedule_slot(jobs, now=None):
     still count toward the target, and delayed uploads remain spaced at least
     twenty minutes apart.
     """
-    local = (now or datetime.now(timezone.utc)).astimezone(BAGHDAD)
-    if local.hour < PUBLICATION_HOURS[0]:
-        return None
-    prefix = local.date().isoformat() + '/'
-    completed = set()
-    unassigned = 0
-    latest = None
-    for row in jobs.values():
-        if row.get('status') != 'uploaded':
-            continue
-        slot = row.get('schedule_slot', '')
-        if slot.startswith(prefix):
-            completed.add(slot)
-        stamp = row.get('uploaded_at') or row.get('started_at')
-        if stamp:
-            try:
-                uploaded = datetime.fromisoformat(stamp.replace('Z', '+00:00'))
-                if uploaded.tzinfo is None:
-                    raise ValueError('Upload time must include timezone')
-                uploaded = uploaded.astimezone(BAGHDAD)
-            except (ValueError, TypeError):
-                raise CloudError('Invalid ledger upload time; stopping to prevent extra posts')
-            if uploaded.date() == local.date() and uploaded.hour >= PUBLICATION_HOURS[0]:
-                latest = max(latest, uploaded) if latest else uploaded
-                if not slot.startswith(prefix):
-                    unassigned += 1
-    if latest and (local - latest).total_seconds() < 20 * 60:
-        return None
-    for hour in PUBLICATION_HOURS:
-        slot = prefix + f'{hour:02d}:00'
-        if slot in completed:
-            continue
-        if unassigned:
-            unassigned -= 1
-            continue
-        if local.hour >= hour:
-            return slot
-    return None
+    try:
+        return schedule_state(jobs, now)['next_due']
+    except ValueError as error:
+        raise CloudError(str(error)) from error
+
+
+def verify_channel(service, ledger, config):
+    expected = config.get('channel_id')
+    channels = service.channels().list(part='id', mine=True).execute()
+    if not expected or expected not in [row['id'] for row in channels.get('items', [])]:
+        raise CloudError('Authorized YouTube channel does not match the configured channel')
+    ledger.data['youtube_check'] = {'ok': True, 'channel_id': expected,
+                                    'checked_at': datetime.now(timezone.utc).isoformat()}
 
 
 def run(args, ledger=None, service=None):
     run_started_at = datetime.now(timezone.utc)
     config = bot.read_json(ROOT / 'automation.json')
+    if not isinstance(config, dict):
+        raise CloudError('Invalid automation configuration')
     if config.get('privacy', 'private') not in ('private', 'unlisted', 'public'):
         raise CloudError('Invalid publication privacy setting')
     catalog = load_catalog(ROOT / 'catalog.json')
@@ -1125,27 +978,35 @@ def run(args, ledger=None, service=None):
                 handle.write('## Publication schedule\n\n' + message + '\n')
         if not schedule_slot:
             return
-    if args.mode in ('publish', 'scheduled') and ledger and service and isinstance(catalog, dict) and catalog.get('schema') == 3:
-        print('Checking previously uploaded videos for restrictions...', flush=True)
-        try:
-            check_upload_restrictions(service, ledger, catalog)
-        except Exception:
-            print('YouTube restriction check was unavailable; publishing safety rules remain unchanged')
-    if any(row.get('status') == 'uploading' for row in jobs.values()):
+    if args.mode != 'preview' and any(row.get('status') == 'uploading' for row in jobs.values()):
         raise RuntimeError('An earlier upload is uncertain. Check YouTube Studio before continuing.')
+    if args.mode in ('publish', 'scheduled'):
+        if not ledger or not service:
+            raise CloudError('Cloud publishing requires YouTube and a durable remote ledger')
+        verify_channel(service, ledger, config)
+        if isinstance(catalog, dict) and catalog.get('schema') == 3:
+            try:
+                check_upload_restrictions(service, ledger, catalog)
+            except Exception:
+                raise CloudError('Restriction verification unavailable; no new upload was attempted') from None
     next_cursor = None
     if isinstance(catalog, dict) and catalog.get('schema') == 3:
         cursor = ledger.data.get('cursor', len(jobs)) if ledger else len(jobs)
         for _ in range(100):
-            entry, next_cursor = verse_entry_for_position(catalog, jobs, cursor)
+            try:
+                entry, next_cursor = verse_entry_for_position(catalog, jobs, cursor)
+            except NoEligibleVerse as error:
+                if ledger and args.mode != 'preview':
+                    ledger.data['cursor'] = error.cursor
+                    ledger.save()
+                raise
             workspace = ROOT / 'state' / 'cloud' / entry['id']
             try:
-                print(f'Downloading selected recitation ({entry.get("verse_key", entry["id"])})...', flush=True)
                 source = download_recording(entry, workspace / 'recitation.mp3')
                 break
             except (TooLongRecording, TooShortRecording):
                 cursor = next_cursor
-                if ledger:
+                if ledger and args.mode != 'preview':
                     ledger.data['cursor'] = cursor
                     ledger.save()
         else:
@@ -1165,8 +1026,8 @@ def run(args, ledger=None, service=None):
     if media_duration(source) < 30 or float(entry['duration']) < 30:
         raise TooShortRecording('Recitation must be at least 30 seconds before rendering')
     card = make_card(entry, workspace / 'background.png')
-    print('Rendering the Short video...', flush=True)
-    motion = make_motion_overlay(entry, workspace / 'moving-rain.png')
+    motion = (None if video_background_for(entry) else
+              make_motion_overlay(entry, workspace / 'moving-rain.png'))
     job = item_for(entry, source, card, motion)
     queue = workspace / 'queue.json'
     bot.atomic_json(queue, {'items': [job]})
@@ -1179,13 +1040,10 @@ def run(args, ledger=None, service=None):
         return
     if not ledger or not service:
         raise RuntimeError('Cloud publishing requires YouTube and a durable remote ledger')
-    channels = service.channels().list(part='id', mine=True).execute()
-    if config['channel_id'] not in [row['id'] for row in channels.get('items', [])]:
-        raise RuntimeError('Authorized YouTube channel does not match the configured channel')
     jobs[entry['id']] = {'status': 'uploading', 'audio_sha256': entry['sha256'],
                          'reciter_id': entry.get('recitation_id'),
                          'reciter_name': entry.get('reciter_en'),
-                         'visual_theme': entry.get('visual_theme'),
+                         'visual_theme': job.get('visual_theme'),
                          'render_sha256': bot.file_hash(target),
                          'started_at': datetime.now(timezone.utc).isoformat()}
     if schedule_slot:
@@ -1194,12 +1052,9 @@ def run(args, ledger=None, service=None):
         ledger.data['cursor'] = next_cursor
     ledger.save()  # Must succeed BEFORE sending any upload bytes.
     video_id = bot.upload(service, job, target, config.get('privacy', 'private'))
-    cta_index, comment_ok = bot.post_cta_comment(service, video_id)
     uploaded_at = datetime.now(timezone.utc)
     jobs[entry['id']].update(status='uploaded', video_id=video_id,
-                             uploaded_at=uploaded_at.isoformat(),
-                             cta_comment_variant=cta_index,
-                             cta_comment_succeeded=comment_ok)
+                             uploaded_at=uploaded_at.isoformat())
     if args.mode == 'scheduled' and schedule_slot:
         schedule_event.update({'outcome': 'uploaded', 'uploaded_at': uploaded_at.isoformat(),
                                'upload_offset_minutes': round(
@@ -1207,6 +1062,14 @@ def run(args, ledger=None, service=None):
                                     schedule_slot_time(schedule_slot)).total_seconds() / 60, 1)})
     ledger.save()
     print('Uploaded: https://www.youtube.com/watch?v=' + video_id)
+    # Save the video ID before optional comments: an interrupted comment must
+    # never leave a completed upload marked uncertain.
+    try:
+        cta_index, comment_ok = bot.post_cta_comment(service, video_id)
+        jobs[entry['id']].update(cta_comment_variant=cta_index, cta_comment_succeeded=comment_ok)
+        ledger.save()
+    except Exception:
+        print('Optional comment metadata could not be saved; upload is recorded')
     # Processing signals can appear shortly after upload. This check is best-effort;
     # the next scheduled run checks every tracked upload again.
     time.sleep(12)
@@ -1214,15 +1077,34 @@ def run(args, ledger=None, service=None):
         check_upload_restrictions(service, ledger, catalog)
     except Exception:
         print('Post-upload restriction check deferred to the next scheduled run')
+    return video_id
 
 
-def main():
+def run_batch(args, ledger, service):
+    count = getattr(args, 'count', 1)
+    if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 5:
+        raise CloudError('Post count must be between 1 and 5')
+    if args.mode != 'publish' and count != 1:
+        raise CloudError('Only publish mode supports multiple posts')
+    for _ in range(count):
+        if not run(args, ledger, service):
+            break
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=['preview', 'publish', 'scheduled', 'report'])
-    args = parser.parse_args()
+    parser.add_argument('--count', type=int, choices=range(1, 6), default=1)
+    args = parser.parse_args(argv)
+    if args.mode != 'publish' and args.count != 1:
+        parser.error('--count is only supported for publish')
     try:
         if args.mode == 'preview':
-            run(args)
+            ledger = None
+            if os.environ.get('GITHUB_REPOSITORY') and os.environ.get('GITHUB_TOKEN'):
+                ledger = RemoteLedger(os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_TOKEN'],
+                                      os.environ.get('GITHUB_REF_NAME', 'main'))
+            run(args, ledger)
         else:
             from google.oauth2.credentials import Credentials
             from google.auth.transport.requests import Request
@@ -1232,11 +1114,12 @@ def main():
             if not credentials.valid:
                 credentials.refresh(Request())
             service = build('youtube', 'v3', credentials=credentials, cache_discovery=False)
-            ledger = RemoteLedger(os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_TOKEN'])
+            ledger = RemoteLedger(os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_TOKEN'],
+                                  os.environ.get('GITHUB_REF_NAME', 'main'))
             if args.mode == 'report':
                 run_performance_report(service, ledger)
             else:
-                run(args, ledger, service)
+                run_batch(args, ledger, service)
         return 0
     except Exception as error:
         # External exception bodies can contain secrets. Print only our own diagnostics.

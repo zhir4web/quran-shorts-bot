@@ -1,35 +1,51 @@
-# Quran Shorts dashboard
+﻿# Quran Shorts dashboard
 
-The dashboard is a small server-rendered static UI with a Python API. It keeps
-GitHub and YouTube credentials on the server and calls the existing workflow;
-the browser never receives a token.
+Static Kurdish UI with a Python HTTP API. GitHub and YouTube tokens are never
+sent to the browser. The dashboard access key is entered in the browser and
+kept in sessionStorage for that tab session.
 
-## Local run
+## Run
 
-Set a GitHub token with repository **Actions: write** and **Contents: read**
-permissions, then run:
+Install requirements-dashboard.txt and set GITHUB_TOKEN, DASHBOARD_KEY,
+GITHUB_REPOSITORY (owner/repository) and GITHUB_BRANCH (default main), then run
+`python dashboard_server.py`. Open http://127.0.0.1:8787.
 
-```powershell
-$env:GITHUB_TOKEN = "your-token"
-$env:DASHBOARD_KEY = "a-long-random-local-key"  # optional on localhost
-python dashboard_server.py
+The GitHub token needs repository **Contents: read** and **Actions: write**.
+Deploy dashboard_server.py, schedule_policy.py, dashboard/ and
+requirements-dashboard.txt together. PORT takes precedence over DASHBOARD_PORT.
+A key is required beyond localhost; expose through HTTPS and an authenticated
+reverse proxy. Missing remote configuration is an error, not a local fallback.
+
+## Behavior
+
+- One publish request dispatches daily.yml once with mode and count. Counts
+  1–5 execute sequentially inside that workflow. Other modes require 1.
+- The workflow uses queue: max to retain pending runs. GitHub queue capacity
+  and availability remain external limits.
+- Dispatch acceptance means requested, not uploaded. A timeout is an unknown
+  outcome: check GitHub Actions before retrying.
+- Repeated clicks are suppressed during an active request. This is not
+  cross-device deduplication; two intentional requests remain two requests.
+- Uncertain uploads block publication controls until resolved in the ledger.
+- Connection verification requires a matching successful channel check within
+  24 hours. A configured channel ID alone is not verification.
+- Failed workflows, disabled automation, invalid schedule data and uncertain
+  uploads are surfaced. Unavailable checks display unknown instead of healthy.
+- Schedule rows use actual slot IDs and shared manual-post accounting.
+- The library shows the latest 12 uploads.
+- Refresh retries authentication after canceling the key dialog.
+- The service worker caches static assets only, never API responses.
+
+TikTok posting is not implemented. Environment credentials do not enable it.
+
+## Tests
+
+```text
+python -m unittest discover -s tests -v
+node --test tests/dashboard.test.js
 ```
 
-Open `http://127.0.0.1:8787`. The dashboard reads `automation.json`,
-`catalog.json`, and `.bot-state/published.json` from the configured repository
-and dispatches `.github/workflows/daily.yml` in `preview`, `publish`, or
-`scheduled` mode. The manual count is capped at five and dispatches serially;
-the existing remote ledger and workflow concurrency group remain the source of
-truth for duplicate protection.
-
-To expose it beyond localhost, set `DASHBOARD_HOST` and **always** set
-`DASHBOARD_KEY`. Put the dashboard behind HTTPS and an authenticated reverse
-proxy in production.
-
-## TikTok module
-
-The TikTok page is intentionally shown as a separate integration boundary. It
-is not marked connected until TikTok Content Posting API credentials and OAuth
-approval are configured. No TikTok token is accepted by the browser or written
-to the repository.
+Python tests use local HTTP servers and mocked external services. JavaScript
+tests execute the actual script in a DOM harness, covering authentication,
+stale data, blocked uploads, slot display and repeated clicks.
 

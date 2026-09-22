@@ -1,46 +1,126 @@
-# Review and delivery notes
+﻿# Review and repairs — 2026-09-22
 
-Reviewed source: the supplied `quran-shorts-bot-main.zip`. The original was retained separately and was not executed. Credentials/cookies from the original archive were not read or copied into this release.
+چاکسازییەکان لە کۆپیی ناوخۆیی جێبەجێ کران. 91 تاقیکردنەوەی Python و 4 تاقیکردنەوەی JavaScript سەرکەوتوو بوون. هیچ ڤیدیۆیەک بڵاو نەکراوەتەوە.
 
-## Problems confirmed in the original source
+## Scope and status
 
-- Searched broadly for others' Quran videos without checking permissions. Speed and brightness edits did not establish reuse rights.
-- Had no original audio-plus-image composition mode.
-- GitHub Actions did not persist `uploaded_videos.txt`, so later runs could repeat earlier uploads.
-- Upload failures were caught and printed while the program could still end successfully.
-- No durable record for uploads whose network response was lost, and no resumable retry policy.
-- The 60-second limit was applied only to search metadata; unknown durations could pass through without a render limit.
-- Only landscape clips were cropped. Other aspect ratios were not normalized, and cropping could remove existing Quran text.
-- Windows launcher assumed a particular Python 3.12 installation path and reinstalled unpinned dependencies on every run.
-- The old workflow required working YouTube download access and OAuth credentials; no credentials were available for verification.
+Reviewed and repaired the supplied local source tree. This directory has no
+.git repository, so no commit, push or deployment was made. The production
+automation configuration, channel identity and existing publication ledger
+were preserved. External account connectivity was not inferred from local files.
 
-## Replacement behavior
+## Repairs
 
-- Explicit licensed queue; either compose recitation plus artwork or process an authorized existing video. HTTPS download is supported through yt-dlp without hard-coded YouTube clients or browser cookies.
-- FFmpeg replaces MoviePy compatibility branches; output has audio, fixed portrait dimensions, maximum 60 seconds and a checked duration. Whole source frame and original recitation speed are preserved.
-- SQLite state, output checksums, operating-system process locks, bounded upload retries and an uncertain-upload recovery command.
-- Preview does not authenticate or upload. Upload defaults to private. Public uploads are selected explicitly.
-- Windows daily scheduler installer; one pending item per run, persistent local state, rotating logs and nonzero failure exits.
-- GitHub workflow runs tests only. It is not a cloud upload deployment. Disable/remove the original scheduled workflow when replacing the repository.
-- No automatic Quran transcription, verse recognition, AI recitation, or guarantee of copyright clearance. The operator supplies verified recitation and verse boundaries. The included background is original geometric artwork without Quran text.
+### Publication and scheduling
 
-## Validation on this delivery
+- Corrected the workflow dispatch endpoint to use daily.yml rather than its
+  repository path.
+- Changed multi-post requests to one workflow with a validated count of 1–5.
+  The runner processes posts sequentially and stops on failure or exhaustion.
+- Added GitHub's documented queue: max setting to retain pending runs.
+- Saved the completed video ID before optional comment operations. Comment
+  failure cannot turn a known completed upload into an uncertain upload.
+- Made preview state read-only, including skipped audio candidates and
+  workflow reporting. A GitHub preview can read the ledger without changing it.
+- Used the workflow branch for the remote ledger instead of hard-coded main.
+- Shared Baghdad slot accounting between the runner and dashboard.
+- Removed double counting when timing history and uploaded jobs describe the
+  same publication. Backfilled uploads no longer inflate heartbeat counts.
+- Stopped treating deleted videos or encoding failures as reasons to blacklist
+  every recording by that reciter. Copyright rejection and regional
+  restrictions can still trigger reciter blocking.
+- Checked the authorized channel before pre-publication restriction updates.
+  An unavailable restriction check now prevents a new publication.
 
-- Windows, Python 3.12, bundled FFmpeg from imageio-ffmpeg 0.6.0.
-- 15 automated tests passed. They include real audio-to-video generation, existing-video conversion, landscape padding, too-short source rejection and missing-audio rejection.
-- Queue permission checks, duration bounds, duplicate IDs, unsafe IDs, changed jobs, damaged output, concurrent runs and failure status tested.
-- Mock YouTube tests cover private metadata, attribution, resumable retries, successful deduplication, interrupted uploads and manual recovery.
-- OAuth/channel login, actual internet media downloads, live YouTube uploads and registering the Windows scheduled task were not executed. These require the user's account, licensed media and desired activation time.
-- Fresh dependencies were installed successfully in an isolated environment. Direct dependencies are pinned; `requirements-lock.txt` records the tested transitive versions.
+### Dashboard and request handling
 
-## Remaining activation requirements
+- A channel ID means configured, not connected. A matching successful channel
+  check less than 24 hours old is required for recent verification.
+- Displayed uncertain uploads, failed workflows, disabled automation, invalid
+  schedule data, missing videos and unknown checks.
+- Used actual completed slot IDs; total daily uploads no longer mark the wrong
+  schedule rows complete. Legacy timestamps are included where available.
+- Blocked publication controls for uncertain uploads and disabled automation.
+- Added strict JSON object, content type, length, mode and count validation.
+- Rejected cross-origin publication requests and invalid hosts on keyless local
+  access. Used safe diagnostics for remote failures rather than raw errors.
+- Corrected cancel behavior in the access-key dialog, prevented overlapping
+  refreshes and duplicate in-flight publication clicks, and cleared stale
+  success indicators after failed refreshes.
+- Moved service worker registration out of inline HTML to comply with CSP.
+  API responses are never cached; unrelated origin caches are not deleted.
+- Fixed the mobile menu backdrop selector and added a visible refresh control.
+- Marked TikTok as unimplemented regardless of environment variables.
+- Included the shared schedule module in Docker and honored Cloud Run PORT.
 
-1. Supply authorized recitation and fill the queue. The delivered active queue is empty on purpose.
-2. Configure Google Cloud Desktop OAuth, sign in locally and verify the intended channel.
-3. Review a real Quran preview, then upload one private test and check YouTube Studio.
-4. Activate the daily task if desired. Keep the computer on and signed in; retain and back up the state directory securely.
+### Media and content
 
-YouTube may restrict uploads from unverified API projects to private visibility. OAuth refresh tokens can expire or be revoked. Network access, quotas and media availability are external dependencies. A successful test suite does not mean the channel is connected or the bot is running unattended.
+- Replaced the reshaper path that removed Quran diacritics with HarfBuzz and
+  FreeType glyph layout. The original Unicode text is shaped without stripping
+  marks; unsupported glyphs or text outside the safe card bounds stop rendering.
+- Sized line spacing from rendered text height to avoid overlapping marks.
+- Rejected malformed source paths that could redirect a Quran audio URL to a
+  different host. Compared returned verse IDs when present.
+- Rejected failed media decodes even when stderr contains a duration header.
+- Validated minimum duration and incompatible background/filter combinations.
+  Relative filmed-background paths now resolve against the queue directory.
+- Measured legacy concatenated recordings instead of trusting API duration alone.
+- Bounded candidate scans and preserved the continuation cursor for publication.
+  An unsuitable preferred reciter no longer prevents trying other reciters.
+- Recorded the actual fallback background name instead of the requested theme.
+- Kept only the latest 30 metrics snapshots per tracked video.
 
-Sources: [YouTube uploads](https://developers.google.com/youtube/v3/docs/videos/insert), [OAuth expiration](https://developers.google.com/identity/protocols/oauth2#expiration), [monetization and reused content](https://support.google.com/youtube/answer/1311392).
+### Setup and documentation
+
+- Installed Python 3.12.14 in an isolated local environment and synchronized
+  the pinned dependency lock. setup.bat can reuse an existing environment.
+- Updated CI to run on Windows and Linux and include JavaScript behavior tests.
+- Rewrote stale README, automation and dashboard guidance. Corrected statements
+  about workflow names, credential handling, background assets and TikTok.
+- Local test tooling lives under ignored .tools/ and .venv/ directories.
+
+## Validation actually performed
+
+- **91 Python tests passed** on Windows / Python 3.12.14. Includes real FFmpeg
+  composition/conversion, upload failure handling, bounded scans, timing,
+  Arabic rendering, and authenticated local HTTP endpoint tests.
+- **4 JavaScript tests passed**, executing the dashboard script in a DOM harness:
+  uncertain upload blocking, correct slot rows, stale data, canceled
+  authentication and repeated clicks.
+- Ruff undefined-name/unused-symbol checks passed.
+- Dependency consistency checks passed after syncing requirements-lock.txt.
+- Both checked-in filmed backgrounds passed the source-resolution check.
+- Generated a 1080×1920, three-second local test-tone video using the real filmed
+  background and Arabic card; frame, duration, audio and visible-motion checks
+  passed. Inspected the generated frame visually. This is a rendering fixture,
+  **not a Quran recitation or a publishable preview**:
+  state/review-preview/video.mp4 and state/review-preview/frame.png.
+- Actionlint 1.7.12 passed after ignoring its single outdated-schema diagnostic
+  for queue: max. GitHub's current documentation explicitly supports this field;
+  that field was verified against the docs, not accepted by this linter.
+- Browser UI screenshots could not be tested because no connected browser was
+  available. HTTP and JavaScript tests were completed instead.
+
+## External validation still required
+
+These repairs are local. Updating the remote repository and hosted dashboard
+is a separate deployment. Live OAuth refresh, real Quran API availability,
+a YouTube upload, the channel's processing outcome and Linux CI execution were
+not exercised in this session. They require the configured external services.
+
+The dashboard's connection indicator is a recent observation, not a continuous
+live probe. GitHub cron timing and queue limits remain external constraints.
+Two separate deliberate publish requests are two requests; in-flight click
+suppression is not cross-device idempotency. The included catalog/asset
+attribution does not itself prove every use is authorized.
+
+## Primary technical references
+
+- [GitHub workflow dispatch API](https://docs.github.com/en/rest/actions/workflows):
+  the workflow identifier may be its file name.
+- [GitHub concurrency and queued runs](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency):
+  queue: max supports multiple pending runs.
+- [HarfBuzz Python bindings](https://github.com/harfbuzz/uharfbuzz) and
+  [FreeType Python bindings](https://freetype-py.readthedocs.io/):
+  glyph shaping and rasterization.
 

@@ -7,10 +7,11 @@ Run locally with ``python dashboard_server.py``.
 from __future__ import annotations
 
 import base64
-import hashlib
 import hmac
 import json
 import os
+import re
+import socket
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,6 +19,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
+from schedule_policy import BAGHDAD, PUBLICATION_HOURS, parse_iso, schedule_state
 
 
 ROOT = Path(__file__).resolve().parent
@@ -26,10 +28,10 @@ STATE_PATH = '.bot-state/published.json'
 REPOSITORY = os.environ.get('GITHUB_REPOSITORY', 'zhir4web/quran-shorts-bot')
 BRANCH = os.environ.get('GITHUB_BRANCH', 'main')
 WORKFLOW_PATH = '.github/workflows/daily.yml'
+WORKFLOW_FILE = 'daily.yml'
 # Baghdad stays at UTC+3; use a fixed offset so the dashboard needs no extra
 # tzdata package on the small hosted runner or a fresh local Python install.
-BAGHDAD = timezone(timedelta(hours=3), 'Asia/Baghdad')
-DEFAULT_SLOTS = (11, 16, 20)
+DEFAULT_SLOTS = PUBLICATION_HOURS
 MAX_REQUEST_BYTES = 64 * 1024
 
 
@@ -37,24 +39,8 @@ class DashboardError(RuntimeError):
     """Safe error message for the dashboard API."""
 
 
-def read_local_json(path: Path, default):
-    try:
-        return json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, ValueError, TypeError):
-        return default
-
-
-def parse_iso(value):
-    try:
-        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return None
-
-
-def local_day(value):
-    parsed = parse_iso(value)
-    return parsed.astimezone(BAGHDAD).date() if parsed else None
+class BadRequest(DashboardError):
+    """Invalid input from a dashboard client."""
 
 
 def video_url(video_id):
@@ -68,21 +54,28 @@ def safe_int(value, default=0):
         return default
 
 
-def build_overview(automation, catalog, ledger, now=None):
+def build_overview(automation, catalog, ledger, now=None, workflow=None):
     """Convert the durable ledger into a small, UI-friendly read model."""
     now = now or datetime.now(timezone.utc)
-    jobs = ledger.get('jobs', {}) if isinstance(ledger, dict) else {}
+    if (not isinstance(automation, dict) or not isinstance(ledger, dict)
+            or not isinstance(ledger.get('jobs', {}), dict)):
+        raise DashboardError('Invalid remote configuration or ledger')
+    jobs = ledger.get('jobs', {})
+    if any(not isinstance(row, dict) or row.get('status') not in ('uploaded', 'uploading')
+           or (row.get('status') == 'uploaded' and not row.get('video_id'))
+           for row in jobs.values()):
+        raise DashboardError('Invalid remote ledger job')
     today = now.astimezone(BAGHDAD).date()
     uploaded = []
     for job_id, row in jobs.items():
         if not isinstance(row, dict) or row.get('status') != 'uploaded' or not row.get('video_id'):
             continue
-        uploaded_at = parse_iso(row.get('uploaded_at'))
+        uploaded_at = parse_iso(row.get('uploaded_at') or row.get('started_at'))
         uploaded.append({
             'id': job_id,
             'video_id': row['video_id'],
             'url': video_url(row['video_id']),
-            'uploaded_at': uploaded_at.isoformat() if uploaded_at else row.get('uploaded_at'),
+            'uploaded_at': uploaded_at.isoformat() if uploaded_at else None,
             'uploaded_today': bool(uploaded_at and uploaded_at.astimezone(BAGHDAD).date() == today),
             'reciter': row.get('reciter_name') or 'Unknown reciter',
             'theme': row.get('visual_theme') or 'Unknown theme',
@@ -91,19 +84,43 @@ def build_overview(automation, catalog, ledger, now=None):
         })
     uploaded.sort(key=lambda row: row.get('uploaded_at') or '', reverse=True)
     today_count = sum(row['uploaded_today'] for row in uploaded)
-    slots = automation.get('publication_hours', list(DEFAULT_SLOTS)) if isinstance(automation, dict) else list(DEFAULT_SLOTS)
-    if not isinstance(slots, list) or not all(isinstance(hour, int) and 0 <= hour <= 23 for hour in slots):
-        slots = list(DEFAULT_SLOTS)
-    slots = sorted(set(slots))
-    target = safe_int(automation.get('max_posts_per_day', len(slots)), len(slots)) if isinstance(automation, dict) else len(slots)
-    target = max(target, len(slots))
+    slots, target = list(DEFAULT_SLOTS), len(DEFAULT_SLOTS)
+    issues = []
+    try:
+        schedule = schedule_state(jobs, now)
+        slot_states = [{'time': slot.split('/')[1], 'completed': slot in schedule['completed'],
+                        'due': slot == schedule['next_due']} for slot in schedule['slots']]
+    except ValueError:
+        issues.append('invalid_schedule_data')
+        slot_states = []
     metrics = ledger.get('metrics_history', {}) if isinstance(ledger, dict) else {}
     views = []
     for history in metrics.values() if isinstance(metrics, dict) else []:
-        if isinstance(history, list) and history:
+        if isinstance(history, list) and history and isinstance(history[-1], dict):
             views.append(safe_int(history[-1].get('view_count')))
     flags = ledger.get('health_flags', {}) if isinstance(ledger, dict) else {}
-    flagged = sum(1 for value in flags.values() if value) if isinstance(flags, dict) else 0
+    flagged_ids = {key for key, value in flags.items() if value} if isinstance(flags, dict) else set()
+    flagged_ids.update(row['video_id'] for row in jobs.values() if row.get('video_id') and row.get('safety_incident'))
+    flagged = len(flagged_ids)
+    uncertain = [dict(id=key, started_at=row.get('started_at')) for key, row in jobs.items()
+                 if row.get('status') == 'uploading']
+    if uncertain:
+        issues.append('uncertain_upload')
+    if flagged:
+        issues.append('flagged_videos')
+    connection = ledger.get('youtube_check', {})
+    checked_at = parse_iso(connection.get('checked_at')) if isinstance(connection, dict) else None
+    verified = bool(checked_at and timedelta(0) <= now - checked_at <= timedelta(hours=24)
+                    and connection.get('channel_id') == automation.get('channel_id')
+                    and connection.get('ok') is True)
+    if not verified:
+        issues.append('youtube_not_verified')
+    if workflow and workflow.get('conclusion') in ('failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure'):
+        issues.append('workflow_failed')
+    if not workflow or workflow.get('status') == 'unknown':
+        issues.append('workflow_unknown')
+    if automation.get('enabled') is not True:
+        issues.append('automation_disabled')
     latest_run = uploaded[0]['uploaded_at'] if uploaded else None
     return {
         'generated_at': now.isoformat(),
@@ -116,18 +133,25 @@ def build_overview(automation, catalog, ledger, now=None):
             'slots': [f'{hour:02d}:00' for hour in slots],
             'today_count': today_count,
             'target': target,
-            'remaining': max(target - today_count, 0),
+            'remaining': target - sum(slot['completed'] for slot in slot_states),
+            'slot_states': slot_states,
         },
         'health': {
-            'state': 'attention' if flagged else 'healthy',
+            'state': 'attention' if any(issue not in ('youtube_not_verified', 'workflow_unknown') for issue in issues)
+                     else ('unknown' if issues else 'healthy'),
+            'issues': issues,
+            'uncertain_uploads': uncertain,
             'flagged_videos': flagged,
             'tracked_videos': len(uploaded),
             'average_latest_views': round(sum(views) / len(views), 1) if views else 0,
         },
         'integrations': {
-            'youtube': bool(automation.get('channel_id')) if isinstance(automation, dict) else False,
-            'tiktok': bool(os.environ.get('TIKTOK_ACCESS_TOKEN') and os.environ.get('TIKTOK_OPEN_ID')),
+            'youtube': verified,
+            'youtube_configured': bool(automation.get('channel_id')),
+            'youtube_checked_at': checked_at.isoformat() if checked_at else None,
+            'tiktok': False,
         },
+        'workflow': workflow or {'status': 'unknown'},
         'latest_upload': latest_run,
         'recent': uploaded[:12],
     }
@@ -137,7 +161,7 @@ class GitHubClient:
     def __init__(self, token, repository=REPOSITORY, branch=BRANCH):
         if not token:
             raise DashboardError('GITHUB_TOKEN is not configured on the dashboard server')
-        if '/' not in repository or any(char in repository for char in '\r\n '):
+        if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
             raise DashboardError('Invalid GITHUB_REPOSITORY configuration')
         self.repository = repository
         self.branch = branch
@@ -149,10 +173,12 @@ class GitHubClient:
             'User-Agent': 'quran-shorts-dashboard/1.0',
         })
 
-    def file_json(self, path, default):
+    def file_json(self, path, default=None):
         response = self.session.get(f'{self.base}/contents/{path}', params={'ref': self.branch}, timeout=20)
         if response.status_code == HTTPStatus.NOT_FOUND:
-            return default
+            if default is not None:
+                return default
+            raise DashboardError('Required remote configuration is missing')
         if response.status_code != HTTPStatus.OK:
             raise DashboardError(f'GitHub ledger read failed (HTTP {response.status_code})')
         try:
@@ -162,23 +188,42 @@ class GitHubClient:
         except (KeyError, ValueError, TypeError) as error:
             raise DashboardError('GitHub returned an invalid state file') from error
 
+    def workflow_status(self):
+        response = self.session.get(f'{self.base}/actions/workflows/{WORKFLOW_FILE}/runs',
+                                    params={'branch': self.branch, 'per_page': 1}, timeout=20)
+        if response.status_code != HTTPStatus.OK:
+            raise DashboardError(f'Workflow status unavailable (HTTP {response.status_code})')
+        runs = response.json().get('workflow_runs', [])
+        if not runs:
+            return {'status': 'unknown'}
+        row = runs[0]
+        return {key: row.get(key) for key in ('status', 'conclusion', 'updated_at', 'html_url')}
+
     def dispatch(self, mode, count=1):
-        if mode not in {'publish', 'preview', 'scheduled'}:
-            raise DashboardError('Unsupported workflow mode')
-        count = max(1, min(int(count), 5))
-        url = f'{self.base}/actions/workflows/{WORKFLOW_PATH}/dispatches'
-        for _ in range(count):
+        if not isinstance(mode, str) or mode not in {'publish', 'preview', 'scheduled'}:
+            raise BadRequest('Unsupported workflow mode')
+        if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 5:
+            raise BadRequest('count must be an integer between 1 and 5')
+        if mode != 'publish' and count != 1:
+            raise BadRequest('Only publish supports multiple posts')
+        url = f'{self.base}/actions/workflows/{WORKFLOW_FILE}/dispatches'
+        try:
             response = self.session.post(url, json={
-                'ref': self.branch,
-                'inputs': {'mode': mode},
+                'ref': self.branch, 'inputs': {'mode': mode, 'count': str(count)},
             }, timeout=20)
-            if response.status_code != HTTPStatus.NO_CONTENT:
-                raise DashboardError(f'Workflow dispatch failed (HTTP {response.status_code})')
+        except requests.RequestException:
+            raise DashboardError('Dispatch outcome unknown; check GitHub Actions before retrying') from None
+        if response.status_code != HTTPStatus.NO_CONTENT:
+            raise DashboardError(f'Workflow dispatch failed (HTTP {response.status_code})')
         return count
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
     server_version = 'QuranShortsDashboard/1.0'
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(30)
 
     def _json(self, status, payload):
         raw = json.dumps(payload, ensure_ascii=False).encode('utf-8')
@@ -193,28 +238,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _authorized(self):
         expected = self.server.dashboard_key
         if not expected:
-            return True
+            host = urlparse('//' + self.headers.get('Host', '')).hostname
+            return host in ('127.0.0.1', 'localhost', '::1')
         actual = self.headers.get('X-Dashboard-Key', '')
-        return hmac.compare_digest(actual, expected)
+        return hmac.compare_digest(actual.encode('utf-8'), expected.encode('utf-8'))
 
     def _body(self):
+        if self.headers.get_content_type() != 'application/json' or self.headers.get('Transfer-Encoding'):
+            raise BadRequest('Request must use application/json without Transfer-Encoding')
         try:
             length = int(self.headers.get('Content-Length', '0'))
         except ValueError:
-            raise DashboardError('Invalid request length')
-        if length > MAX_REQUEST_BYTES:
-            raise DashboardError('Request is too large')
+            raise BadRequest('Invalid request length')
+        if not 0 < length <= MAX_REQUEST_BYTES:
+            raise BadRequest('Request length must be between 1 and 65536 bytes')
         try:
-            return json.loads(self.rfile.read(length) or b'{}')
-        except ValueError as error:
-            raise DashboardError('Request must contain valid JSON') from error
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise BadRequest('Incomplete request body')
+            body = json.loads(raw)
+        except (ValueError, socket.timeout) as error:
+            raise BadRequest('Request must contain valid JSON') from error
+        if not isinstance(body, dict):
+            raise BadRequest('Request body must be an object')
+        return body
 
     def _read_model(self):
         client = GitHubClient(self.server.github_token, self.server.repository, self.server.branch)
-        automation = client.file_json('automation.json', read_local_json(ROOT / 'automation.json', {}))
-        catalog = client.file_json('catalog.json', read_local_json(ROOT / 'catalog.json', {}))
+        automation = client.file_json('automation.json')
         ledger = client.file_json(STATE_PATH, {'schema': 1, 'jobs': {}})
-        return build_overview(automation, catalog, ledger), client
+        try:
+            workflow = client.workflow_status()
+        except (DashboardError, requests.RequestException, ValueError, TypeError, KeyError):
+            workflow = {'status': 'unknown'}
+        return build_overview(automation, {}, ledger, workflow=workflow), client
 
     def do_GET(self):  # noqa: N802 - stdlib handler API
         path = urlparse(self.path).path
@@ -225,8 +282,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 overview, _ = self._read_model()
                 self._json(HTTPStatus.OK, overview)
-            except (DashboardError, requests.RequestException) as error:
-                self._json(HTTPStatus.BAD_GATEWAY, {'error': str(error)})
+            except (DashboardError, requests.RequestException, ValueError, TypeError) as error:
+                self._json(HTTPStatus.BAD_GATEWAY, {'error': str(error) if isinstance(error, DashboardError) else 'Remote data unavailable'})
             return
         if path == '/api/config':
             self._json(HTTPStatus.OK, {
@@ -234,12 +291,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 'branch': self.server.branch,
                 'key_required': bool(self.server.dashboard_key),
                 'workflow': WORKFLOW_PATH,
-                'features': {'youtube': True, 'tiktok': bool(os.environ.get('TIKTOK_ACCESS_TOKEN'))},
+                'features': {'youtube': True, 'tiktok': False},
             })
             return
         self._serve_static(path)
 
     def do_POST(self):  # noqa: N802 - stdlib handler API
+        # Reject cross-site form/fetch requests, including on keyless localhost.
+        origin = self.headers.get('Origin')
+        if (self.headers.get('Sec-Fetch-Site') == 'cross-site'
+                or (origin and urlparse(origin).netloc != self.headers.get('Host'))):
+            self._json(HTTPStatus.FORBIDDEN, {'error': 'Cross-origin requests are not allowed'})
+            return
         if not self._authorized():
             self._json(HTTPStatus.UNAUTHORIZED, {'error': 'Dashboard key required'})
             return
@@ -252,17 +315,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             mode = body.get('mode', 'publish')
             count = body.get('count', 1)
             if isinstance(count, bool) or not isinstance(count, int):
-                raise DashboardError('count must be an integer')
-            _, client = self._read_model()
+                raise BadRequest('count must be an integer')
+            overview, client = self._read_model()
+            if mode in ('publish', 'scheduled') and (not overview['channel']['enabled'] or overview['health']['uncertain_uploads']):
+                self._json(HTTPStatus.CONFLICT, {'error': 'Publishing is disabled or an upload needs review'})
+                return
             dispatched = client.dispatch(mode, count)
             self._json(HTTPStatus.ACCEPTED, {
                 'ok': True,
                 'mode': mode,
-                'dispatched': dispatched,
-                'workflow_url': f'https://github.com/{client.repository}/actions/workflows/{WORKFLOW_PATH}',
+                'dispatched': 1,
+                'requested_count': dispatched,
+                'workflow_url': f'https://github.com/{client.repository}/actions/workflows/{WORKFLOW_FILE}',
             })
-        except (DashboardError, requests.RequestException, ValueError) as error:
-            self._json(HTTPStatus.BAD_GATEWAY, {'error': str(error)})
+        except BadRequest as error:
+            self._json(HTTPStatus.BAD_REQUEST, {'error': str(error)})
+        except (DashboardError, requests.RequestException, ValueError, TypeError) as error:
+            self._json(HTTPStatus.BAD_GATEWAY, {'error': str(error) if isinstance(error, DashboardError) else 'Remote request failed'})
 
     def _serve_static(self, path):
         relative = 'index.html' if path in ('/', '') else path.lstrip('/')
@@ -283,7 +352,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', content_types.get(candidate.suffix, 'application/octet-stream'))
         self.send_header('Content-Length', str(len(raw)))
         self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:")
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -306,7 +376,7 @@ class DashboardServer(ThreadingHTTPServer):
 
 def main():
     host = os.environ.get('DASHBOARD_HOST', '127.0.0.1')
-    port = int(os.environ.get('DASHBOARD_PORT', '8787'))
+    port = int(os.environ.get('PORT', os.environ.get('DASHBOARD_PORT', '8787')))
     key = os.environ.get('DASHBOARD_KEY', '')
     if host not in {'127.0.0.1', 'localhost', '::1'} and not key:
         raise SystemExit('DASHBOARD_KEY is required when exposing the dashboard beyond localhost')

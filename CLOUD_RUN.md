@@ -2,7 +2,8 @@
 
 The repository can remain private. The Cloud Run image contains only the
 dashboard server and its UI; it does not contain the YouTube OAuth token or the
-GitHub token. Store both values in Secret Manager and inject them at runtime.
+GitHub token. Store the GitHub token and dashboard key in Secret Manager and
+inject them at runtime. The YouTube token belongs only in GitHub Actions.
 
 ## One-time setup
 
@@ -37,5 +38,6 @@ guard, not a replacement for HTTPS.
 
 The YouTube OAuth token stays in the existing GitHub Actions secret. TikTok
 requires its own approved Content Posting API app and OAuth secret; it should be
-added as another Secret Manager value only after that approval.
+implemented as a separate integration before adding any credentials. Setting a
+TikTok environment variable does not enable posting in this version.
 

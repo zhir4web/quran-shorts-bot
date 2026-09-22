@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -75,6 +76,10 @@ def load_queue(path):
         if not isinstance(item.get("made_for_kids"), bool):
             raise ValueError(f"{key}: made_for_kids must be true or false")
         positive(item.get("duration"), f"{key} duration", 60)
+        minimum = item.get('min_duration_seconds', 0)
+        if (isinstance(minimum, bool) or not isinstance(minimum, (int, float))
+                or not math.isfinite(minimum) or not 0 <= minimum <= item['duration']):
+            raise ValueError(f'{key}: invalid minimum duration')
         start = item.get("start", 0)
         if isinstance(start, bool) or not isinstance(start, (int, float)) or not math.isfinite(start) or start < 0:
             raise ValueError(f"{key}: start must be a nonnegative number")
@@ -91,6 +96,14 @@ def load_queue(path):
                 raise ValueError(f"{key}: background video must be a file path")
         if item.get("motion_overlay") is not None and not isinstance(item["motion_overlay"], str):
             raise ValueError(f"{key}: motion overlay must be an image path")
+        if item['mode'] == 'video' and any(item.get(field) for field in
+                ('background', 'background_video', 'background_motion', 'motion_overlay')):
+            raise ValueError(f'{key}: background options require compose mode')
+        if item.get('background_video') and (item.get('motion_overlay') or
+                item.get('background_motion') in ('calm_rain', 'premium_motion')):
+            raise ValueError(f'{key}: filmed backgrounds cannot use synthetic motion overlays')
+        if item.get('background_motion') == 'real_video' and not item.get('background_video'):
+            raise ValueError(f'{key}: real_video requires a background video')
         if len(description(item)) > 5000:
             raise ValueError(f"{key}: description is too long")
     return data["items"]
@@ -264,8 +277,9 @@ def render(item, base, folder):
     scale = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x081b21,setsar=1"
     if item["mode"] == "compose":
         if item.get("background_video"):
-            validate_background_source(item["background_video"])
-            inputs = ["-stream_loop", "-1", "-i", item["background_video"]]
+            filmed = (base / item['background_video']).resolve()
+            validate_background_source(filmed)
+            inputs = ["-stream_loop", "-1", "-i", str(filmed)]
             if item.get("background"):
                 card = (base / item["background"]).resolve()
                 if not card.is_file():
@@ -349,6 +363,8 @@ def validate_video(path, expected, minimum=0):
         reader.close()
     if tuple(metadata["size"]) != (1080, 1920):
         raise ValueError("Rendered video must be 1080 by 1920")
+    if not math.isfinite(metadata['duration']) or metadata['duration'] <= 0 or metadata['duration'] > 60.1:
+        raise ValueError('Rendered video has an invalid duration')
     if metadata["duration"] < minimum:
         raise ValueError("Rendered video is below the minimum video duration")
     if abs(metadata["duration"] - expected) > 0.35:
@@ -484,7 +500,8 @@ def main(argv=None):
         if args.command == "doctor":
             LOG.info("Python: %s", sys.version.split()[0])
             run_media(["-version"])
-            import googleapiclient, google_auth_oauthlib, yt_dlp
+            for module in ('googleapiclient', 'google_auth_oauthlib', 'yt_dlp', 'arabic_text'):
+                importlib.import_module(module)
             LOG.info("Dependencies and FFmpeg OK")
             LOG.info("Queue: %d valid items", len(load_queue(args.queue)))
             LOG.info("YouTube login: %s", "present (not verified online)" if (Path(args.state) / "youtube_token.json").exists() else "required before upload")

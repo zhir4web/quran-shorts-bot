@@ -2,6 +2,7 @@
 !Dockerfile
 !requirements-dashboard.txt
 !dashboard_server.py
+!schedule_policy.py
 !dashboard/
 !dashboard/*
 

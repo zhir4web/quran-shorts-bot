@@ -120,7 +120,7 @@ class CloudTests(unittest.TestCase):
         self.ledger.save.side_effect = lambda: events.append(self.ledger.data['jobs'][ENTRY['id']]['status'])
         upload = Mock(side_effect=lambda *a: events.append('youtube') or 'video123')
         self.execute(upload=upload)
-        self.assertEqual(events, ['uploading', 'youtube', 'uploaded'])
+        self.assertEqual(events, ['uploading', 'youtube', 'uploaded', 'uploaded'])
         self.assertEqual(self.ledger.data['jobs'][ENTRY['id']]['video_id'], 'video123')
 
     def test_failed_initial_save_never_uploads(self):

@@ -1,6 +1,4 @@
 import argparse
-import copy
-import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -48,6 +46,22 @@ class PipelineTests(unittest.TestCase):
             self.save()
             with self.assertRaises(ValueError):
                 bot.load_queue(self.queue)
+
+    def test_rejects_invalid_minimum_and_incompatible_backgrounds(self):
+        for minimum in (float('nan'), True, -1, 2):
+            self.job['min_duration_seconds'] = minimum
+            self.save()
+            with self.assertRaises(ValueError):
+                bot.load_queue(self.queue)
+        self.job.pop('min_duration_seconds')
+        self.job.update(mode='video', background_video='background.mp4')
+        self.save()
+        with self.assertRaisesRegex(ValueError, 'compose'):
+            bot.load_queue(self.queue)
+        self.job.update(mode='compose', background_motion='premium_motion')
+        self.save()
+        with self.assertRaisesRegex(ValueError, 'synthetic'):
+            bot.load_queue(self.queue)
 
     def test_duplicate_and_traversal_ids(self):
         bot.atomic_json(self.queue, {"items": [self.job, self.job]})

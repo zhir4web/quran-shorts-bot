@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const state = { overview: null, manualCount: 1 };
+  const state = { overview: null, manualCount: 1, busy: false, refreshing: false, authCancelled: false };
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({
@@ -26,7 +26,9 @@
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  function authKey() { return sessionStorage.getItem('quran_dashboard_key') || ''; }
+  let memoryKey = '';
+  function authKey() { try { return sessionStorage.getItem('quran_dashboard_key') || memoryKey; } catch (_) { return memoryKey; } }
+  function saveKey(value) { memoryKey = value; try { sessionStorage.setItem('quran_dashboard_key', value); } catch (_) { /* keep only in memory */ } }
 
   let keyRequest = null;
   function requestKey() {
@@ -35,16 +37,25 @@
       const dialog = $('#key-dialog');
       const form = $('#key-form');
       const input = $('#key-input');
-      const finish = (value) => { keyRequest = null; form.removeEventListener('submit', submit); resolve(value); };
+      const finish = (value) => {
+        keyRequest = null;
+        form.removeEventListener('submit', submit);
+        dialog.removeEventListener('cancel', cancel);
+        state.authCancelled = !value;
+        resolve(value);
+      };
+      const cancel = () => finish('');
       const submit = (event) => {
         event.preventDefault();
+        if (event.submitter?.value === 'cancel') { dialog.close(); finish(''); return; }
         const value = input.value.trim();
-        if (value) sessionStorage.setItem('quran_dashboard_key', value);
+        if (!value) { input.focus(); return; }
+        saveKey(value);
         dialog.close();
         finish(value);
       };
       form.addEventListener('submit', submit);
-      dialog.addEventListener('cancel', () => finish(''), { once: true });
+      dialog.addEventListener('cancel', cancel);
       input.value = '';
       dialog.showModal();
       input.focus();
@@ -56,8 +67,17 @@
     const headers = { ...(options.headers || {}), 'Accept': 'application/json' };
     const key = authKey();
     if (key) headers['X-Dashboard-Key'] = key;
-    const response = await fetch(path, { ...options, headers });
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 90000);
+    let response;
+    try { response = await fetch(path, { ...options, headers, signal: controller.signal }); }
+    catch (error) {
+      if (options.method === 'POST') throw new Error('ئەنجامی داواکاری نادیارە؛ پێش دووبارەکردنەوە GitHub Actions بپشکنە.');
+      throw error;
+    } finally { window.clearTimeout(timer); }
     if (response.status === 401 && retry) {
+      saveKey('');
+      if (state.authCancelled) throw new Error('کلیلی داشبۆرد پێویستە.');
       const entered = await requestKey();
       if (entered) return api(path, options, false);
     }
@@ -75,25 +95,39 @@
     $('#today-progress').style.width = `${Math.min(100, ((schedule.today_count || 0) / Math.max(1, schedule.target || 3)) * 100)}%`;
     $('#tracked-count').textContent = health.tracked_videos ?? '0';
     $('#avg-views').textContent = Number(health.average_latest_views || 0).toLocaleString('en-US');
-    $('#health-state').textContent = health.state === 'attention' ? 'ئاگاداری' : 'باشە';
-    $('#health-detail').textContent = health.flagged_videos ? `${health.flagged_videos} ڤیدیۆ پێویستی بە سەرنجە` : 'هیچ ئاگادارییەک نییە';
-    $('#health-badge').textContent = health.flagged_videos ? '!' : '●';
+    const issues = health.issues || [];
+    const labels = { uncertain_upload: 'upload ـێک نادیارە و پشکنینی دەوێت', flagged_videos: 'ڤیدیۆی ئاگادارکراو هەیە',
+      youtube_not_verified: 'پەیوەندیی YouTube تازە پشتڕاست نەکراوەتەوە', workflow_failed: 'دوایین کار سەرکەوتوو نەبووە',
+      workflow_unknown: 'دۆخی کارەکان نادیارە', automation_disabled: 'بڵاوکردنەوە ناچالاکە', invalid_schedule_data: 'تۆماری کات کێشەی هەیە' };
+    $('#health-state').textContent = ({ attention: 'ئاگاداری', healthy: 'باشە', unknown: 'نادیارە' })[health.state] || 'نادیارە';
+    $('#health-detail').textContent = issues.map((issue) => labels[issue] || issue).join(' · ') || 'هیچ ئاگادارییەک نییە';
+    $('#health-badge').textContent = health.state === 'healthy' ? '✓' : '!';
     const channel = data.channel || {};
+    const connected = data.integrations?.youtube === true;
+    const connectionText = connected ? '✓ تازە پشتڕاست کراوەتەوە' : channel.id ? '○ ڕێکخراوە؛ پەیوەندی نەپشکنراوە' : '○ ڕێک نەخراوە';
     $('#youtube-channel').textContent = channel.id ? `${channel.id} · ${channel.privacy || 'public'}` : 'کەناڵ ڕێک نەخراوە';
-    $('#youtube-connection').textContent = channel.id ? '● پەیوەستە' : '○ ڕێک نەخراوە';
-    $('#settings-youtube').textContent = channel.id ? `پەیوەستە · ${channel.privacy || 'public'}` : 'پەیوەست نییە';
+    $('#youtube-connection').textContent = connectionText;
+    $('#settings-youtube').textContent = connectionText;
+    $('#youtube-label').textContent = connected ? 'VERIFIED RECENTLY' : 'NOT VERIFIED';
+    $('#live-status-text').textContent = channel.enabled ? 'بڵاوکردنەوە ڕێکخراوە' : 'بڵاوکردنەوە ناچالاکە';
+    $('#ledger-check').textContent = health.uncertain_uploads?.length ? '!' : '✓';
+    $('#ledger-copy').textContent = health.uncertain_uploads?.length ? `${health.uncertain_uploads.length} upload پشکنینی دەوێت` : 'تۆمار خوێندرایەوە';
+    $('#workflow-check').textContent = data.workflow?.conclusion === 'success' ? '✓' : '○';
+    $('#workflow-copy').textContent = data.workflow?.conclusion || data.workflow?.status || 'unknown';
+    $('#uncertain-list').textContent = (health.uncertain_uploads || []).map((row) => row.id).join('، ');
+    updateButtons();
   }
 
   function renderSchedule(data) {
     const slots = data.schedule?.slots || ['11:00', '16:00', '20:00'];
-    const todayCount = data.schedule?.today_count || 0;
+    const states = data.schedule?.slot_states || [];
     const rows = slots.map((slot, index) => {
-      const done = index < todayCount;
-      const next = !done && index === todayCount;
+      const done = states[index]?.completed === true;
+      const next = states[index]?.due === true;
       return `<div class="schedule-row ${done ? 'done' : ''} ${next ? 'next' : ''}"><span class="slot-time">${escapeHtml(slot)}</span><span class="slot-line"></span><span class="slot-copy"><strong>${done ? 'بڵاوکراوەتەوە' : next ? 'داهاتوو' : 'چاوەڕوان'}</strong><small>${done ? 'ئەمڕۆ بە سەرکەوتوویی' : next ? 'کۆتا هەنگاوەکە ئامادەیە' : 'لە schedule ـدا'}</small></span><span class="slot-state">${done ? '✓' : next ? '●' : '○'}</span></div>`;
     }).join('');
     $('#schedule-list').innerHTML = rows || '<div class="empty">هیچ slot ـێک نییە.</div>';
-    $('#schedule-editor-list').innerHTML = slots.map((slot, index) => `<label class="editor-slot"><input type="checkbox" checked disabled><strong>${escapeHtml(slot)}</strong><small>${index < todayCount ? 'تەواو کراوە' : 'خۆکارانە'}</small></label>`).join('');
+    $('#schedule-editor-list').innerHTML = slots.map((slot, index) => `<label class="editor-slot"><input type="checkbox" checked disabled><strong>${escapeHtml(slot)}</strong><small>${states[index]?.completed ? 'تەواو کراوە' : 'خۆکارانە'}</small></label>`).join('');
   }
 
   function rowHtml(row) {
@@ -109,30 +143,50 @@
   }
 
   async function refresh() {
+    if (state.refreshing) return;
+    state.refreshing = true;
     try {
       const data = await api('/api/overview');
       state.overview = data;
       renderStats(data); renderSchedule(data); renderTables(data);
       $('#metrics-check').textContent = '✓';
       $('#metrics-copy').textContent = 'کۆتا داتا بەردەستە';
-      $('#health-heading').textContent = data.health?.state === 'attention' ? 'پێویستی بە سەرنج هەیە' : 'سیستەم تەندروستە';
-      $('#health-copy').textContent = `${data.health?.tracked_videos || 0} ڤیدیۆ چاودێری دەکرێن و duplicate protection چالاکە.`;
-      $('#health-ring').textContent = data.health?.state === 'attention' ? '!' : '✓';
+      $('#health-heading').textContent = ({ attention: 'پێویستی بە سەرنج هەیە', healthy: 'پشکنینەکان باشن', unknown: 'دۆخی سیستەم تەواو نەپشکنراوە' })[data.health?.state] || 'نادیارە';
+      $('#health-copy').textContent = $('#health-detail').textContent;
+      $('#health-ring').textContent = data.health?.state === 'healthy' ? '✓' : '?';
     } catch (error) {
       toast(`نەتوانرا داتا بار بکرێت: ${error.message}`, true);
       $('#health-heading').textContent = 'پەیوەندی پشکنینەوەی دەوێت';
       $('#health-copy').textContent = error.message;
-    }
+      $('#health-state').textContent = 'نادیارە';
+      $('#health-ring').textContent = '?';
+      $('#metrics-check').textContent = '!';
+      $('#metrics-copy').textContent = 'داتا نوێ نەکراوەتەوە';
+      $('#youtube-connection').textContent = 'دۆخی پەیوەندی نادیارە';
+      $('#live-status-text').textContent = 'داتا بەردەست نییە';
+      state.overview = null;
+      updateButtons();
+    } finally { state.refreshing = false; }
+  }
+
+  function updateButtons() {
+    const blocked = !state.overview?.channel?.enabled || state.overview?.health?.uncertain_uploads?.length > 0;
+    $$('[data-action]').forEach((button) => { button.disabled = state.busy || !state.overview || (button.dataset.action !== 'preview' && blocked); });
+    $('#manual-publish').disabled = state.busy || !state.overview || blocked;
   }
 
   async function runAction(mode, count = 1) {
+    if (state.busy) return;
+    state.busy = true;
+    updateButtons();
     const names = { publish: 'پۆستکردن', preview: 'دروستکردنی preview', scheduled: 'گرتنەوەی schedule' };
     toast(`${names[mode] || 'کردار'} دەستی پێکرد...`);
     try {
       const result = await api('/api/workflow', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, count }) });
-      toast(`${result.dispatched} workflow dispatch کرا. دۆخەکە لە GitHub Actions ـدا ببینە.`);
+      toast(`داواکاریی ${result.requested_count} پۆست نێردرا؛ ئەمە پشتڕاستکردنەوەی بڵاوکردنەوە نییە.`);
       window.setTimeout(refresh, 4500);
     } catch (error) { toast(`کردارەکە سەرکەوتوو نەبوو: ${error.message}`, true); }
+    finally { state.busy = false; updateButtons(); }
   }
 
   function bind() {
@@ -146,10 +200,13 @@
       $('#manual-count').textContent = state.manualCount;
     }));
     $('#manual-publish').addEventListener('click', () => runAction('publish', state.manualCount));
+    $('#refresh-data').addEventListener('click', () => { state.authCancelled = false; refresh(); });
   }
 
   bind();
+  updateButtons();
   refresh();
-  window.setInterval(refresh, 30000);
+  window.setInterval(() => { if (!state.authCancelled) refresh(); }, 30000);
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 })();
 

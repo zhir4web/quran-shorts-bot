@@ -8,6 +8,7 @@ ENV PYTHONUNBUFFERED=1 \
 COPY requirements-dashboard.txt .
 RUN pip install --no-cache-dir -r requirements-dashboard.txt
 COPY dashboard_server.py .
+COPY schedule_policy.py .
 COPY dashboard ./dashboard
 
 EXPOSE 8080

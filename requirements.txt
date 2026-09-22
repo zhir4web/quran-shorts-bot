@@ -3,6 +3,6 @@ google-api-python-client==2.200.0
 google-auth-oauthlib==1.4.1
 yt-dlp==2026.8.19
 Pillow==12.3.0
-arabic-reshaper==3.0.0
-python-bidi==0.6.6
+freetype-py==2.5.1
+uharfbuzz==0.56.2
 requests==2.34.2
