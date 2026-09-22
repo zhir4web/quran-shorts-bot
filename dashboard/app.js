@@ -87,6 +87,29 @@
     return data;
   }
 
+  let blobUploadModule = null;
+  async function uploadCustomVideo(file) {
+    if (!file) return null;
+    if (!['video/mp4', 'video/quicktime', 'video/webm'].includes(file.type)) {
+      throw new Error('تەنها MP4، MOV یان WebM ڕێگەپێدراوە.');
+    }
+    if (file.size > 60 * 1024 * 1024) throw new Error('قەبارەی فایل نابێت لە 60MB زیاتر بێت.');
+    blobUploadModule ||= await import('https://esm.sh/@vercel/blob@1.1.1/client?bundle');
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]+/g, '-').slice(-120) || 'custom-video.mp4';
+    return blobUploadModule.upload(
+      'custom-videos/' + Date.now() + '-' + safeName,
+      file,
+      { access: 'public', handleUploadUrl: '/api/blob-upload', multipart: true,
+        clientPayload: JSON.stringify({ purpose: 'quran-shorts-custom-video' }) }
+    );
+  }
+
+  async function deleteUploadedBlob(url) {
+    if (!url) return;
+    try { await api('/api/blob-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) }); }
+    catch (_) { /* cleanup is retried by the runner when publishing succeeds */ }
+  }
+
   function renderStats(data) {
     const schedule = data.schedule || {};
     const health = data.health || {};
@@ -207,26 +230,32 @@
 
   async function submitClip() {
     if (state.busy) return;
-    const url = $('#clip-url').value.trim();
+    const file = $('#clip-file')?.files?.[0] || null;
+    const url = $('#clip-url')?.value.trim() || '';
     const sourcePage = $('#clip-source')?.value.trim() || '';
     const theme = $('#clip-theme').value || '';
     const title = $('#clip-title').value.trim();
     const licenseConfirmed = $('#clip-license')?.checked === true;
-    if (!url || !theme || !title || !licenseConfirmed) {
-      toast('لینک، theme، ناونیشان و پشتڕاستکردنەوەی مۆڵەت پێویستن.', true);
+    if ((!file && !url) || !theme || !title || !licenseConfirmed) {
+      toast('فایل یان لینک، theme، ناونیشان و پشتڕاستکردنەوەی مۆڵەت پێویستن.', true);
       return;
     }
     state.busy = true;
+    let uploadedBlob = null;
     try {
+      if (file) { toast('فایلەکە بە شێوەی پارێزراو upload دەکرێت...'); uploadedBlob = await uploadCustomVideo(file); }
       const result = await api('/api/submit-clip', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, source_page: sourcePage, theme, title, license_confirmed: licenseConfirmed }) });
+        body: JSON.stringify({ url: uploadedBlob?.url || url, blob_url: uploadedBlob?.url || '', blob_pathname: uploadedBlob?.pathname || '', source_page: sourcePage, theme, title, license_confirmed: licenseConfirmed }) });
       toast(result.note || 'ڤیدیۆکە نێردرا بۆ edit و publish.');
-      $('#clip-url').value = '';
+      if ($('#clip-url')) $('#clip-url').value = '';
+      if ($('#clip-file')) $('#clip-file').value = '';
       if ($('#clip-source')) $('#clip-source').value = '';
       $('#clip-title').value = '';
       if ($('#clip-license')) $('#clip-license').checked = false;
-    } catch (error) { toast(`نەتوانرا بینێردرێت: ${error.message}`, true); }
-    finally { state.busy = false; updateButtons(); }
+    } catch (error) {
+      if (uploadedBlob?.url) await deleteUploadedBlob(uploadedBlob.url);
+      toast('نەتوانرا بینێردرێت: ' + error.message, true);
+    } finally { state.busy = false; updateButtons(); }
   }
 
   function bind() {
