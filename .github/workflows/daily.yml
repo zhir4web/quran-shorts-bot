@@ -87,6 +87,8 @@ jobs:
           RUN_MODE: ${{ inputs.mode || 'scheduled' }}
           POST_COUNT: ${{ inputs.count || '1' }}
           CUSTOM_VIDEO_ID: ${{ inputs.custom_id || '' }}
+          DASHBOARD_URL: https://quran-shorts-bot.vercel.app
+          DASHBOARD_KEY: ${{ secrets.DASHBOARD_KEY }}
         run: python cloud_runner.py "$RUN_MODE" --count "$POST_COUNT"
       - name: Save preview for inspection
         if: success() && steps.gate.outputs.run == 'true' && inputs.mode == 'preview'
