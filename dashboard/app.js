@@ -208,15 +208,23 @@
   async function submitClip() {
     if (state.busy) return;
     const url = $('#clip-url').value.trim();
+    const sourcePage = $('#clip-source')?.value.trim() || '';
     const theme = $('#clip-theme').value || '';
     const title = $('#clip-title').value.trim();
-    if (!url || !theme || !title) { toast('لینک، theme و ناونیشان پێویستن.', true); return; }
+    const licenseConfirmed = $('#clip-license')?.checked === true;
+    if (!url || !theme || !title || !licenseConfirmed) {
+      toast('لینک، theme، ناونیشان و پشتڕاستکردنەوەی مۆڵەت پێویستن.', true);
+      return;
+    }
     state.busy = true;
     try {
       const result = await api('/api/submit-clip', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, theme, title }) });
-      toast(result.note || 'کلیپەکە نێردرا بۆ پێداچوونەوە.');
-      $('#clip-url').value = ''; $('#clip-title').value = '';
+        body: JSON.stringify({ url, source_page: sourcePage, theme, title, license_confirmed: licenseConfirmed }) });
+      toast(result.note || 'ڤیدیۆکە نێردرا بۆ edit و publish.');
+      $('#clip-url').value = '';
+      if ($('#clip-source')) $('#clip-source').value = '';
+      $('#clip-title').value = '';
+      if ($('#clip-license')) $('#clip-license').checked = false;
     } catch (error) { toast(`نەتوانرا بینێردرێت: ${error.message}`, true); }
     finally { state.busy = false; updateButtons(); }
   }
@@ -247,4 +255,3 @@
   window.setInterval(() => { if (!state.authCancelled) refresh(); }, 30000);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 })();
-
