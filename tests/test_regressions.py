@@ -142,9 +142,9 @@ class BoundaryTests(unittest.TestCase):
     def test_history_and_jobs_do_not_double_count_uploads(self):
         now = datetime(2026, 9, 22, 15, tzinfo=timezone.utc)
         stamp = now.isoformat()
-        slot = '2026-09-22/11:00'
+        slot = '2026-09-22/05:00'
         history = [{'triggered_at': stamp, 'outcome': 'uploaded', 'target_slot': slot,
-                    'uploaded_at': stamp, 'upload_offset_minutes': 420}]
+                    'uploaded_at': stamp, 'upload_offset_minutes': 780}]
         jobs = {'a': {'uploaded_at': stamp, 'schedule_slot': slot}}
         report = cloud.schedule_timing_summary(history, jobs, now)
         self.assertEqual(report['uploads'], 1)
@@ -152,7 +152,7 @@ class BoundaryTests(unittest.TestCase):
 
     def test_backfilled_upload_resolves_selected_event(self):
         now = datetime(2026, 9, 22, 15, tzinfo=timezone.utc)
-        slot = '2026-09-22/11:00'
+        slot = '2026-09-22/05:00'
         history = [{'triggered_at': now.isoformat(), 'outcome': 'selected', 'target_slot': slot}]
         jobs = {'a': {'uploaded_at': now.isoformat(), 'schedule_slot': slot}}
         report = cloud.schedule_timing_summary(history, jobs, now)
