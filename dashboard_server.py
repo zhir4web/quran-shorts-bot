@@ -33,10 +33,8 @@ WORKFLOW_FILE = 'daily.yml'
 # tzdata package on the small hosted runner or a fresh local Python install.
 DEFAULT_SLOTS = PUBLICATION_HOURS
 MAX_REQUEST_BYTES = 64 * 1024
-# Background clips travel through a JSON URL, not a binary upload: GitHub
-# contents-API payloads stay tiny and the Actions runner downloads the file
-# itself. Direct peer-to-peer binary uploads would need storage this project
-# deliberately does not run.
+# Custom clips use Vercel Blob for browser-side binary upload; the runner only
+# receives a short manifest URL and removes the blob after a successful publish.
 MAX_CLIP_MB = 60
 CLIP_URL = re.compile(r'https://[A-Za-z0-9._~:/?#@!$&()*+,;=%\-]+\.(mp4|mov|webm)(\?[A-Za-z0-9._~:/?#@!$&()*+,;=%\-]*)?', re.IGNORECASE)
 CLIP_NAME = re.compile(r'[A-Za-z0-9_-]{1,80}')
@@ -410,7 +408,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """
         try:
             body = self._body()
-            url = str(body.get('url') or '').strip()
+            url = str(body.get('blob_url') or body.get('url') or '').strip()
+            blob_pathname = str(body.get('blob_pathname') or '').strip()
             theme = str(body.get('theme') or '').strip()
             title = str(body.get('title') or '').strip()
             source_page = str(body.get('source_page') or '').strip()
@@ -431,7 +430,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             slug_text = re.sub(r'[^A-Za-z0-9_-]+', '-', title.replace(' ', '-')).strip('-')
             slug = CLIP_NAME.fullmatch(slug_text)
             clip_id = (slug.group(0) if slug else 'custom-video') + '-' + datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
-            record = {'id': clip_id, 'url': url, 'theme': theme, 'title': title,
+            record = {'id': clip_id, 'url': url, 'blob_url': url if body.get('blob_url') else None,
+                      'blob_pathname': blob_pathname or None, 'theme': theme, 'title': title,
                       'source_page': source_page or None,
                       'submitted_at': datetime.now(timezone.utc).isoformat(),
                       'status': 'queued', 'license_confirmed': True,
@@ -474,7 +474,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(raw)))
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Cache-Control', 'no-cache')
-        self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+        self.send_header('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self' https://esm.sh; connect-src 'self' https://esm.sh https://*.blob.vercel-storage.com; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
         self.end_headers()
         self.wfile.write(raw)
 
