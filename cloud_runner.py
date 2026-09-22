@@ -114,16 +114,17 @@ class RemoteLedger:
 
 
 def get_json(url, params=None):
-    for attempt in range(3):
+    """Read Quran Foundation metadata with bounded retries."""
+    for attempt in range(2):
         try:
-            response = requests.get(url, params=params, timeout=(15, 60),
+            response = requests.get(url, params=params, timeout=(10, 30),
                                     headers={'User-Agent': 'quran-shorts-bot/2.0'})
             response.raise_for_status()
             return response.json()
         except (requests.RequestException, ValueError):
-            if attempt == 2:
+            if attempt == 1:
                 raise RuntimeError('Quran Foundation source is temporarily unavailable') from None
-            time.sleep(2 ** attempt)
+            time.sleep(1)
 
 
 def api_entries(data):
@@ -220,7 +221,12 @@ def _is_tajwid_reciter(reciter, catalog):
 
 
 def _reciter_order(reciters, jobs, position, catalog):
-    """Return a fair order that favours variety and slows tajwid repeats."""
+    """Return a fair order that favours variety and slows tajwid repeats.
+
+    Every allowed reciter remains eligible.  The small weight penalty only
+    changes how often a tajwid-labelled reciter is selected after the other
+    reciters have had a turn; it never blocks one permanently.
+    """
     selection = catalog.get('reciter_selection', {})
     tajwid_weight = float(selection.get('tajwid_weight', 0.35))
     usage = {reciter.get('id'): 0 for reciter in reciters}
@@ -228,9 +234,13 @@ def _reciter_order(reciters, jobs, position, catalog):
         reciter_id = row.get('reciter_id')
         if reciter_id in usage:
             usage[reciter_id] += 1
+
     ranked = []
     for index, reciter in enumerate(reciters):
         weight = tajwid_weight if _is_tajwid_reciter(reciter, catalog) else 1.0
+        # The weight acts as a virtual first turn: normal reciters get a turn
+        # before a reduced-weight reciter, then the usage term keeps every
+        # class in the rotation without excluding anyone.
         score = (usage[reciter.get('id')] + weight) / weight
         tajwid_first = 1 if _is_tajwid_reciter(reciter, catalog) else 0
         tie_break = (position + index) % max(1, len(reciters))
@@ -240,6 +250,7 @@ def _reciter_order(reciters, jobs, position, catalog):
 
 
 def verse_entry_for_position(catalog, jobs, position):
+    print('Loading Quran Foundation reciter and chapter metadata...', flush=True)
     english = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'en'}).get('recitations', [])
     arabic = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'ar'}).get('recitations', [])
     chapters = get_json(urljoin(QURAN_API, 'chapters'), {'language': 'en'}).get('chapters', [])
@@ -252,7 +263,23 @@ def verse_entry_for_position(catalog, jobs, position):
     total_verses = sum(int(row['verses_count']) for row in chapters)
     if total_verses < 6000:
         raise RuntimeError('Quran Foundation chapter metadata is incomplete')
-    for _ in range(total_verses * len(english)):
+    # Bound upstream candidate search so Actions never waits silently for the
+    # job timeout. A later run can retry safely when the API is unavailable.
+    try:
+        max_candidates = max(30, int(os.environ.get('QURAN_MAX_CANDIDATES', '180')))
+    except (TypeError, ValueError):
+        max_candidates = 180
+    try:
+        search_timeout = max(60.0, float(os.environ.get('QURAN_SEARCH_TIMEOUT_SECONDS', '480')))
+    except (TypeError, ValueError):
+        search_timeout = 480.0
+    candidate_limit = min(total_verses * len(english), max_candidates)
+    deadline = time.monotonic() + search_timeout
+    for attempt in range(candidate_limit):
+        if time.monotonic() >= deadline:
+            raise CloudError('Quran Foundation verse search timed out; the next run will retry safely')
+        if attempt == 0 or attempt % 10 == 0:
+            print(f'Checking complete-verse candidate {attempt + 1}/{candidate_limit}...', flush=True)
         ordered_reciters = _reciter_order(english, jobs, position, catalog)
         reciter = ordered_reciters[0]
         reciter_index = english.index(reciter)
@@ -276,8 +303,12 @@ def verse_entry_for_position(catalog, jobs, position):
         position = next_position
         if key in jobs:
             continue
-        payload = get_json(urljoin(QURAN_API, f'recitations/{reciter_id}/by_ayah/{chapter_id}:{verse_number}'),
-                           {'fields': 'chapter_id,verse_number,verse_key,duration,url'})
+        try:
+            payload = get_json(urljoin(QURAN_API, f'recitations/{reciter_id}/by_ayah/{chapter_id}:{verse_number}'),
+                               {'fields': 'chapter_id,verse_number,verse_key,duration,url'})
+        except RuntimeError:
+            print('Candidate audio metadata unavailable; trying the next candidate.', flush=True)
+            continue
         files = payload.get('audio_files', [])
         if len(files) != 1:
             continue
@@ -288,8 +319,12 @@ def verse_entry_for_position(catalog, jobs, position):
         relative_url = audio.get('url', '')
         if not relative_url or '://' in relative_url or '..' in relative_url:
             raise ValueError('Quran Foundation returned an invalid audio path')
-        text_payload = get_json(urljoin(QURAN_API, 'quran/verses/uthmani'),
-                                {'verse_key': f'{chapter_id}:{verse_number}'})
+        try:
+            text_payload = get_json(urljoin(QURAN_API, 'quran/verses/uthmani'),
+                                    {'verse_key': f'{chapter_id}:{verse_number}'})
+        except RuntimeError:
+            print('Candidate Uthmani text unavailable; trying the next candidate.', flush=True)
+            continue
         text_rows = text_payload.get('verses', [])
         ayah_text = text_rows[0].get('text_uthmani', '').strip() if len(text_rows) == 1 else ''
         if not ayah_text or len(ayah_text) > catalog['max_ayah_characters']:
@@ -313,7 +348,7 @@ def verse_entry_for_position(catalog, jobs, position):
             # same visual theme, even after a restart.
             'visual_theme': catalog['visual_themes'][(next_position - 1) % len(catalog['visual_themes'])],
         }, next_position)
-    raise RuntimeError('All Quran verse and reciter combinations have been published')
+    raise CloudError('No eligible complete verse was found in the bounded search; the next run will retry safely')
 
 
 def load_catalog(path):
@@ -558,8 +593,11 @@ def make_motion_overlay(entry, destination):
 def video_background_for(entry):
     """Return a varied checked-in filmed clip for the requested theme.
 
-    If a theme-specific asset is absent, rotate through the other reviewed
-    clips instead of silently reusing forest_rain for every post.
+    Older deployments only shipped two theme-named files, so the old fallback
+    silently reused forest_rain for every missing theme.  That made the feed
+    look repetitive.  We now use the exact theme asset when present and rotate
+    through the remaining reviewed video pool for themes whose asset has not
+    been added yet.  Micro/test files are excluded from the publishing pool.
     """
     theme = entry.get('visual_theme', 'forest_rain')
     video_root = ROOT / 'assets' / 'backgrounds' / 'video'
@@ -574,6 +612,7 @@ def video_background_for(entry):
     theme_index = themes.index(theme) if theme in themes else 0
     digest = int(hashlib.sha256(str(entry.get('id', theme)).encode('utf-8')).hexdigest()[:8], 16)
     return pool[(theme_index + digest) % len(pool)]
+
 
 def item_for(entry, source, background, motion_overlay=None):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
@@ -970,6 +1009,7 @@ def run(args, ledger=None, service=None):
         if not schedule_slot:
             return
     if args.mode in ('publish', 'scheduled') and ledger and service and isinstance(catalog, dict) and catalog.get('schema') == 3:
+        print('Checking previously uploaded videos for restrictions...', flush=True)
         try:
             check_upload_restrictions(service, ledger, catalog)
         except Exception:
@@ -983,6 +1023,7 @@ def run(args, ledger=None, service=None):
             entry, next_cursor = verse_entry_for_position(catalog, jobs, cursor)
             workspace = ROOT / 'state' / 'cloud' / entry['id']
             try:
+                print(f'Downloading selected recitation ({entry.get("verse_key", entry["id"])})...', flush=True)
                 source = download_recording(entry, workspace / 'recitation.mp3')
                 break
             except (TooLongRecording, TooShortRecording):
@@ -1007,6 +1048,7 @@ def run(args, ledger=None, service=None):
     if media_duration(source) < 30 or float(entry['duration']) < 30:
         raise TooShortRecording('Recitation must be at least 30 seconds before rendering')
     card = make_card(entry, workspace / 'background.png')
+    print('Rendering the Short video...', flush=True)
     motion = make_motion_overlay(entry, workspace / 'moving-rain.png')
     job = item_for(entry, source, card, motion)
     queue = workspace / 'queue.json'
