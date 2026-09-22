@@ -37,7 +37,10 @@ concurrency:
 jobs:
   daily:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    env:
+      PYTHONUNBUFFERED: '1'
+    # A stuck render or upload must release the runner within one hour.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6

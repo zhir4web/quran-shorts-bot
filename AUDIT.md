@@ -1,13 +1,14 @@
 ﻿# Review and repairs — 2026-09-22
 
-چاکسازییەکان لە کۆپیی ناوخۆیی جێبەجێ کران. 91 تاقیکردنەوەی Python و 4 تاقیکردنەوەی JavaScript سەرکەوتوو بوون. هیچ ڤیدیۆیەک بڵاو نەکراوەتەوە.
+چاکسازییەکان لە کۆپیی ناوخۆیی جێبەجێ کران. 94 تاقیکردنەوەی Python و 4 تاقیکردنەوەی JavaScript سەرکەوتوو بوون. کۆدەکە بۆ GitHub push کراوە؛ ئەم پەڕەیە دۆخی ڕاستەقینەی asset و تاقیکردنەوەی ناوخۆیی جیا دەکاتەوە لە بڵاوکردنەوەی ڕاستەوخۆی YouTube.
 
 ## Scope and status
 
-Reviewed and repaired the supplied local source tree. This directory has no
-.git repository, so no commit, push or deployment was made. The production
-automation configuration, channel identity and existing publication ledger
-were preserved. External account connectivity was not inferred from local files.
+Reviewed and repaired the supplied local source tree. The working directory is
+an exported copy without a `.git` directory, but the repaired files were
+synced to the GitHub `main` branch. The production automation configuration,
+channel identity and existing publication ledger were preserved. External
+account connectivity was not inferred from local files.
 
 ## Repairs
 
@@ -67,7 +68,14 @@ were preserved. External account connectivity was not inferred from local files.
 - Measured legacy concatenated recordings instead of trusting API duration alone.
 - Bounded candidate scans and preserved the continuation cursor for publication.
   An unsuitable preferred reciter no longer prevents trying other reciters.
-- Recorded the actual fallback background name instead of the requested theme.
+- Added one checked-in filmed clip for each of the five catalog themes and
+  recorded every source page in `assets/backgrounds/video/LICENSES.md`.
+- Removed silent cross-theme background fallback. A production entry now fails
+  closed when its reviewed theme asset is missing.
+- Restored `PYTHONUNBUFFERED=1` for every workflow step and reduced the runner
+  timeout from 120 to 60 minutes.
+- Title, description and card labels now show an ayah range such as
+  `7:141–142` as `Ayahs 141–142` / `الآيات 141–142`.
 - Kept only the latest 30 metrics snapshots per tracked video.
 
 ### Setup and documentation
@@ -81,7 +89,7 @@ were preserved. External account connectivity was not inferred from local files.
 
 ## Validation actually performed
 
-- **91 Python tests passed** on Windows / Python 3.12.14. Includes real FFmpeg
+- **94 Python tests passed** on Windows / Python 3.12.14. Includes real FFmpeg
   composition/conversion, upload failure handling, bounded scans, timing,
   Arabic rendering, and authenticated local HTTP endpoint tests.
 - **4 JavaScript tests passed**, executing the dashboard script in a DOM harness:
@@ -89,7 +97,9 @@ were preserved. External account connectivity was not inferred from local files.
   authentication and repeated clicks.
 - Ruff undefined-name/unused-symbol checks passed.
 - Dependency consistency checks passed after syncing requirements-lock.txt.
-- Both checked-in filmed backgrounds passed the source-resolution check.
+- All five checked-in filmed backgrounds passed the source-resolution check
+  (minimum dimension 1080px): forest rain, mist mountains, starry night, ocean
+  moon and dawn mosque.
 - Generated a 1080×1920, three-second local test-tone video using the real filmed
   background and Arabic card; frame, duration, audio and visible-motion checks
   passed. Inspected the generated frame visually. This is a rendering fixture,
@@ -103,10 +113,10 @@ were preserved. External account connectivity was not inferred from local files.
 
 ## External validation still required
 
-These repairs are local. Updating the remote repository and hosted dashboard
-is a separate deployment. Live OAuth refresh, real Quran API availability,
-a YouTube upload, the channel's processing outcome and Linux CI execution were
-not exercised in this session. They require the configured external services.
+The repaired source is pushed to the remote repository. Live OAuth refresh,
+real Quran API availability, a YouTube upload, the channel's processing
+outcome and Linux CI execution were not exercised in this session. They require
+the configured external services.
 
 The dashboard's connection indicator is a recent observation, not a continuous
 live probe. GitHub cron timing and queue limits remain external constraints.

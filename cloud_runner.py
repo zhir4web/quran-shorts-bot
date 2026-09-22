@@ -523,8 +523,9 @@ def make_card(entry, destination):
     draw.rounded_rectangle((90, 520, 990, panel_bottom), radius=70,
                            fill=(3, 18, 22, 178), outline=(207, 180, 119, 150), width=3)
     centered('سورة ' + entry['surah_ar'], 665, 96, '#f4f1e8', rtl=True)
-    if entry.get('verse_number'):
-        centered('الآية ' + str(entry['verse_number']), 825, 58, '#e7e9e4', rtl=True)
+    verse_caption = verse_label(entry, arabic=True)
+    if verse_caption:
+        centered(verse_caption, 825, 58, '#e7e9e4', rtl=True)
     draw.line((330, 945, 750, 945), fill=gold, width=2)
     for index, line in enumerate(lines):
         centered(line, verse_y + index*line_step, verse_size, '#f4f1e8', rtl=True)
@@ -568,38 +569,76 @@ def make_motion_overlay(entry, destination):
     return destination
 
 
-def video_background_for(entry):
-    """Return a varied checked-in filmed clip for the requested theme.
+def verse_span(entry):
+    """Return the numeric ayah span, including legacy range keys."""
+    start = entry.get('verse_start', entry.get('verse_number'))
+    end = entry.get('verse_end')
+    match = re.search(r':(\d+)(?:-(\d+))?$', str(entry.get('verse_key') or ''))
+    if match:
+        if start is None:
+            start = match.group(1)
+        if end is None:
+            end = match.group(2) or match.group(1)
+    if start is None:
+        return None
+    try:
+        start, end = int(start), int(end if end is not None else start)
+    except (TypeError, ValueError):
+        return None
+    if start <= 0 or end < start:
+        return None
+    return start, end
 
-    If a theme-specific asset is absent, rotate through the other reviewed
-    clips instead of silently reusing forest_rain for every post.
-    """
+
+def verse_range_label(entry):
+    span = verse_span(entry)
+    if not span:
+        return None
+    start, end = span
+    return str(start) if start == end else f'{start}\u2013{end}'
+
+
+def verse_label(entry, arabic=False):
+    number = verse_range_label(entry)
+    if not number:
+        return None
+    start, end = verse_span(entry)
+    if arabic:
+        return ('الآية ' if start == end else 'الآيات ') + number
+    return ('Ayah ' if start == end else 'Ayahs ') + number
+
+
+def video_background_for(entry):
+    """Return the reviewed filmed clip assigned to the requested theme."""
     theme = entry.get('visual_theme', 'forest_rain')
-    video_root = ROOT / 'assets' / 'backgrounds' / 'video'
-    path = video_root / f'{theme}.mp4'
+    themes = ('forest_rain', 'mist_mountains', 'starry_night', 'ocean_moon', 'dawn_mosque')
+    if theme not in themes:
+        raise ValueError(f'Unknown filmed background theme: {theme}')
+    path = ROOT / 'assets' / 'backgrounds' / 'video' / f'{theme}.mp4'
     if path.is_file():
         return path
-    pool = sorted(path for path in video_root.glob('*.mp4')
-                  if 'micro' not in path.stem.casefold() and path.is_file())
-    if not pool:
-        return None
-    themes = ('forest_rain', 'mist_mountains', 'starry_night', 'ocean_moon', 'dawn_mosque')
-    theme_index = themes.index(theme) if theme in themes else 0
-    digest = int(hashlib.sha256(str(entry.get('id', theme)).encode('utf-8')).hexdigest()[:8], 16)
-    return pool[(theme_index + digest) % len(pool)]
+    # Test fixtures and legacy hand-built jobs may intentionally omit visual
+    # assets. Production catalog entries use real_video_assets and fail closed
+    # instead of silently substituting a different theme.
+    if entry.get('visual_style') == 'real_video_assets':
+        raise FileNotFoundError(f'Reviewed filmed background missing: {path}')
+    return None
+
 
 def item_for(entry, source, background, motion_overlay=None):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
     cta = bot.CTA_COMMENTS[cta_index]
-    if entry.get('verse_number'):
-        suffix = f" | Surah {entry['surah_en']}, Ayah {entry['verse_number']} #Shorts"
-        prefix = f"سورة {entry['surah_ar']}، الآية {entry['verse_number']} | القارئ "
+    verse_caption = verse_label(entry)
+    arabic_verse_caption = verse_label(entry, arabic=True)
+    if verse_caption:
+        suffix = f" | Surah {entry['surah_en']}, {verse_caption} #Shorts"
+        prefix = f"سورة {entry['surah_ar']}، {arabic_verse_caption} | القارئ "
         reciter = entry['reciter_ar']
         room = max(1, 100 - len(prefix) - len(suffix))
         title = prefix + reciter[:room].rstrip() + suffix
         description = (f"{entry.get('ayah_text', '')}\n\n"
                        f"Beautiful Quran recitation — Surah {entry['surah_en']}, "
-                       f"Ayah {entry['verse_number']}, recited by {entry['reciter_en']}\n\n"
+                       f"{verse_caption}, recited by {entry['reciter_en']}\n\n"
                        f"{entry['attribution']}\n\n{entry['permission_url']}\n\n{cta}")
     else:
         suffix = f" | Surah {entry['surah_en']} #Shorts"
@@ -621,6 +660,11 @@ def item_for(entry, source, background, motion_overlay=None):
             'cta_description_variant': cta_index,
             'attribution': entry['attribution'], 'rights': entry['rights'],
             'rights_confirmed': True, 'made_for_kids': False}
+    span = verse_span(entry)
+    if span:
+        item['verse_start'], item['verse_end'] = span
+    if entry.get('verse_key'):
+        item['verse_key'] = entry['verse_key']
     filmed = video_background_for(entry)
     if filmed:
         item['background_video'] = str(filmed.resolve())

@@ -300,6 +300,30 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(parts[3], entry['permission_url'])
         self.assertNotIn('ک', job['description'])
 
+    def test_ayah_range_is_used_in_title_description_and_metadata(self):
+        entry = dict(ENTRY, verse_number=141, verse_key='7:141-142',
+                     ayah_text='test range text', reciter_en='Test Reciter',
+                     style='Murattal', recitation_id=1)
+        job = cloud.item_for(entry, self.root / 'audio.mp3', self.root / 'card.png')
+        self.assertIn('الآيات 141–142', job['title'])
+        self.assertIn('Ayahs 141–142', job['title'])
+        self.assertIn('Ayahs 141–142', job['description'])
+        self.assertEqual((job['verse_start'], job['verse_end']), (141, 142))
+
+    def test_all_catalog_themes_have_checked_in_filmed_assets(self):
+        repository_root = Path(__file__).resolve().parents[1]
+        catalog = bot.read_json(repository_root / 'catalog.json')
+        video_root = repository_root / 'assets' / 'backgrounds' / 'video'
+        self.assertEqual(len(catalog['visual_themes']), 5)
+        for theme in catalog['visual_themes']:
+            with self.subTest(theme=theme):
+                self.assertTrue((video_root / f'{theme}.mp4').is_file())
+
+    def test_missing_reviewed_theme_fails_closed(self):
+        entry = dict(ENTRY, visual_theme='starry_night', visual_style='real_video_assets')
+        with self.assertRaisesRegex(FileNotFoundError, 'background missing'):
+            cloud.item_for(entry, self.root / 'audio.mp3', self.root / 'card.png')
+
     def test_card_is_transparent_arabic_overlay(self):
         from PIL import Image
         font_source = Path(__file__).resolve().parents[1] / 'assets' / 'Amiri-Regular.ttf'
