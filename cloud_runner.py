@@ -348,7 +348,80 @@ def verse_entry_for_position(catalog, jobs, position):
             # same visual theme, even after a restart.
             'visual_theme': catalog['visual_themes'][(next_position - 1) % len(catalog['visual_themes'])],
         }, next_position)
-    raise CloudError('No eligible complete verse was found in the bounded search; the next run will retry safely')
+    # Individual ayahs are often only a few seconds long.  If none of the
+    # sampled ayahs reaches the 30-second policy, build one complete,
+    # consecutive passage from the same reciter and chapter instead of
+    # padding a short clip or silently publishing an under-length Short.
+    reciter = _reciter_order(english, jobs, position, catalog)[0]
+    reciter_id = reciter['id']
+    verse_index = (position // len(english) + english.index(reciter) * 521) % total_verses
+    remaining = verse_index
+    chapter = None
+    verse_number = 1
+    for row in chapters:
+        count = int(row['verses_count'])
+        if remaining < count:
+            chapter = row
+            verse_number = remaining + 1
+            break
+        remaining -= count
+    if chapter is None:
+        raise CloudError('Quran Foundation chapter metadata is incomplete; the next run will retry safely')
+    chapter_id = int(chapter['id'])
+    try:
+        payload = get_json(urljoin(QURAN_API, f'recitations/{reciter_id}/by_chapter/{chapter_id}'),
+                           {'per_page': 300, 'fields': 'chapter_id,verse_number,verse_key,duration,url'})
+        files = sorted(payload.get('audio_files', []), key=lambda row: int(row.get('verse_number') or 0))
+        text_payload = get_json(urljoin(QURAN_API, 'quran/verses/uthmani'),
+                                {'chapter_number': chapter_id, 'per_page': 300})
+    except RuntimeError:
+        raise CloudError('Quran Foundation passage search is temporarily unavailable; the next run will retry safely')
+    texts = {int(row.get('verse_number')): row.get('text_uthmani', '').strip()
+             for row in text_payload.get('verses', []) if row.get('verse_number')}
+    parts = []
+    total = 0.0
+    for audio in files:
+        number = int(audio.get('verse_number') or 0)
+        if number < verse_number:
+            continue
+        relative_url = audio.get('url', '')
+        duration = float(audio.get('duration') or 0)
+        if (not relative_url or '://' in relative_url or '..' in relative_url or
+                duration <= 0 or duration > float(catalog['max_audio_seconds'])):
+            continue
+        parts.append({'verse_number': number, 'verse_key': f'{chapter_id}:{number}',
+                      'url': relative_url, 'duration': duration})
+        total += duration
+        if total >= float(catalog.get('min_audio_seconds', 30)):
+            break
+        if total >= float(catalog['max_audio_seconds']) - float(catalog.get('tail_silence_seconds', 1)):
+            break
+    if total < float(catalog.get('min_audio_seconds', 30)) or not parts:
+        raise CloudError('No complete Quran passage between 30 seconds and the Shorts limit was found; the next run will retry safely')
+    first = parts[0]['verse_number']
+    last = parts[-1]['verse_number']
+    first_text = texts.get(first, '')
+    key = f'qf-p-r{reciter_id}-s{chapter_id}-a{first}-{last}'
+    if key in jobs:
+        raise CloudError('The next complete Quran passage was already published; the next run will retry safely')
+    style = reciter.get('style') or ''
+    reciter_ar = arabic_names.get(reciter_id) or reciter.get('reciter_name')
+    next_position = position + 1
+    return ({
+        'id': key, 'source_type': 'quran_passage', 'recitation_id': reciter_id,
+        'audio_parts': parts, 'surah_ar': chapter['name_arabic'],
+        'surah_en': chapter['name_simple'], 'verse_number': first,
+        'verse_end_number': last, 'verse_key': f'{chapter_id}:{first}-{last}',
+        'ayah_text': first_text, 'reciter_ar': reciter_ar,
+        'reciter_en': reciter.get('reciter_name', ''), 'style': style,
+        'permission_url': catalog['permission_url'], 'attribution': catalog['attribution'],
+        'rights': catalog['rights'], 'verified': True, 'whole_recording': True,
+        'min_audio_seconds': max(30, float(catalog.get('min_audio_seconds', 30))),
+        'max_audio_seconds': float(catalog['max_audio_seconds']),
+        'tail_silence_seconds': float(catalog['tail_silence_seconds']),
+        'visual_style': catalog['visual_style'],
+        'visual_theme': catalog['visual_themes'][(next_position - 1) % len(catalog['visual_themes'])],
+    }, next_position)
 
 
 def load_catalog(path):
@@ -380,6 +453,8 @@ def load_catalog(path):
 
 
 def download_recording(entry, destination):
+    if entry.get('source_type') == 'quran_passage':
+        return download_quran_passage(entry, destination)
     if entry.get('source_type') == 'quran_verse':
         return download_quran_verse(entry, destination)
     if entry.get('source_type') == 'quran_foundation':
@@ -553,6 +628,48 @@ def make_card(entry, destination):
     centered(entry['reciter_ar'], reciter_y, 49, gold, rtl=True)
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination, 'PNG')
+    return destination
+
+
+def download_quran_passage(entry, destination):
+    """Download and concatenate complete consecutive ayahs without trimming."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    parts = []
+    for index, item in enumerate(entry.get('audio_parts', []), 1):
+        relative_url = item.get('url', '')
+        if not relative_url or '://' in relative_url or '..' in relative_url:
+            raise ValueError('Quran Foundation returned an invalid passage audio path')
+        part = destination.parent / f'passage-{index:03}.mp3'
+        with requests.get(urljoin(QURAN_AUDIO, relative_url), stream=True, timeout=(15, 60),
+                          headers={'User-Agent': 'quran-shorts-bot/3.0'}) as response:
+            response.raise_for_status()
+            with part.open('wb') as handle:
+                for block in response.iter_content(65536):
+                    handle.write(block)
+        parts.append(part)
+    if not parts:
+        raise TooShortRecording('The complete Quran passage has no audio parts')
+    command = []
+    for part in parts:
+        command.extend(['-i', str(part)])
+    filters = ''.join(f'[{index}:a]' for index in range(len(parts))) + f'concat=n={len(parts)}:v=0:a=1[out]'
+    joined = destination.with_suffix('.joined.mp3')
+    bot.run_media(['-y', *command, '-filter_complex', filters, '-map', '[out]',
+                   '-c:a', 'libmp3lame', '-b:a', '192k', str(joined)])
+    actual = media_duration(joined)
+    minimum = max(30, float(entry.get('min_audio_seconds', 30)))
+    if actual < minimum:
+        raise TooShortRecording('Complete Quran passage is shorter than 30 seconds')
+    tail = float(entry.get('tail_silence_seconds', 1))
+    temporary = destination.with_suffix('.part.mp3')
+    bot.run_media(['-y', '-i', str(joined), '-af', f'apad=pad_dur={tail}',
+                   '-c:a', 'libmp3lame', '-b:a', '192k', str(temporary)])
+    padded = media_duration(temporary)
+    if padded > 60 or padded > float(entry['max_audio_seconds']):
+        raise TooLongRecording('Complete Quran passage with its ending is too long for a Short')
+    os.replace(temporary, destination)
+    entry['duration'] = round(padded, 2)
+    entry['sha256'] = bot.file_hash(destination)
     return destination
 
 
