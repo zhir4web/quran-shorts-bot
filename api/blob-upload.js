@@ -1,12 +1,14 @@
-import { handleUpload } from '@vercel/blob/client';
-
 const ALLOWED_TYPES = ['video/mp4', 'video/quicktime', 'video/webm'];
 const MAX_BYTES = 60 * 1024 * 1024;
 
-export default async function handler(request) {
-  if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+module.exports = async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
   try {
-    const body = await request.json();
+    const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
+    const request = new Request('https://' + (req.headers.host || 'localhost') + (req.url || '/api/blob-upload'), {
+      method: 'POST', headers: req.headers, body: JSON.stringify(body),
+    });
+    const { handleUpload } = await import('@vercel/blob/client');
     const response = await handleUpload({
       request,
       body,
@@ -18,8 +20,8 @@ export default async function handler(request) {
       }),
       onUploadCompleted: async () => {},
     });
-    return Response.json(response);
+    return res.status(response.status || 200).json(await response.json());
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : 'Upload token generation failed.' }, { status: 400 });
+    return res.status(400).json({ error: error instanceof Error ? error.message : 'Upload token generation failed.' });
   }
-}
+};
