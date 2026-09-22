@@ -427,6 +427,31 @@ CUSTOM_CLIP_URL = re.compile(r'^https://[^ ]+\.(?:mp4|mov|webm)(?:\?.*)?$', re.I
 MAX_CUSTOM_VIDEO_BYTES = 60 * 1024 * 1024
 
 
+def delete_custom_blob(record):
+    """Delete a dashboard-uploaded Blob after the YouTube upload is durable."""
+    if not isinstance(record, dict) or not record.get('blob_url'):
+        return False
+    base = os.environ.get('DASHBOARD_URL', '').rstrip('/')
+    key = os.environ.get('DASHBOARD_KEY', '')
+    if not base or not key:
+        print('Custom Blob cleanup deferred: DASHBOARD_URL or DASHBOARD_KEY is not configured')
+        return False
+    endpoint = base + '/api/blob-delete'
+    for attempt in range(3):
+        try:
+            response = requests.post(endpoint, headers={'X-Dashboard-Key': key},
+                                     json={'url': record['blob_url']}, timeout=30)
+            if response.status_code == 200:
+                print('Custom Blob deleted after successful publish')
+                return True
+            print(f'Custom Blob cleanup attempt {attempt + 1} failed (HTTP {response.status_code})')
+        except requests.RequestException:
+            print(f'Custom Blob cleanup attempt {attempt + 1} failed (network)')
+        if attempt < 2:
+            time.sleep(2 ** attempt)
+    return False
+
+
 def download_custom_video(record, destination):
     url = str(record.get('url') or '')
     if not CUSTOM_CLIP_URL.fullmatch(url):
@@ -1406,8 +1431,12 @@ def run(args, ledger=None, service=None):
                                     schedule_slot_time(schedule_slot)).total_seconds() / 60, 1)})
     ledger.save()
     if custom_clip and custom_clip_sha:
+        cleanup_ok = delete_custom_blob(custom_clip)
         custom_clip.update(status='uploaded', video_id=video_id,
-                           uploaded_at=uploaded_at.isoformat())
+                           uploaded_at=uploaded_at.isoformat(),
+                           cleanup_status='deleted' if cleanup_ok else 'pending')
+        if cleanup_ok:
+            custom_clip['cleanup_at'] = datetime.now(timezone.utc).isoformat()
         ledger.save_custom_clip(custom_clip, custom_clip_sha,
                                 f'Complete custom video {custom_id} [skip ci]')
     print('Uploaded: https://www.youtube.com/watch?v=' + video_id)
