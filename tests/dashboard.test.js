@@ -10,7 +10,7 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 const response = (status, data) => ({ status, ok: status < 400, json: async () => data });
 const overview = () => ({ channel: { enabled: true, id: 'configured' }, integrations: { youtube: false },
   health: { state: 'attention', issues: ['uncertain_upload'], uncertain_uploads: [{ id: 'pending' }] },
-  schedule: { slots: ['11:00', '16:00', '20:00'], today_count: 1, target: 3,
+  schedule: { slots: ['05:00', '09:00', '15:00'], today_count: 1, target: 3,
     slot_states: [{ completed: false }, { completed: false }, { completed: true }] }, recent: [] });
 
 function element() {
