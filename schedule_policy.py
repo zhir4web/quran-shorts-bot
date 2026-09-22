@@ -1,8 +1,10 @@
 """Shared Baghdad scheduling rules for the runner and dashboard."""
 from datetime import datetime, timedelta, timezone
 
+
 BAGHDAD = timezone(timedelta(hours=3), 'Asia/Baghdad')
-PUBLICATION_HOURS = (11, 16, 20)
+# Deliberately early slots absorb GitHub Actions queue delay.
+PUBLICATION_HOURS = (5, 9, 15)
 
 
 def parse_iso(value):
@@ -38,7 +40,10 @@ def schedule_state(jobs, now=None):
             completed.add(slot)
             manual -= 1
     spacing = bool(latest and (local - latest).total_seconds() < 20 * 60)
-    next_due = next((slot for slot, hour in zip(slots, PUBLICATION_HOURS)
-                     if slot not in completed and local.hour >= hour), None)
+    next_due = next(
+        (slot for slot, hour in zip(slots, PUBLICATION_HOURS)
+         if slot not in completed and local.hour >= hour),
+        None,
+    )
     return {'slots': slots, 'completed': completed, 'spacing': spacing,
             'next_due': None if spacing else next_due}
