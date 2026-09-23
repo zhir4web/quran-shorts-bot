@@ -63,28 +63,54 @@
     return keyRequest;
   }
 
+  const RETRYABLE_GET_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+  const GET_RETRY_DELAYS = [700, 1400];
+  const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
   async function api(path, options = {}, retry = true) {
-    const headers = { ...(options.headers || {}), 'Accept': 'application/json' };
+    const method = String(options.method || 'GET').toUpperCase();
+    const readOnly = method === 'GET' || method === 'HEAD';
+    const headers = {
+      ...(options.headers || {}),
+      'Accept': 'application/json',
+      'Cache-Control': 'no-cache',
+    };
     const key = authKey();
     if (key) headers['X-Dashboard-Key'] = key;
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 90000);
+    const attempts = readOnly ? GET_RETRY_DELAYS.length + 1 : 1;
     let response;
-    try { response = await fetch(path, { ...options, headers, signal: controller.signal }); }
-    catch (error) {
-      if (options.method === 'POST') throw new Error('ئەنجامی داواکاری نادیارە؛ پێش دووبارەکردنەوە GitHub Actions بپشکنە.');
-      throw error;
-    } finally { window.clearTimeout(timer); }
-    if (response.status === 401 && retry) {
-      saveKey('');
-      if (state.authCancelled) throw new Error('کلیلی داشبۆرد پێویستە.');
-      const entered = await requestKey();
-      if (entered) return api(path, options, false);
+    let lastError;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), readOnly ? 30000 : 90000);
+      try {
+        response = await fetch(path, { ...options, cache: 'no-store', headers, signal: controller.signal });
+      } catch (error) {
+        lastError = error;
+        if (!readOnly || attempt >= attempts - 1) {
+          if (method === 'POST') throw new Error('ئەنجامی داواکاری نادیارە؛ پێش دووبارەکردنەوە GitHub Actions بپشکنە.');
+          throw error;
+        }
+        await wait(GET_RETRY_DELAYS[attempt]);
+        continue;
+      } finally {
+        window.clearTimeout(timer);
+      }
+      if (response.status === 401 && retry) {
+        saveKey('');
+        if (state.authCancelled) throw new Error('کلیلی داشبۆرد پێویستە.');
+        const entered = await requestKey();
+        if (entered) return api(path, options, false);
+      }
+      if (readOnly && RETRYABLE_GET_STATUSES.has(response.status) && attempt < attempts - 1) {
+        await wait(GET_RETRY_DELAYS[attempt]);
+        continue;
+      }
+      let data = {};
+      try { data = await response.json(); } catch (_) { /* server error without JSON */ }
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+      return data;
     }
-    let data = {};
-    try { data = await response.json(); } catch (_) { /* server error without JSON */ }
-    if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
-    return data;
+    throw lastError || new Error('داتا بەردەست نییە؛ تکایە دووبارە هەوڵ بدەرەوە.');
   }
 
   let blobUploadModule = null;
