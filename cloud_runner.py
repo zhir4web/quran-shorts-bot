@@ -539,17 +539,20 @@ def quran_audio_url(relative_url):
     value = relative_url.strip()
     if not value or '\\' in value:
         raise ValueError('Quran Foundation returned an invalid audio path')
+    # The API may return a network-path URL or a leading-slash relative path;
+    # normalize those forms before applying the exact CDN allowlist.
+    if value.startswith('//'):
+        value = 'https:' + value
     parsed = urlparse(value)
     if parsed.scheme or parsed.netloc:
-        # The API documents both forms.  Accept only the reviewed Quran
-        # Foundation CDN, with no credentials, port, query, or fragment.
         trusted_host = urlparse(QURAN_AUDIO).hostname
-        if (parsed.scheme != 'https' or parsed.hostname != trusted_host or
-                parsed.username or parsed.password or parsed.port or parsed.query or
-                parsed.fragment or not parsed.path or '..' in parsed.path):
+        if (parsed.scheme.lower() != 'https' or parsed.hostname.lower() != trusted_host or
+                parsed.username or parsed.password or parsed.port or not parsed.path or
+                '..' in parsed.path):
             raise ValueError('Quran Foundation returned an invalid audio path')
         return value
-    if value.startswith('/') or '..' in value:
+    value = value.lstrip('/')
+    if not value or '..' in value:
         raise ValueError('Quran Foundation returned an invalid audio path')
     return urljoin(QURAN_AUDIO, value)
 
