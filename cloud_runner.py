@@ -1511,7 +1511,8 @@ def main(argv=None):
         return 0
     except Exception as error:
         # External exception bodies can contain secrets. Print only our own diagnostics.
-        detail = str(error) if isinstance(error, CloudError) else type(error).__name__ + ': cloud run failed; check configuration, source availability and authorization'
+        safe_detail_types = (CloudError, ValueError, RuntimeError, FileNotFoundError, TooShortRecording, TooLongRecording)
+        detail = str(error) if isinstance(error, safe_detail_types) else type(error).__name__ + ': cloud run failed; check configuration, source availability and authorization'
         print(detail)
         if args.mode != 'preview':
             # Preview failures are reported by the workflow's always() step.
