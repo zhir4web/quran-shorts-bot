@@ -724,20 +724,24 @@ def verse_label(entry, arabic=False):
 
 
 def video_background_for(entry):
-    """Return the reviewed filmed clip assigned to the requested theme."""
+    """Return the primary filmed clip only when its licence is reviewed."""
     theme = entry.get('visual_theme', 'forest_rain')
     themes = ('forest_rain', 'mist_mountains', 'starry_night', 'ocean_moon', 'dawn_mosque')
     if theme not in themes:
         raise ValueError(f'Unknown filmed background theme: {theme}')
     path = ROOT / 'assets' / 'backgrounds' / 'video' / f'{theme}.mp4'
-    if path.is_file():
+    reviewed = bot.theme_clips(theme, ROOT)
+    if reviewed:
+        return reviewed[0]
+    # Test fixtures and legacy hand-built jobs may intentionally omit the
+    # production visual style and licence manifest. Production entries fail
+    # closed instead of silently substituting an unreviewed clip.
+    if path.is_file() and entry.get('visual_style') != 'real_video_assets':
         return path
-    # Test fixtures and legacy hand-built jobs may intentionally omit visual
-    # assets. Production catalog entries use real_video_assets and fail closed
-    # instead of silently substituting a different theme.
     if entry.get('visual_style') == 'real_video_assets':
-        raise FileNotFoundError(f'Reviewed filmed background missing: {path}')
+        raise FileNotFoundError(f'Reviewed filmed background missing or not listed: {path}')
     return None
+
 
 def item_for(entry, source, background, motion_overlay=None, background_video=None):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
@@ -788,9 +792,9 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
         item['visual_theme'] = filmed.stem
         # Stitch every reviewed extra clip of this theme into the render so a
         # Short shows several scenes instead of one clip looping.
-        extras = sorted((ROOT / 'assets' / 'backgrounds' / 'video').glob(f'{filmed.stem}_*.mp4'))
-        if extras:
-            item['background_playlist'] = [str(filmed.resolve())] + [str(extra.resolve()) for extra in extras]
+        reviewed_clips = bot.theme_clips(filmed.stem, ROOT)
+        if reviewed_clips and reviewed_clips[0].resolve() == filmed:
+            item['background_playlist'] = [str(clip.resolve()) for clip in reviewed_clips]
         item.pop('motion_overlay', None)
     if not filmed and entry.get('visual_style') == 'real_video_assets':
         raise ValueError('No reviewed filmed background is available')
