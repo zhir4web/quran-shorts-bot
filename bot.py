@@ -256,18 +256,24 @@ def source_file(item, base, folder):
 
 
 def theme_clips(theme, base):
-    """List every reviewed clip of a theme, deterministic order, primary first.
-
-    ``<theme>.mp4`` is the reviewed primary clip. Additional clips follow the
-    ``<theme>_2.mp4`` naming scheme and are only used when they are listed in
-    the reviewed LICENSES.md; unknown files are ignored, never auto-trusted.
-    """
+    """List only manifest-reviewed clips for a theme, deterministic order."""
+    if not isinstance(theme, str) or not re.fullmatch(r"[a-z0-9_]+", theme):
+        return []
     folder = Path(base) / "assets" / "backgrounds" / "video"
+    manifest = folder / "LICENSES.md"
+    try:
+        text = manifest.read_text(encoding="utf-8-sig")
+    except (FileNotFoundError, OSError):
+        # Fail closed for production assets: an absent manifest cannot prove rights.
+        return []
+    licensed = set(re.findall(r"(?<![A-Za-z0-9_-])\x60([A-Za-z0-9_-]+\.mp4)\x60", text, flags=re.IGNORECASE))
     primary = folder / f"{theme}.mp4"
-    clips = [primary] if primary.is_file() else []
-    extra = folder / f"{theme}_2.mp4"
-    if extra.is_file():
-        clips.append(extra)
+    if primary.name not in licensed or not primary.is_file():
+        return []
+    clips = [primary]
+    for extra in sorted(folder.glob(f"{theme}_*.mp4")):
+        if extra.is_file() and extra.name in licensed:
+            clips.append(extra)
     return clips
 
 
@@ -652,4 +658,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     sys.exit(main())
-
