@@ -85,13 +85,11 @@
       try {
         response = await fetch(path, { ...options, cache: 'no-store', headers, signal: controller.signal });
       } catch (error) {
+        // A network failure should release the UI immediately; the next
+        // scheduled refresh will retry without leaving stale healthy state.
         lastError = error;
-        if (!readOnly || attempt >= attempts - 1) {
-          if (method === 'POST') throw new Error('ئەنجامی داواکاری نادیارە؛ پێش دووبارەکردنەوە GitHub Actions بپشکنە.');
-          throw error;
-        }
-        await wait(GET_RETRY_DELAYS[attempt]);
-        continue;
+        if (method === 'POST') throw new Error('ئەنجامی داواکاری نادیارە؛ پێش دووبارەکردنەوە GitHub Actions بپشکنە.');
+        throw error;
       } finally {
         window.clearTimeout(timer);
       }
