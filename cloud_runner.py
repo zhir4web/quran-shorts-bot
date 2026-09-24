@@ -554,8 +554,7 @@ def quran_audio_url(relative_url):
                 parsed.password or parsed.port or not parsed.path or '..' in parsed.path):
             raise ValueError('Quran Foundation returned an invalid audio path')
         return value
-    value = value.lstrip('/')
-    if not value or '..' in value:
+    if value.startswith('/') or not value or '..' in value:
         raise ValueError('Quran Foundation returned an invalid audio path')
     return urljoin(QURAN_AUDIO, value)
 
@@ -1534,7 +1533,7 @@ def main(argv=None):
         return 0
     except Exception as error:
         # External exception bodies can contain secrets. Print only our own diagnostics.
-        safe_detail_types = (CloudError, ValueError, RuntimeError, FileNotFoundError, TooShortRecording, TooLongRecording)
+        safe_detail_types = (CloudError, ValueError, FileNotFoundError, TooShortRecording, TooLongRecording)
         detail = str(error) if isinstance(error, safe_detail_types) else type(error).__name__ + ': cloud run failed; check configuration, source availability and authorization'
         print(detail)
         if args.mode != 'preview':
