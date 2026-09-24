@@ -298,6 +298,30 @@ class StitchingTests(unittest.TestCase):
                 bot.load_queue(queue)
 
 
+class BackgroundLicenseTests(unittest.TestCase):
+    def test_theme_clips_uses_only_manifest_reviewed_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp) / "assets" / "backgrounds" / "video"
+            folder.mkdir(parents=True)
+            for name in ("forest_rain.mp4", "forest_rain_2.mp4", "forest_rain_3.mp4"):
+                (folder / name).write_bytes(b"fixture")
+            (folder / "LICENSES.md").write_text(
+                "| File |" + chr(10) + "| --- |" + chr(10)
+                + "| `forest_rain.mp4` |" + chr(10)
+                + "| `forest_rain_3.mp4` |",
+                encoding="utf-8")
+            self.assertEqual(
+                [path.name for path in bot.theme_clips("forest_rain", temp)],
+                ["forest_rain.mp4", "forest_rain_3.mp4"],
+            )
+
+    def test_theme_clips_fails_closed_without_manifest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp) / "assets" / "backgrounds" / "video"
+            folder.mkdir(parents=True)
+            (folder / "forest_rain.mp4").write_bytes(b"fixture")
+            self.assertEqual(bot.theme_clips("forest_rain", temp), [])
+
 class SubmitTests(unittest.TestCase):
     def test_submit_rejects_non_mp4(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -342,4 +366,3 @@ class SubmitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
