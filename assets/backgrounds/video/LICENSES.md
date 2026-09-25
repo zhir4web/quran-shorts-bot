@@ -1,29 +1,32 @@
 # Royalty-free filmed background clips
 
-The downloaded clip is stored locally so scheduled renders do not depend on a
-stock site being reachable. Its individual source page identifies it as free
-to use; no attribution is required.
+All production clips below were individually reviewed from Pexels video pages, downloaded into the repository, and transcoded locally with source audio removed. They are used under the [Pexels License](https://www.pexels.com/license/); no attribution is required. Every listed clip is 1080p or higher on its shorter dimension and is approved for the cinematic montage renderer.
 
-## Multi-clip themes
+## Selection rules
 
-A theme may carry additional clips named `<theme>_2.mp4`, `<theme>_3.mp4`, …
-next to the primary `<theme>.mp4`. Every clip must have its own row below;
-clips without a reviewed row are ignored by the renderer. Each Short splits
-its duration equally across all reviewed clips of its theme, so the background
-shows several scenes instead of one clip restarting.
+Each Short uses three different files from the 12-clip cinematic pool. The ledger records the selected playlist and the allocator avoids any clip already used until the pool completes a cycle. The renderer applies centered crop-to-fill, Lanczos scaling, gentle motion, and crossfades; it never downloads media at publish time.
 
-## Pending submissions
+| File | Theme | Source | Direct source page | Verified size | License | Attribution |
+| --- | --- | --- | --- | --- | --- | --- |
+| `cinematic_coast_01.mp4` | `cinematic_coast_01` | Pexels | https://www.pexels.com/video/stunning-aerial-coastline-view-with-mountain-37557937/ | 1920x1080 @ 30fps | Pexels License | No |
+| `cinematic_coast_02.mp4` | `cinematic_coast_02` | Pexels | https://www.pexels.com/video/drone-view-of-green-mountains-among-river-and-beach-16735015/ | 1920x1080 @ 30fps | Pexels License | No |
+| `cinematic_coast_03.mp4` | `cinematic_coast_03` | Pexels | https://www.pexels.com/video/aerial-view-of-coastal-forest-and-beachfront-31846604/ | 1920x1080 @ 30fps | Pexels License | No |
+| `cinematic_coast_04.mp4` | `cinematic_coast_04` | Pexels | https://www.pexels.com/video/scenic-aerial-view-of-forest-and-sea-coastline-32933249/ | 1920x1080 @ 30fps | Pexels License | No |
+| `cinematic_forest_01.mp4` | `cinematic_forest_01` | Pexels | https://www.pexels.com/video/trees-in-the-forest-and-the-mountains-9734041/ | 1920x1080 @ 30fps | Pexels License | No |
+| `cinematic_forest_02.mp4` | `cinematic_forest_02` | Pexels | https://www.pexels.com/video/aerial-view-of-lush-forest-and-coastal-cliffs-32698913/ | 1080x1920 @ 30fps | Pexels License | No |
+| `cinematic_mist_01.mp4` | `cinematic_mist_01` | Pexels | https://www.pexels.com/video/misty-aerial-view-of-a-foggy-forest-landscape-29792619/ | 1080x1920 @ 30fps | Pexels License | No |
+| `cinematic_mountain_01.mp4` | `cinematic_mountain_01` | Pexels | https://www.pexels.com/video/lush-green-mountains-and-forest-aerial-view-31600327/ | 1920x1080 @ 30fps | Pexels License | No |
+| `cinematic_mountain_02.mp4` | `cinematic_mountain_02` | Pexels | https://www.pexels.com/video/drone-footage-of-coastal-mountains-and-sandy-beaches-13001017/ | 1920x1080 @ 30fps | Pexels License | No |
+| `cinematic_mountain_03.mp4` | `cinematic_mountain_03` | Pexels | https://www.pexels.com/video/forest-in-mountains-12873101/ | 1920x1080 @ 30fps | Pexels License | No |
+| `cinematic_rain_01.mp4` | `cinematic_rain_01` | Pexels | https://www.pexels.com/video/raindrops-on-leaves-14622819/ | 1080x1920 @ 30fps | Pexels License | No |
+| `cinematic_river_01.mp4` | `cinematic_river_01` | Pexels | https://www.pexels.com/video/a-river-and-a-tropical-forest-by-the-sea-8302976/ | 1920x1080 @ 30fps | Pexels License | No |
 
-Clips sent from the dashboard land in `.bot-state/clip-submissions/` as
-`pending`. After you download and verify the clip, move the file here, add its
-row, and set `license_confirmed` in the submission record. Never publish a
-clip whose licence row is missing.
+## Legacy clips retained for backwards compatibility
 
-| File | Theme | Source | Direct source page | License | Attribution |
-| --- | --- | --- | --- | --- | --- |
-| `forest_rain.mp4` | `forest_rain` | Pexels, Kadir Akman | https://www.pexels.com/video/raindrops-on-leaves-14622819/ | Pexels License (free to use) | No |
-| `mist_mountains.mp4` | `mist_mountains` | Pexels, Julien Goettelmann | https://www.pexels.com/video/misty-aerial-view-of-a-foggy-forest-landscape-29792619/ | Pexels License (free to use) | No |
-| `starry_night.mp4` | `starry_night` | Pexels, Lau lau | https://www.pexels.com/video/starry-night-4483990/ | Pexels License (free to use) | No |
-| `ocean_moon.mp4` | `ocean_moon` | Pexels, Luz Calor Som | https://www.pexels.com/video/full-moon-over-tranquil-ocean-waves-at-dusk-29125229/ | Pexels License (free to use) | No |
-| `dawn_mosque.mp4` | `dawn_mosque` | Pexels, no name | https://www.pexels.com/video/sunset-mosque-17874608/ | Pexels License (free to use) | No |
-
+| File | Theme | Source page | License |
+| --- | --- | --- | --- |
+| `forest_rain.mp4` | `forest_rain` | https://www.pexels.com/video/raindrops-on-leaves-14622819/ | Pexels License |
+| `mist_mountains.mp4` | `mist_mountains` | https://www.pexels.com/video/misty-aerial-view-of-a-foggy-forest-landscape-29792619/ | Pexels License |
+| `starry_night.mp4` | `starry_night` | https://www.pexels.com/video/starry-night-4483990/ | Pexels License |
+| `ocean_moon.mp4` | `ocean_moon` | https://www.pexels.com/video/full-moon-over-tranquil-ocean-waves-at-dusk-29125229/ | Pexels License |
+| `dawn_mosque.mp4` | `dawn_mosque` | https://www.pexels.com/video/sunset-mosque-17874608/ | Pexels License |
