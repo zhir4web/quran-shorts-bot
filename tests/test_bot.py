@@ -283,7 +283,7 @@ class StitchingTests(unittest.TestCase):
             args = captured["args"]
             graph = args[args.index("-filter_complex") + 1]
             self.assertEqual(args.count("-stream_loop"), 2)
-            self.assertIn("concat=n=2:v=1:a=0", graph)
+            self.assertIn("xfade=transition=fade", graph)
             self.assertIn("trim=duration=1.000", graph)
             self.assertEqual(args[args.index("-map") + 3], "2:a:0")
 
