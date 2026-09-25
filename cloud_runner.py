@@ -248,6 +248,13 @@ def validate_verse_catalog(data):
             len(set(themes)) != len(themes) or
             any(not isinstance(theme, str) or not re.fullmatch(r'[a-z0-9_]{3,80}', theme) for theme in themes)):
         raise ValueError('At least 12 unique licensed visual themes are required')
+    if data.get('text_presentation') != 'static_full_ayah':
+        raise ValueError('The complete Arabic ayah must remain visible for the whole Short')
+    if data.get('background_orientation') != 'portrait':
+        raise ValueError('Licensed portrait background footage is required')
+    clip_count = data.get('background_clips_per_video')
+    if isinstance(clip_count, bool) or not isinstance(clip_count, int) or not 2 <= clip_count <= 4:
+        raise ValueError('Each Short must mix two to four different background clips')
     if data.get('show_verified_ayah_text') is not True:
         raise ValueError('Verified ayah text must be shown')
     maximum_text = data.get('max_ayah_characters')
@@ -630,9 +637,10 @@ def arabic_font_path():
 
 
 def make_card(entry, destination):
-    """Render a compact Arabic-only cinematic intro with no opaque panel."""
+    """Render the complete Arabic ayah and metadata as a persistent 9:16 overlay."""
     from PIL import Image, ImageDraw, ImageFilter
     from arabic_text import ArabicText
+
     font = arabic_font_path()
     if not font.is_file():
         raise FileNotFoundError('Arabic font missing: assets/Amiri-Regular.ttf')
@@ -640,28 +648,64 @@ def make_card(entry, destination):
     draw = ImageDraw.Draw(image, 'RGBA')
     typography = ArabicText(font)
 
-    def draw_readable(text, y, size, color, width=880):
+    # A translucent rounded panel keeps the complete verse readable over moving footage.
+    draw.rounded_rectangle(
+        (54, 240, 1026, 1680), radius=42,
+        fill=(4, 18, 27, 190), outline=(220, 198, 145, 190), width=2
+    )
+    draw.rounded_rectangle(
+        (70, 256, 1010, 1664), radius=32,
+        outline=(226, 215, 179, 45), width=1
+    )
+
+    def draw_centered(text, y, size, color, width=870):
         mask = typography.mask(text, size)
         while mask.width > width and size > 22:
             size -= 2
             mask = typography.mask(text, size)
-        if mask.width > width or y + mask.height > image.height:
-            raise ValueError('Arabic metadata does not fit the intro overlay')
+        if mask.width > width or y < 0 or y + mask.height > image.height:
+            raise ValueError('Arabic text does not fit the fixed ayah card')
         x = (image.width - mask.width) // 2
         glow = Image.new('RGBA', image.size, (0, 0, 0, 0))
-        glow.paste((230, 205, 145, 64), (x, y), mask)
-        image.alpha_composite(glow.filter(ImageFilter.GaussianBlur(14)))
+        glow.paste((240, 218, 168, 62), (x, y), mask)
+        image.alpha_composite(glow.filter(ImageFilter.GaussianBlur(12)))
         shadow = Image.new('RGBA', image.size, (0, 0, 0, 0))
         shadow.paste((0, 0, 0, 190), (x, y + 4), mask)
-        image.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(7)))
+        image.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(6)))
         image.paste(color, (x, y), mask)
+        return mask.height
 
-    draw_readable('سورة ' + entry['surah_ar'], 315, 78, '#f4f1e8')
+    draw_centered('سورة ' + str(entry['surah_ar']), 340, 68, '#f4f1e8')
     caption = verse_label(entry, arabic=True)
     if caption:
-        draw_readable(caption, 430, 48, '#e7e9e4')
-    draw.line((420, 520, 660, 520), fill=(220, 197, 142, 170), width=2)
-    draw_readable(entry['reciter_ar'], 565, 44, '#dcc58e')
+        draw_centered(caption, 445, 48, '#e7e9e4')
+    draw.line((390, 545, 690, 545), fill=(220, 197, 142, 190), width=2)
+
+    verse = str(entry.get('ayah_text') or '').strip()
+    if not verse:
+        raise ValueError('Verified Arabic ayah text is required for the fixed card')
+    verse_size = 58
+    verse_width = 850
+    lines = typography.wrap(verse, verse_size, verse_width)
+    line_gap = 22
+    while verse_size > 34:
+        step = verse_size + line_gap
+        if len(lines) * step <= 720:
+            break
+        verse_size -= 2
+        lines = typography.wrap(verse, verse_size, verse_width)
+    step = verse_size + line_gap
+    if not lines or len(lines) * step > 720:
+        raise ValueError('Complete Arabic ayah is too long for the fixed card')
+    first_y = 610 + (720 - len(lines) * step) // 2
+    for index, line in enumerate(lines):
+        draw_centered(line, first_y + index * step, verse_size, '#fffdf5', verse_width)
+
+    reciter = str(entry.get('reciter_ar') or '').strip()
+    if reciter:
+        draw.line((430, 1430, 650, 1430), fill=(220, 197, 142, 150), width=2)
+        draw_centered(reciter, 1480, 42, '#dcc58e', 860)
+
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination, 'PNG')
     return destination
@@ -995,7 +1039,7 @@ def choose_scene_cuts(duration, scene_count, word_layers, minimum_segment=6.0):
     return boundaries
 
 
-def item_for(entry, source, background, motion_overlay=None, background_video=None, word_layers=None, used_clips=None, used_playlists=None):
+def item_for(entry, source, background, motion_overlay=None, background_video=None, used_clips=None, used_playlists=None, portrait_backgrounds=False, background_clip_count=3):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
     cta = bot.CTA_COMMENTS[cta_index]
     verse_caption = verse_label(entry)
@@ -1035,37 +1079,77 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
         item['verse_start'], item['verse_end'] = span
     if entry.get('verse_key'):
         item['verse_key'] = entry['verse_key']
-    filmed = Path(background_video).resolve() if background_video else video_background_for(entry)
+    explicit_background = Path(background_video).resolve() if background_video else None
+    folder = ROOT / 'assets' / 'backgrounds' / 'video'
+    if portrait_backgrounds and explicit_background is None:
+        pool = reviewed_background_pool(folder, portrait=True)
+        if len(pool) < 2:
+            raise FileNotFoundError('At least two licensed 9:16 background clips are required')
+        preferred = next(
+            (clip for clip in pool if clip.stem == entry.get('visual_theme')),
+            None
+        )
+        if preferred is None:
+            stable_choice = int(hashlib.sha256(
+                str(entry['id']).encode('utf-8')
+            ).hexdigest()[:16], 16)
+            preferred = pool[stable_choice % len(pool)]
+        filmed = preferred
+    else:
+        filmed = explicit_background if explicit_background else video_background_for(entry)
+        pool = sorted(folder.glob('cinematic_*.mp4'))
+        if filmed and filmed not in pool:
+            pool.insert(0, filmed)
     if filmed and not filmed.is_file():
         raise FileNotFoundError(f'Reviewed filmed background missing: {filmed}')
     if filmed:
         item['background_video'] = str(filmed.resolve())
         item['background_motion'] = 'real_video'
         item['visual_theme'] = filmed.stem
-        folder = ROOT / 'assets' / 'backgrounds' / 'video'
-        pool = sorted(folder.glob('cinematic_*.mp4'))
-        if filmed not in pool:
-            pool.insert(0, filmed)
+        if portrait_backgrounds and explicit_background is None:
+            item['background_orientation'] = 'portrait'
         ordered, repeated_clip, repeated_plan = choose_background_playlist(
             entry['id'], filmed, used_clips, pool,
-            used_playlists=used_playlists, count=3
+            used_playlists=used_playlists, count=background_clip_count
         )
+        if len(ordered) < 2 and portrait_backgrounds and explicit_background is None:
+            raise FileNotFoundError('A Short needs at least two distinct portrait clips')
         item['background_playlist'] = [str(clip.resolve()) for clip in ordered]
         item['background_clip_cycle_reused'] = repeated_clip
         item['background_playlist_reused'] = repeated_plan
         item['background_scene_boundaries'] = choose_scene_cuts(
-            float(entry['duration']), len(ordered), word_layers
+            float(entry['duration']), len(ordered), None
         )
         item.pop('motion_overlay', None)
     if not filmed and entry.get('visual_style') == 'real_video_assets':
         raise ValueError('No reviewed filmed background is available')
     if motion_overlay and not filmed:
         item['motion_overlay'] = str(motion_overlay.resolve())
-    if word_layers:
-        item['word_reveal_layers'] = word_layers
-        item['word_timing_mode'] = entry.get('word_timing_mode', 'proportional_word_length_estimate')
-        item['intro_card_seconds'] = float(entry.get('word_reveal_intro_seconds', 2.6))
     return item
+
+
+def reviewed_background_pool(folder, portrait=False):
+    """Return only manifest-listed cinematic clips, optionally native portrait."""
+    manifest = Path(folder) / 'LICENSES.md'
+    try:
+        text = manifest.read_text(encoding='utf-8-sig')
+    except (OSError, UnicodeError):
+        return []
+    licensed = set(re.findall(
+        r'(?<![A-Za-z0-9_-])\x60([A-Za-z0-9_-]+\.mp4)\x60',
+        text, flags=re.IGNORECASE
+    ))
+    clips = []
+    for clip in sorted(Path(folder).glob('cinematic_*.mp4')):
+        if clip.name not in licensed:
+            continue
+        if portrait:
+            try:
+                bot.validate_background_source(clip, portrait=True)
+            except (ValueError, OSError):
+                continue
+        clips.append(clip.resolve())
+    return clips
 
 
 def surah_playlist_title(entry):
@@ -1586,6 +1670,7 @@ def run(args, ledger=None, service=None):
     if playlist_privacy not in ('private', 'unlisted', 'public'):
         raise CloudError('Invalid playlist privacy setting')
     catalog = load_catalog(ROOT / 'catalog.json')
+    catalog_settings = catalog if isinstance(catalog, dict) else {}
     print('Catalog validated; selecting a complete recitation...', flush=True)
     if not catalog:
         raise RuntimeError('No verified recordings configured. Publishing remains inactive.')
@@ -1684,17 +1769,19 @@ def run(args, ledger=None, service=None):
         entry['visual_theme'] = custom_clip['theme']
         custom_background = download_custom_video(custom_clip, workspace / 'custom-background.mp4')
     card = make_card(entry, workspace / 'background.png')
-    print('Building Arabic intro and word-reveal layers...', flush=True)
-    reveal_layers = make_word_reveal_layers(entry, workspace / 'word-reveal')
+    print('Building the fixed Arabic ayah card...', flush=True)
     motion = (None if custom_background or video_background_for(entry) else
               make_motion_overlay(entry, workspace / 'moving-rain.png'))
     used_backgrounds = {str(path) for row in jobs.values()
                         for path in row.get('background_playlist', [])}
     prior_playlists = [row.get('background_playlist', []) for row in jobs.values()
                        if row.get('background_playlist')]
-    job = item_for(entry, source, card, motion, background_video=custom_background,
-                   word_layers=reveal_layers, used_clips=used_backgrounds,
-                   used_playlists=prior_playlists)
+    job = item_for(
+        entry, source, card, motion, background_video=custom_background,
+        used_clips=used_backgrounds, used_playlists=prior_playlists,
+        portrait_backgrounds=(catalog_settings.get('background_orientation') == 'portrait'),
+        background_clip_count=int(catalog_settings.get('background_clips_per_video', 3))
+    )
     print('Rendering cinematic montage with crossfades...', flush=True)
     queue = workspace / 'queue.json'
     bot.atomic_json(queue, {'items': [job]})
