@@ -767,7 +767,7 @@ def video_background_for(entry):
     return None
 
 
-def item_for(entry, source, background, motion_overlay=None, background_video=None, word_layers=None):
+def item_for(entry, source, background, motion_overlay=None, background_video=None, word_layers=None, used_clips=None):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
     cta = bot.CTA_COMMENTS[cta_index]
     verse_caption = verse_label(entry)
@@ -823,10 +823,14 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
         pool = sorted(folder.glob('cinematic_*.mp4'))
         if filmed not in pool:
             pool.insert(0, filmed)
+        used = {str(Path(path).resolve()) for path in (used_clips or [])}
+        available = [clip for clip in pool if str(clip.resolve()) not in used]
+        if len(available) < 3:
+            available = pool
         seed = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16)
         ordered = [filmed]
-        for offset in range(len(pool)):
-            candidate = pool[(seed + offset) % len(pool)]
+        for offset in range(len(available)):
+            candidate = available[(seed + offset) % len(available)]
             if candidate.is_file() and candidate not in ordered:
                 ordered.append(candidate)
             if len(ordered) >= 3:
@@ -1461,8 +1465,10 @@ def run(args, ledger=None, service=None):
     reveal_layers = make_word_reveal_layers(entry, workspace / 'word-reveal')
     motion = (None if custom_background or video_background_for(entry) else
               make_motion_overlay(entry, workspace / 'moving-rain.png'))
+    used_backgrounds = {str(path) for row in jobs.values()
+                        for path in row.get('background_playlist', [])}
     job = item_for(entry, source, card, motion, background_video=custom_background,
-                   word_layers=reveal_layers)
+                   word_layers=reveal_layers, used_clips=used_backgrounds)
     queue = workspace / 'queue.json'
     bot.atomic_json(queue, {'items': [job]})
     bot.load_queue(queue)  # Apply the same metadata and permission checks as local runs.
@@ -1478,6 +1484,8 @@ def run(args, ledger=None, service=None):
                          'reciter_id': entry.get('recitation_id'),
                          'reciter_name': entry.get('reciter_en'),
                          'visual_theme': job.get('visual_theme'),
+                         'background_playlist': job.get('background_playlist', []),
+                         'word_timing_mode': job.get('word_timing_mode'),
                          'render_sha256': bot.file_hash(target),
                          'started_at': datetime.now(timezone.utc).isoformat()}
     if custom_id:
