@@ -708,7 +708,7 @@ def normalize_word_segments(segments, word_count, duration):
     # final word is stretched to the full audio duration. Validate the spread
     # of starts as well as the end boundary so these cannot reveal the whole
     # ayah in the first few milliseconds.
-    minimum_start_span = max(0.5, min(5.0, maximum * 0.2))
+    minimum_start_span = max(0.1, min(2.0, maximum * 0.1, word_count * 0.2))
     if normalized[-1][0] - normalized[0][0] < minimum_start_span:
         return []
     return normalized
