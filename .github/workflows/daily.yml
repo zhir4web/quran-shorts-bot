@@ -130,6 +130,17 @@ jobs:
               y = gap + (i // 2) * (cell_h + label_h + gap)
               draw.text((x + 8, y + 7), f'{timestamp:.2f}s', fill='#f3f4f6')
               sheet.paste(frame, (x, y + label_h))
+          metadata_files = glob.glob('state/cloud/*/metadata.json')
+          metadata = json.load(open(metadata_files[0], encoding='utf-8'))
+          timing_summary = {
+              'duration': metadata.get('duration'),
+              'mode': metadata.get('word_timing_mode'),
+              'intro_seconds': metadata.get('intro_card_seconds'),
+              'playlist': [Path(p).stem for p in metadata.get('background_playlist', [])],
+              'layers': [{'start': x.get('start'), 'end': x.get('end')}
+                         for x in metadata.get('word_reveal_layers', [])],
+          }
+          print('VISUAL_TIMING_SUMMARY=' + json.dumps(timing_summary, ensure_ascii=False))
           encoded = io.BytesIO()
           sheet.save(encoded, format='JPEG', quality=58, optimize=True)
           print('VISUAL_CONTACT_SHEET_BEGIN')
