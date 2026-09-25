@@ -742,10 +742,12 @@ def make_card(entry, destination):
     translation = str(entry.get('ayah_translation') or '').strip()
     if not translation:
         raise ValueError('Verified English meaning is required for the fixed card')
+    # Clear Quran brackets are explanatory markers; use common glyphs supported by Amiri.
+    translation = translation.replace('˹', '(').replace('˺', ')')
     draw_centered(TRANSLATION_CARD_LABEL, 900, 18, '#dcc58e', 820)
     translation_area_top = 930
     translation_area_height = 160
-    translation_size = 22
+    translation_size = 28
     translation_width = 840
     translation_gap = 4
     translation_lines = typography.wrap(translation, translation_size, translation_width)
