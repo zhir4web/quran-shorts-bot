@@ -48,16 +48,13 @@
     "cinematic_rain_01",
     "cinematic_river_01"
   ],
-  "background_clips_per_video": 3,
+  "background_clips_per_video": 2,
   "background_crossfade_seconds": 0.45,
-  "word_reveal": {
-    "enabled": true,
-    "intro_seconds": 3.5,
-    "fade_seconds": 0.28
-  },
   "show_verified_ayah_text": true,
   "max_ayah_characters": 180,
   "permission_url": "https://api-docs.quran.com/legal/developer-terms/",
   "attribution": "Recitation audio provided by Quran Foundation (Quran.com)",
-  "rights": "Used in a credited social-media video under the Quran Foundation Developer Terms"
+  "rights": "Used in a credited social-media video under the Quran Foundation Developer Terms",
+  "background_orientation": "portrait",
+  "text_presentation": "static_full_ayah"
 }
