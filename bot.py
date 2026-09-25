@@ -459,7 +459,7 @@ def render(item, base, folder):
                 compat_inputs.append(f"color=c=black:s=2x2:r=1:d=0.1[compat{compat_index}]")
             compat_joined = "".join(f"[compat{index}]" for index in range(len(playlist)))
             chains.append(";".join(compat_inputs) + ";" + compat_joined +
-                          f"concat=n={len(playlist)}:v=1:a=0[legacy_concat]")
+                          f"concat=n={len(playlist)}:v=1:a=0,null")
         current = "basev"
         if card_index is not None:
             card_end = max(0.0, float(item["duration"]) - 0.65)
