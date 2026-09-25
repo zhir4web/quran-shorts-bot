@@ -153,13 +153,18 @@ class RemoteLedger:
 
 
 def get_json(url, params=None):
+    """Fetch Quran Foundation data with visible, bounded progress logging."""
     for attempt in range(3):
+        print(f'Quran API request {attempt + 1}/3: {url}', flush=True)
         try:
-            response = requests.get(url, params=params, timeout=(15, 60),
+            response = requests.get(url, params=params, timeout=(10, 30),
                                     headers={'User-Agent': 'quran-shorts-bot/2.0'})
             response.raise_for_status()
-            return response.json()
+            payload = response.json()
+            print('Quran API response received', flush=True)
+            return payload
         except (requests.RequestException, ValueError):
+            print('Quran API request failed; retrying safely', flush=True)
             if attempt == 2:
                 raise RuntimeError('Quran Foundation source is temporarily unavailable') from None
             time.sleep(2 ** attempt)
@@ -280,6 +285,7 @@ def _reciter_order(reciters, jobs, position, catalog):
 
 
 def verse_entry_for_position(catalog, jobs, position):
+    print('Loading Quran Foundation reciter and chapter metadata...', flush=True)
     english = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'en'}).get('recitations', [])
     arabic = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'ar'}).get('recitations', [])
     chapters = get_json(urljoin(QURAN_API, 'chapters'), {'language': 'en'}).get('chapters', [])
@@ -292,8 +298,22 @@ def verse_entry_for_position(catalog, jobs, position):
     total_verses = sum(int(row['verses_count']) for row in chapters)
     if total_verses < 6000:
         raise RuntimeError('Quran Foundation chapter metadata is incomplete')
+    try:
+        max_candidates = max(30, int(os.environ.get('QURAN_MAX_CANDIDATES', '180')))
+    except (TypeError, ValueError):
+        max_candidates = 180
+    try:
+        search_timeout = max(60.0, float(os.environ.get('QURAN_SEARCH_TIMEOUT_SECONDS', '420')))
+    except (TypeError, ValueError):
+        search_timeout = 420.0
+    candidate_limit = min(total_verses * len(english), max_candidates)
+    deadline = time.monotonic() + search_timeout
     ordered_reciters = _reciter_order(english, jobs, position, catalog)
-    for attempt in range(min(120, total_verses * len(english))):
+    for attempt in range(candidate_limit):
+        if time.monotonic() >= deadline:
+            raise CloudError('Quran Foundation verse search timed out; the next run will retry safely')
+        if attempt == 0 or attempt % 5 == 0:
+            print(f'Checking complete-verse candidate {attempt + 1}/{candidate_limit}...', flush=True)
         # Try other reciters when the preferred one's candidates are unsuitable.
         reciter = ordered_reciters[attempt % len(ordered_reciters)]
         reciter_index = english.index(reciter)
@@ -1366,6 +1386,7 @@ def verify_channel(service, ledger, config):
 
 def run(args, ledger=None, service=None):
     run_started_at = datetime.now(timezone.utc)
+    print(f'Cloud runner started: mode={args.mode}', flush=True)
     config = bot.read_json(ROOT / 'automation.json')
     if not isinstance(config, dict):
         raise CloudError('Invalid automation configuration')
@@ -1375,6 +1396,7 @@ def run(args, ledger=None, service=None):
     if playlist_privacy not in ('private', 'unlisted', 'public'):
         raise CloudError('Invalid playlist privacy setting')
     catalog = load_catalog(ROOT / 'catalog.json')
+    print('Catalog validated; selecting a complete recitation...', flush=True)
     if not catalog:
         raise RuntimeError('No verified recordings configured. Publishing remains inactive.')
     if args.mode in ('publish', 'scheduled') and config.get('enabled') is not True:
@@ -1442,7 +1464,9 @@ def run(args, ledger=None, service=None):
                 raise
             workspace = ROOT / 'state' / 'cloud' / entry['id']
             try:
+                print(f'Downloading recitation for {entry.get("verse_key", entry["id"])}...', flush=True)
                 source = download_recording(entry, workspace / 'recitation.mp3')
+                print('Recitation ready; preparing the cinematic render...', flush=True)
                 break
             except (TooLongRecording, TooShortRecording):
                 cursor = next_cursor
@@ -1470,6 +1494,7 @@ def run(args, ledger=None, service=None):
         entry['visual_theme'] = custom_clip['theme']
         custom_background = download_custom_video(custom_clip, workspace / 'custom-background.mp4')
     card = make_card(entry, workspace / 'background.png')
+    print('Building Arabic intro and word-reveal layers...', flush=True)
     reveal_layers = make_word_reveal_layers(entry, workspace / 'word-reveal')
     motion = (None if custom_background or video_background_for(entry) else
               make_motion_overlay(entry, workspace / 'moving-rain.png'))
@@ -1477,6 +1502,7 @@ def run(args, ledger=None, service=None):
                         for path in row.get('background_playlist', [])}
     job = item_for(entry, source, card, motion, background_video=custom_background,
                    word_layers=reveal_layers, used_clips=used_backgrounds)
+    print('Rendering cinematic montage with crossfades...', flush=True)
     queue = workspace / 'queue.json'
     bot.atomic_json(queue, {'items': [job]})
     bot.load_queue(queue)  # Apply the same metadata and permission checks as local runs.
