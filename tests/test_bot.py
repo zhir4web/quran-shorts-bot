@@ -203,8 +203,11 @@ class MediaTests(unittest.TestCase):
             args = captured["args"]
             graph = args[args.index("-filter_complex") + 1]
             self.assertIn("scale=1120:1992:flags=lanczos:force_original_aspect_ratio=increase,", graph)
-            self.assertIn("crop=1080:1920:x='20+12*sin(t/5)':y='36+10*cos(t/6)',setsar=1", graph)
-            self.assertIn("overlay=0:0:format=auto", graph)
+            self.assertIn("crop=1080:1920:x='20+12*sin(t/5)':y='36+10*cos(t/6)',", graph)
+            self.assertIn("boxblur=32:2,eq=brightness=-0.18:saturation=0.72,", graph)
+            self.assertIn("drawbox=x=0:y=0:w=iw:h=ih:color=0x071310@0.62:t=fill[blurred0]", graph)
+            self.assertIn("[fgsrc0]scale=1080:1920:flags=lanczos:force_original_aspect_ratio=decrease[front0]", graph)
+            self.assertIn("[blurred0][front0]overlay=(W-w)/2:(H-h)/2:shortest=1", graph)
             self.assertIn("-b:v", args)
             self.assertEqual(args[args.index("-b:v") + 1], "10M")
             self.assertEqual(args[args.index("-maxrate") + 1], "12M")

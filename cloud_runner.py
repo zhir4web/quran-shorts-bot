@@ -338,7 +338,7 @@ def verse_entry_for_position(catalog, jobs, position):
         if key in jobs:
             continue
         payload = get_json(urljoin(QURAN_API, f'recitations/{reciter_id}/by_ayah/{chapter_id}:{verse_number}'),
-                           {'fields': 'chapter_id,verse_number,verse_key,duration,url'})
+                           {'fields': 'chapter_id,verse_number,verse_key,duration,url,segments'})
         files = payload.get('audio_files', [])
         if len(files) != 1:
             continue
@@ -366,7 +366,7 @@ def verse_entry_for_position(catalog, jobs, position):
             'audio_url': audio_url,
             'surah_ar': chapter['name_arabic'], 'surah_en': chapter['name_simple'],
             'verse_number': verse_number, 'verse_key': f'{chapter_id}:{verse_number}',
-            'ayah_text': ayah_text,
+            'ayah_text': ayah_text, 'word_segments': audio.get('segments'),
             'reciter_ar': reciter_ar, 'reciter_en': reciter.get('reciter_name', ''), 'style': style,
             'permission_url': catalog['permission_url'], 'attribution': catalog['attribution'],
             'rights': catalog['rights'], 'verified': True, 'whole_recording': True,
@@ -630,8 +630,8 @@ def arabic_font_path():
 
 
 def make_card(entry, destination):
-    """Render the Arabic-only intro card; the ayah itself is revealed separately."""
-    from PIL import Image, ImageDraw
+    """Render a compact Arabic-only cinematic intro with no opaque panel."""
+    from PIL import Image, ImageDraw, ImageFilter
     from arabic_text import ArabicText
     font = arabic_font_path()
     if not font.is_file():
@@ -639,25 +639,83 @@ def make_card(entry, destination):
     image = Image.new('RGBA', (1080, 1920), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image, 'RGBA')
     typography = ArabicText(font)
-    draw.rounded_rectangle((90, 560, 990, 1135), radius=70,
-                           fill=(3, 18, 22, 178), outline=(207, 180, 119, 150), width=3)
-    typography.draw_centered(image, 'سورة ' + entry['surah_ar'], 665, 96, '#f4f1e8')
+
+    def draw_readable(text, y, size, color, width=880):
+        mask = typography.mask(text, size)
+        while mask.width > width and size > 22:
+            size -= 2
+            mask = typography.mask(text, size)
+        if mask.width > width or y + mask.height > image.height:
+            raise ValueError('Arabic metadata does not fit the intro overlay')
+        x = (image.width - mask.width) // 2
+        glow = Image.new('RGBA', image.size, (0, 0, 0, 0))
+        glow.paste((230, 205, 145, 64), (x, y), mask)
+        image.alpha_composite(glow.filter(ImageFilter.GaussianBlur(14)))
+        shadow = Image.new('RGBA', image.size, (0, 0, 0, 0))
+        shadow.paste((0, 0, 0, 190), (x, y + 4), mask)
+        image.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(7)))
+        image.paste(color, (x, y), mask)
+
+    draw_readable('سورة ' + entry['surah_ar'], 315, 78, '#f4f1e8')
     caption = verse_label(entry, arabic=True)
     if caption:
-        typography.draw_centered(image, caption, 825, 58, '#e7e9e4')
-    draw.line((330, 945, 750, 945), fill='#dcc58e', width=2)
-    typography.draw_centered(image, entry['reciter_ar'], 1015, 49, '#dcc58e')
+        draw_readable(caption, 430, 48, '#e7e9e4')
+    draw.line((420, 520, 660, 520), fill=(220, 197, 142, 170), width=2)
+    draw_readable(entry['reciter_ar'], 565, 44, '#dcc58e')
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination, 'PNG')
     return destination
 
 
-def make_word_reveal_layers(entry, destination):
-    """Create cumulative Arabic ayah overlays with proportional timing estimates.
+def normalize_word_segments(segments, word_count, duration):
+    """Validate Quran Foundation's [word index, start ms, end ms] timings."""
+    if not isinstance(segments, list) or len(segments) != word_count or word_count < 1:
+        return []
+    parsed = []
+    for row in segments:
+        if isinstance(row, dict):
+            index = row.get('word_index', row.get('index'))
+            start = row.get('start_ms', row.get('start'))
+            end = row.get('end_ms', row.get('end'))
+        elif isinstance(row, (list, tuple)) and len(row) >= 3:
+            index, start, end = row[:3]
+        else:
+            return []
+        try:
+            index, start, end = int(index), float(start), float(end)
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if not math.isfinite(start) or not math.isfinite(end):
+            return []
+        parsed.append((index, start / 1000.0, end / 1000.0))
+    first_index = parsed[0][0]
+    if first_index not in (0, 1):
+        return []
+    maximum = float(duration)
+    previous_start = -1.0
+    previous_end = 0.0
+    normalized = []
+    for offset, (index, start, end) in enumerate(parsed):
+        if index != first_index + offset:
+            return []
+        if start < 0 or end <= start or end > maximum + 0.75:
+            return []
+        if start < previous_start or end < previous_end:
+            return []
+        normalized.append((start, end))
+        previous_start, previous_end = start, end
+    # Some records contain monotonic but collapsed word starts while the
+    # final word is stretched to the full audio duration. Validate the spread
+    # of starts as well as the end boundary so these cannot reveal the whole
+    # ayah in the first few milliseconds.
+    minimum_start_span = max(0.1, min(2.0, maximum * 0.1, word_count * 0.2))
+    if normalized[-1][0] - normalized[0][0] < minimum_start_span:
+        return []
+    return normalized
 
-    Quran Foundation does not expose per-word timing for every reciter, so the
-    reveal uses word-length proportions over the measured recitation duration.
-    """
+
+def make_word_reveal_layers(entry, destination):
+    """Build Arabic phrase reveals using provider timings when valid."""
     from PIL import Image, ImageFilter
     from arabic_text import ArabicText
     font = arabic_font_path()
@@ -666,33 +724,54 @@ def make_word_reveal_layers(entry, destination):
     words = str(entry.get('ayah_text') or '').split()
     if not words:
         return []
-    # Keep the reveal phrase-based when an ayah has many words.  A small,
-    # bounded number of transparent layers keeps the cinematic render fast and
-    # reliable on GitHub runners while still revealing the verse progressively.
-    max_layers = min(8, len(words))
-    if len(words) > max_layers:
-        grouped = []
-        for bucket in range(max_layers):
-            start = round(bucket * len(words) / max_layers)
-            end = round((bucket + 1) * len(words) / max_layers)
-            grouped.append(' '.join(words[start:end]))
-        words = [group for group in grouped if group]
     duration = float(entry.get('duration') or 0)
-    intro = min(3.5, max(1.5, duration * 0.18))
-    finish = max(intro + 1.0, duration - 0.65)
-    usable = max(0.5, finish - intro)
-    weights = [max(1, len(''.join(ch for ch in word if ch.isalnum()))) for word in words]
-    total_weight = float(sum(weights)) or 1.0
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError('Word reveal needs the measured audio duration')
+    maximum_layers = min(8, len(words))
+    groups = []
+    for bucket in range(maximum_layers):
+        start_index = round(bucket * len(words) / maximum_layers)
+        end_index = round((bucket + 1) * len(words) / maximum_layers)
+        groups.append((start_index, end_index))
+    segment_times = normalize_word_segments(
+        entry.get('word_segments'), len(words), duration)
+    if segment_times:
+        timing_mode = 'quran_foundation_word_segments'
+        intervals = []
+        for index, (start_index, end_index) in enumerate(groups):
+            start = segment_times[start_index][0]
+            end = (segment_times[groups[index + 1][0]][0]
+                   if index + 1 < len(groups) else duration)
+            if end <= start:
+                segment_times = []
+                break
+            intervals.append((start, end))
+    if not segment_times:
+        timing_mode = 'proportional_word_length_estimate'
+        intro = min(3.5, max(1.5, duration * 0.18))
+        finish = max(intro + 1.0, duration - 0.65)
+        usable = max(0.5, finish - intro)
+        weights = [
+            max(1, len(''.join(ch for ch in ' '.join(words[a:b]) if ch.isalnum())))
+            for a, b in groups
+        ]
+        total_weight = float(sum(weights)) or 1.0
+        intervals = []
+        elapsed = intro
+        for index, weight in enumerate(weights):
+            end = finish if index == len(weights) - 1 else elapsed + usable * weight / total_weight
+            intervals.append((elapsed, end))
+            elapsed = end
+        entry['word_reveal_intro_seconds'] = round(intro, 3)
+    else:
+        entry['word_reveal_intro_seconds'] = 2.6
     destination = Path(destination)
     destination.mkdir(parents=True, exist_ok=True)
     typography = ArabicText(font)
     result = []
-    elapsed = intro
     cumulative = []
-    for index, (word, weight) in enumerate(zip(words, weights)):
-        cumulative.append(word)
-        start = elapsed
-        end = finish if index == len(words) - 1 else elapsed + usable * weight / total_weight
+    for group_index, ((start_index, end_index), (start, end)) in enumerate(zip(groups, intervals), 1):
+        cumulative = words[:end_index]
         text = ' '.join(cumulative)
         image = Image.new('RGBA', (1080, 1920), (0, 0, 0, 0))
         lines = typography.wrap(text, 54, 820)
@@ -701,16 +780,13 @@ def make_word_reveal_layers(entry, destination):
         glow = Image.new('RGBA', image.size, (0, 0, 0, 0))
         for line_index, line in enumerate(lines):
             typography.draw_centered(glow, line, int(first_y + line_index * step), 54, '#fff4c2')
-        glow = glow.filter(ImageFilter.GaussianBlur(13))
-        image = Image.alpha_composite(image, glow)
+        image = Image.alpha_composite(image, glow.filter(ImageFilter.GaussianBlur(13)))
         for line_index, line in enumerate(lines):
             typography.draw_centered(image, line, int(first_y + line_index * step), 54, '#fffdf4')
-        path = destination / ('word-%03d.png' % (index + 1))
+        path = destination / ('phrase-%03d.png' % group_index)
         image.save(path, 'PNG')
         result.append({'path': str(path), 'start': round(start, 3), 'end': round(end, 3)})
-        elapsed = end
-    entry['word_timing_mode'] = 'proportional_word_length_estimate'
-    entry['word_reveal_intro_seconds'] = round(intro, 3)
+    entry['word_timing_mode'] = timing_mode
     return result
 
 
@@ -783,6 +859,7 @@ def verse_label(entry, arabic=False):
         return None
     start, end = verse_span(entry)
     if arabic:
+        number = number.translate(str.maketrans('0123456789', '٠١٢٣٤٥٦٧٨٩'))
         return ('الآية ' if start == end else 'الآيات ') + number
     return ('Ayah ' if start == end else 'Ayahs ') + number
 
@@ -806,7 +883,119 @@ def video_background_for(entry):
     return None
 
 
-def item_for(entry, source, background, motion_overlay=None, background_video=None, word_layers=None, used_clips=None):
+def _background_identity(path):
+    stem = Path(path).stem.casefold()
+    parts = stem.split('_')
+    if len(parts) == 3 and parts[0] == 'cinematic' and parts[1] in {
+            'coast', 'forest', 'mist', 'mountain', 'rain', 'river'} and parts[2].isdigit():
+        kind = parts[1]
+        family = {'coast': 'water', 'river': 'water', 'mountain': 'mountain',
+                  'forest': 'woodland', 'mist': 'woodland', 'rain': 'woodland'}[kind]
+        return kind, family
+    return stem, stem
+
+
+def choose_background_playlist(entry_id, primary, used_clips, pool,
+                               used_playlists=(), count=3):
+    """Prefer unused, mood-matched clips and avoid repeating a full montage."""
+    from itertools import permutations
+
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError('Background clip count must be a positive integer')
+
+    def canonical(value):
+        return str(Path(value).resolve())
+
+    candidates = []
+    seen = set()
+    for value in [*pool, *([primary] if primary else [])]:
+        path = Path(value).resolve()
+        key = canonical(path)
+        if key not in seen and path.is_file():
+            candidates.append(path)
+            seen.add(key)
+    if not candidates:
+        raise FileNotFoundError('No reviewed background clips are available')
+    count = min(count, len(candidates))
+    primary_key = canonical(primary) if primary else None
+    used = {canonical(value) for value in (used_clips or []) if value}
+    fresh = {canonical(path) for path in candidates if canonical(path) not in used}
+    primary_is_fresh = primary_key in fresh
+    primary_identity = _background_identity(primary) if primary else None
+
+    previous_plans = set()
+    for previous in used_playlists or []:
+        if isinstance(previous, dict):
+            previous = previous.get('background_playlist', [])
+        if isinstance(previous, (list, tuple)):
+            plan = tuple(canonical(value) for value in previous if value)
+            if plan:
+                previous_plans.add(plan)
+
+    def plan_score(plan):
+        fresh_count = sum(canonical(path) in fresh for path in plan)
+        identities = [_background_identity(path) for path in plan]
+        mood_cost = sum(
+            0 if identity[0] == primary_identity[0] else
+            1 if identity[1] == primary_identity[1] else 2
+            for identity in identities
+        ) if primary_identity else 0
+        primary_position = next(
+            (index for index, path in enumerate(plan) if canonical(path) == primary_key),
+            count + 1
+        )
+        primary_missing = int(primary_is_fresh and primary_position > count)
+        order_key = hashlib.sha256(
+            (str(entry_id) + ':' + '|'.join(canonical(path) for path in plan)).encode('utf-8')
+        ).hexdigest()
+        return (-fresh_count, mood_cost, primary_missing, primary_position, order_key)
+
+    non_repeated = [
+        plan for plan in permutations(candidates, count)
+        if tuple(canonical(path) for path in plan) not in previous_plans
+    ]
+    if non_repeated:
+        best = min(non_repeated, key=plan_score)
+    else:
+        best = min(permutations(candidates, count), key=plan_score)
+    return list(best), any(canonical(path) in used for path in best), (
+        tuple(canonical(path) for path in best) in previous_plans
+    )
+
+
+def choose_scene_cuts(duration, scene_count, word_layers, minimum_segment=6.0):
+    """Place montage cuts on the nearest phrase boundary without tiny scenes."""
+    total = float(duration)
+    if not math.isfinite(total) or total <= 0 or scene_count < 1:
+        raise ValueError('Scene timing needs a positive duration and scene count')
+    if scene_count == 1:
+        return []
+    if total < scene_count * minimum_segment:
+        return [round(total * index / scene_count, 3)
+                for index in range(1, scene_count)]
+    phrase_ends = set()
+    for layer in word_layers or []:
+        try:
+            end = float(layer.get('end'))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(end) and 0 < end < total:
+            phrase_ends.add(end)
+    boundaries = []
+    previous = 0.0
+    for index in range(1, scene_count):
+        lower = previous + minimum_segment
+        upper = total - (scene_count - index) * minimum_segment
+        target = total * index / scene_count
+        eligible = [value for value in phrase_ends if lower <= value <= upper]
+        cut = min(eligible, key=lambda value: (abs(value - target), value)) if eligible else target
+        cut = min(max(cut, lower), upper)
+        boundaries.append(round(cut, 3))
+        previous = cut
+    return boundaries
+
+
+def item_for(entry, source, background, motion_overlay=None, background_video=None, word_layers=None, used_clips=None, used_playlists=None):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
     cta = bot.CTA_COMMENTS[cta_index]
     verse_caption = verse_label(entry)
@@ -853,31 +1042,20 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
         item['background_video'] = str(filmed.resolve())
         item['background_motion'] = 'real_video'
         item['visual_theme'] = filmed.stem
-        # Stitch every reviewed extra clip of this theme into the render so a
-        # Short shows several scenes instead of one clip looping.
-        reviewed_clips = bot.theme_clips(filmed.stem, ROOT)
         folder = ROOT / 'assets' / 'backgrounds' / 'video'
-        # Build a deterministic three-scene montage from distinct, reviewed
-        # cinematic clips. The hash rotates the starting point per ayah/reciter.
         pool = sorted(folder.glob('cinematic_*.mp4'))
         if filmed not in pool:
             pool.insert(0, filmed)
-        used = {str(Path(path).resolve()) for path in (used_clips or [])}
-        available = [clip for clip in pool if str(clip.resolve()) not in used]
-        if len(available) < 3:
-            available = pool
-        seed = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16)
-        ordered = [filmed]
-        for offset in range(len(available)):
-            candidate = available[(seed + offset) % len(available)]
-            if candidate.is_file() and candidate not in ordered:
-                ordered.append(candidate)
-            if len(ordered) >= 3:
-                break
-        if len(ordered) >= 2:
-            item['background_playlist'] = [str(clip.resolve()) for clip in ordered]
-        elif reviewed_clips and reviewed_clips[0].resolve() == filmed:
-            item['background_playlist'] = [str(clip.resolve()) for clip in reviewed_clips]
+        ordered, repeated_clip, repeated_plan = choose_background_playlist(
+            entry['id'], filmed, used_clips, pool,
+            used_playlists=used_playlists, count=3
+        )
+        item['background_playlist'] = [str(clip.resolve()) for clip in ordered]
+        item['background_clip_cycle_reused'] = repeated_clip
+        item['background_playlist_reused'] = repeated_plan
+        item['background_scene_boundaries'] = choose_scene_cuts(
+            float(entry['duration']), len(ordered), word_layers
+        )
         item.pop('motion_overlay', None)
     if not filmed and entry.get('visual_style') == 'real_video_assets':
         raise ValueError('No reviewed filmed background is available')
@@ -886,6 +1064,7 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
     if word_layers:
         item['word_reveal_layers'] = word_layers
         item['word_timing_mode'] = entry.get('word_timing_mode', 'proportional_word_length_estimate')
+        item['intro_card_seconds'] = float(entry.get('word_reveal_intro_seconds', 2.6))
     return item
 
 
@@ -1511,8 +1690,11 @@ def run(args, ledger=None, service=None):
               make_motion_overlay(entry, workspace / 'moving-rain.png'))
     used_backgrounds = {str(path) for row in jobs.values()
                         for path in row.get('background_playlist', [])}
+    prior_playlists = [row.get('background_playlist', []) for row in jobs.values()
+                       if row.get('background_playlist')]
     job = item_for(entry, source, card, motion, background_video=custom_background,
-                   word_layers=reveal_layers, used_clips=used_backgrounds)
+                   word_layers=reveal_layers, used_clips=used_backgrounds,
+                   used_playlists=prior_playlists)
     print('Rendering cinematic montage with crossfades...', flush=True)
     queue = workspace / 'queue.json'
     bot.atomic_json(queue, {'items': [job]})
