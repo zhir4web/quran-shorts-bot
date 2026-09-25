@@ -680,7 +680,7 @@ def make_card(entry, destination):
 
     # Keep the text panel centered and compact, matching the reference layout.
     # The transparent 9:16 canvas leaves moving footage visible around the card.
-    panel_left, panel_top, panel_right, panel_bottom = 70, 520, 1010, 1400
+    panel_left, panel_top, panel_right, panel_bottom = 70, 510, 1010, 1310
     draw.rounded_rectangle(
         (panel_left, panel_top, panel_right, panel_bottom), radius=48,
         fill=(4, 18, 27, 196), outline=(220, 198, 145, 205), width=2
@@ -708,22 +708,22 @@ def make_card(entry, destination):
         image.paste(color, (x, y), mask)
         return mask.height
 
-    draw_centered('سورة ' + str(entry['surah_ar']), 574, 58, '#f4f1e8', 850)
+    draw_centered('سورة ' + str(entry['surah_ar']), 552, 54, '#f4f1e8', 850)
     surah_en = str(entry.get('surah_en') or '').strip()
     if surah_en:
-        draw_centered('Surah ' + surah_en, 640, 28, '#dcc58e', 820)
+        draw_centered('Surah ' + surah_en, 620, 26, '#dcc58e', 820)
     caption = verse_label(entry, arabic=True)
     if caption:
-        draw_centered(caption, 684, 40, '#e7e9e4', 830)
-    draw.line((390, 750, 690, 750), fill=(220, 197, 142, 190), width=2)
+        draw_centered(caption, 662, 36, '#e7e9e4', 830)
+    draw.line((390, 720, 690, 720), fill=(220, 197, 142, 190), width=2)
 
     verse = str(entry.get('ayah_text') or '').strip()
     if not verse:
         raise ValueError('Verified Arabic ayah text is required for the fixed card')
-    verse_size = 48
+    verse_size = 45
     verse_width = 840
-    verse_area_top = 785
-    verse_area_height = 225
+    verse_area_top = 730
+    verse_area_height = 140
     lines = typography.wrap(verse, verse_size, verse_width)
     line_gap = 8
     while verse_size > 28:
@@ -742,12 +742,12 @@ def make_card(entry, destination):
     translation = str(entry.get('ayah_translation') or '').strip()
     if not translation:
         raise ValueError('Verified English meaning is required for the fixed card')
-    draw_centered(TRANSLATION_CARD_LABEL, 1026, 20, '#dcc58e', 820)
-    translation_area_top = 1062
-    translation_area_height = 158
-    translation_size = 25
+    draw_centered(TRANSLATION_CARD_LABEL, 900, 18, '#dcc58e', 820)
+    translation_area_top = 930
+    translation_area_height = 160
+    translation_size = 22
     translation_width = 840
-    translation_gap = 5
+    translation_gap = 4
     translation_lines = typography.wrap(translation, translation_size, translation_width)
     while translation_size > 18:
         translation_step = translation_size + translation_gap
@@ -765,8 +765,8 @@ def make_card(entry, destination):
 
     reciter = str(entry.get('reciter_ar') or '').strip()
     if reciter:
-        draw.line((430, 1260, 650, 1260), fill=(220, 197, 142, 150), width=2)
-        draw_centered(reciter, 1290, 36, '#dcc58e', 820)
+        draw.line((430, 1140, 650, 1140), fill=(220, 197, 142, 150), width=2)
+        draw_centered(reciter, 1162, 32, '#dcc58e', 820)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination, 'PNG')
