@@ -388,8 +388,14 @@ class CloudTests(unittest.TestCase):
             [[1, 200, 700], [3, 900, 1300]], 2, 35), [])
         self.assertEqual(cloud.normalize_word_segments(
             [[1, 200, 700], [2, 900, 36000]], 2, 35), [])
+        # The last word can have an end stretched across the audio even
+        # though every word starts within the first few milliseconds.
         self.assertEqual(cloud.normalize_word_segments(
-            [[1, 1, 3], [2, 4, 11], [3, 12, 14]], 3, 35), [])
+            [[1, 1, 3], [2, 4, 11], [3, 12, 31630]], 3, 35), [])
+        # Plausible starts distributed over the recitation remain accepted.
+        self.assertEqual(cloud.normalize_word_segments(
+            [[1, 100, 400], [2, 800, 1400], [3, 6000, 8500], [4, 12000, 31630]],
+            4, 35), [(0.1, 0.4), (0.8, 1.4), (6.0, 8.5), (12.0, 31.63)])
 
     def test_real_video_background_is_selected_for_theme(self):
         with tempfile.TemporaryDirectory() as temp:
