@@ -451,15 +451,6 @@ def render(item, base, folder):
             current = output
             elapsed += segment_lengths[index] - crossfade
         chains.append(f"[{current}]trim=duration={float(item['duration']):.3f},setpts=PTS-STARTPTS[basev]")
-        # Keep a tiny compatibility branch for older graph-inspection tests;
-        # the rendered stream above is the xfade montage and remains mapped.
-        if len(playlist) >= 2:
-            compat_inputs = []
-            for compat_index in range(len(playlist)):
-                compat_inputs.append(f"color=c=black:s=2x2:r=1:d=0.1[compat{compat_index}]")
-            compat_joined = "".join(f"[compat{index}]" for index in range(len(playlist)))
-            chains.append(";".join(compat_inputs) + ";" + compat_joined +
-                          f"concat=n={len(playlist)}:v=1:a=0,nullsink")
         current = "basev"
         if card_index is not None:
             card_end = max(0.0, float(item["duration"]) - 0.65)
