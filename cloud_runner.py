@@ -648,17 +648,18 @@ def make_card(entry, destination):
     draw = ImageDraw.Draw(image, 'RGBA')
     typography = ArabicText(font)
 
-    # A translucent rounded panel keeps the complete verse readable over moving footage.
+    # Keep the translucent text panel compact so portrait footage remains visible
+    # around it on the full-bleed 9:16 background.
     draw.rounded_rectangle(
-        (54, 240, 1026, 1680), radius=42,
+        (90, 300, 990, 1620), radius=42,
         fill=(4, 18, 27, 190), outline=(220, 198, 145, 190), width=2
     )
     draw.rounded_rectangle(
-        (70, 256, 1010, 1664), radius=32,
+        (106, 316, 974, 1604), radius=32,
         outline=(226, 215, 179, 45), width=1
     )
 
-    def draw_centered(text, y, size, color, width=870):
+    def draw_centered(text, y, size, color, width=790):
         mask = typography.mask(text, size)
         while mask.width > width and size > 22:
             size -= 2
@@ -675,17 +676,17 @@ def make_card(entry, destination):
         image.paste(color, (x, y), mask)
         return mask.height
 
-    draw_centered('سورة ' + str(entry['surah_ar']), 340, 68, '#f4f1e8')
+    draw_centered('سورة ' + str(entry['surah_ar']), 380, 64, '#f4f1e8')
     caption = verse_label(entry, arabic=True)
     if caption:
-        draw_centered(caption, 445, 48, '#e7e9e4')
-    draw.line((390, 545, 690, 545), fill=(220, 197, 142, 190), width=2)
+        draw_centered(caption, 465, 46, '#e7e9e4')
+    draw.line((390, 550, 690, 550), fill=(220, 197, 142, 190), width=2)
 
     verse = str(entry.get('ayah_text') or '').strip()
     if not verse:
         raise ValueError('Verified Arabic ayah text is required for the fixed card')
     verse_size = 58
-    verse_width = 850
+    verse_width = 770
     lines = typography.wrap(verse, verse_size, verse_width)
     line_gap = 22
     while verse_size > 34:
@@ -703,8 +704,8 @@ def make_card(entry, destination):
 
     reciter = str(entry.get('reciter_ar') or '').strip()
     if reciter:
-        draw.line((430, 1430, 650, 1430), fill=(220, 197, 142, 150), width=2)
-        draw_centered(reciter, 1480, 42, '#dcc58e', 860)
+        draw.line((430, 1380, 650, 1380), fill=(220, 197, 142, 150), width=2)
+        draw_centered(reciter, 1425, 40, '#dcc58e', 780)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination, 'PNG')
