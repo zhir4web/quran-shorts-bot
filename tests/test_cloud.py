@@ -46,6 +46,7 @@ class CloudTests(unittest.TestCase):
     def execute(self, mode='publish', upload=None, measured=None):
         with patch.object(cloud, 'download_recording', side_effect=lambda e, p: p), \
              patch.object(cloud, 'make_card', side_effect=lambda e, p: p), \
+             patch.object(cloud, 'make_word_reveal_layers', side_effect=AssertionError('static card mode must not reveal words')), \
              patch.object(bot, 'render', side_effect=self.render), \
              patch.object(cloud.time, 'sleep'), \
              patch.object(cloud, 'media_duration', side_effect=measured or [35, 35]), \
@@ -352,19 +353,53 @@ class CloudTests(unittest.TestCase):
         with self.assertRaisesRegex(FileNotFoundError, 'background missing'):
             cloud.item_for(entry, self.root / 'audio.mp3', self.root / 'card.png')
 
-    def test_card_is_transparent_arabic_overlay(self):
+    def test_catalog_selects_static_full_ayah_and_native_portrait_montages(self):
+        path = Path(__file__).resolve().parents[1] / 'catalog.json'
+        data = json.loads(path.read_text(encoding='utf-8'))
+        self.assertIs(cloud.validate_verse_catalog(data), data)
+        self.assertEqual(data['text_presentation'], 'static_full_ayah')
+        self.assertEqual(data['background_orientation'], 'portrait')
+        self.assertEqual(data['background_clips_per_video'], 2)
+
+        data['text_presentation'] = 'word_reveal'
+        with self.assertRaises(ValueError):
+            cloud.validate_verse_catalog(data)
+
+    def test_card_keeps_complete_arabic_ayah_and_metadata_static(self):
         from PIL import Image
-        font_source = Path(__file__).resolve().parents[1] / 'assets' / 'Amiri-Regular.ttf'
-        font_target = self.root / 'assets' / 'Amiri-Regular.ttf'
-        font_target.parent.mkdir(parents=True)
-        font_target.write_bytes(font_source.read_bytes())
-        entry = dict(ENTRY, verse_number=3, ayah_text='لَمْ يَلِدْ وَلَمْ يُولَدْ')
-        card = cloud.make_card(entry, self.root / 'card.png')
+
+        rendered_text = []
+
+        class FakeArabicText:
+            def __init__(self, font):
+                pass
+
+            def mask(self, text, size):
+                rendered_text.append(text)
+                return Image.new('L', (max(1, min(850, len(text) * size // 2)), size), 255)
+
+            def wrap(self, text, size, width):
+                return [text]
+
+        fake_arabic_text = SimpleNamespace(ArabicText=FakeArabicText)
+        with patch.dict('sys.modules', {'arabic_text': fake_arabic_text}):
+            entry = dict(
+                ENTRY, verse_number=3, ayah_text='لَمْ يَلِدْ وَلَمْ يُولَدْ',
+                surah_en='Al-Ikhlas', reciter_en='Test Reciter'
+            )
+            card = cloud.make_card(entry, self.root / 'card.png')
+
         image = Image.open(card)
         self.assertEqual(image.mode, 'RGBA')
+        self.assertEqual(image.size, (1080, 1920))
         self.assertEqual(image.getpixel((0, 0))[3], 0)
-        self.assertEqual(image.getpixel((100, 600))[3], 0)
-        self.assertIsNotNone(image.getchannel('A').getbbox())
+        self.assertGreaterEqual(image.getpixel((100, 300))[3], 150)
+        self.assertIn('سورة الإخلاص', rendered_text)
+        self.assertIn('الآية ٣', rendered_text)
+        self.assertIn('لَمْ يَلِدْ وَلَمْ يُولَدْ', rendered_text)
+        self.assertIn('اسم القارئ', rendered_text)
+        self.assertNotIn('Al-Ikhlas', rendered_text)
+        self.assertNotIn('Test Reciter', rendered_text)
 
     def test_quran_word_segments_drive_phrase_reveal_timing(self):
         font_source = Path(__file__).resolve().parents[1] / 'assets' / 'Amiri-Regular.ttf'
@@ -397,6 +432,52 @@ class CloudTests(unittest.TestCase):
             [[1, 100, 400], [2, 800, 1400], [3, 6000, 8500], [4, 12000, 31630]],
             4, 35), [(0.1, 0.4), (0.8, 1.4), (6.0, 8.5), (12.0, 31.63)])
 
+    def test_portrait_playlist_uses_only_reviewed_native_vertical_clips(self):
+        with tempfile.TemporaryDirectory() as temp:
+            original = cloud.ROOT
+            try:
+                cloud.ROOT = Path(temp)
+                asset = Path(temp) / 'assets' / 'backgrounds' / 'video'
+                asset.mkdir(parents=True)
+                names = [
+                    'cinematic_coast_01.mp4',
+                    'cinematic_forest_02.mp4',
+                    'cinematic_mist_01.mp4',
+                    'cinematic_rain_01.mp4',
+                    'unreviewed_extra.mp4',
+                ]
+                for name in names:
+                    (asset / name).write_bytes(b'video')
+                manifest = ''.join(chr(96) + name + chr(96) + '\n' for name in names[:-1])
+                (asset / 'LICENSES.md').write_text(manifest, encoding='utf-8')
+
+                def validate(path, portrait=False):
+                    self.assertTrue(portrait)
+                    if Path(path).stem == 'cinematic_coast_01':
+                        raise ValueError('landscape source')
+
+                with patch.object(bot, 'validate_background_source', side_effect=validate):
+                    entry = dict(
+                        ENTRY, visual_theme='cinematic_coast_01',
+                        visual_style='real_video_assets', duration=35
+                    )
+                    job = cloud.item_for(
+                        entry, Path(temp) / 'audio.mp3', Path(temp) / 'card.png',
+                        portrait_backgrounds=True, background_clip_count=2
+                    )
+
+                self.assertEqual(job['background_orientation'], 'portrait')
+                self.assertEqual(len(job['background_playlist']), 2)
+                self.assertEqual(len(set(job['background_playlist'])), 2)
+                self.assertTrue(all(
+                    Path(name).stem in {
+                        'cinematic_forest_02', 'cinematic_mist_01', 'cinematic_rain_01'
+                    }
+                    for name in job['background_playlist']
+                ))
+            finally:
+                cloud.ROOT = original
+
     def test_real_video_background_is_selected_for_theme(self):
         with tempfile.TemporaryDirectory() as temp:
             original = cloud.ROOT
@@ -410,6 +491,7 @@ class CloudTests(unittest.TestCase):
                 self.assertEqual(job['background_motion'], 'real_video')
                 self.assertTrue(job['background_video'].endswith('forest_rain.mp4'))
                 self.assertNotIn('motion_overlay', job)
+                self.assertNotIn('word_reveal_layers', job)
             finally:
                 cloud.ROOT = original
 
