@@ -4,7 +4,7 @@ All production clips below were individually reviewed from Pexels video pages, d
 
 ## Selection rules
 
-Each Short uses three different files from the 12-clip cinematic pool. The ledger records the selected playlist and the allocator avoids any clip already used until the pool completes a cycle. The renderer applies centered crop-to-fill, Lanczos scaling, gentle motion, and crossfades; it never downloads media at publish time.
+Each Short mixes two different clips from the individually license-verified native 9:16 subset: `cinematic_forest_02.mp4`, `cinematic_mist_01.mp4`, and `cinematic_rain_01.mp4`. Landscape clips remain reviewed but are not selected for this full-bleed Shorts style. The ledger favors unused clips and avoids repeating the same ordered pair until all available pairings have been used; the three-clip portrait pool means individual source clips can recur across later posts. The renderer keeps the full ayah card visible and crossfades between the two scenes; it never downloads media at publish time.
 
 | File | Theme | Source | Direct source page | Verified size | License | Attribution |
 | --- | --- | --- | --- | --- | --- | --- |
