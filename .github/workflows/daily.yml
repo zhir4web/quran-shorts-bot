@@ -136,7 +136,7 @@ jobs:
               'duration': metadata.get('duration'),
               'mode': metadata.get('word_timing_mode'),
               'intro_seconds': metadata.get('intro_card_seconds'),
-              'playlist': [Path(p).stem for p in metadata.get('background_playlist', [])],
+              'playlist': [str(p).rsplit('/', 1)[-1].removesuffix('.mp4') for p in metadata.get('background_playlist', [])],
               'layers': [{'start': x.get('start'), 'end': x.get('end')}
                          for x in metadata.get('word_reveal_layers', [])],
           }
