@@ -393,6 +393,13 @@ def render(item, base, folder):
                 if not card.is_file():
                     raise FileNotFoundError(f"Card overlay missing: {card}")
                 inputs += ["-loop", "1", "-framerate", "30", "-i", str(card)]
+            # Word-reveal layers are transparent PNGs with their own time windows.
+            # They are separate inputs so the Arabic text fades in progressively.
+            for layer in item.get("word_reveal_layers", []):
+                layer_path = (base / layer["path"]).resolve()
+                if not layer_path.is_file():
+                    raise FileNotFoundError(f"Word reveal layer missing: {layer_path}")
+                inputs += ["-loop", "1", "-framerate", "30", "-i", str(layer_path)]
         elif item.get("background"):
             background = (base / item["background"]).resolve()
             if not background.is_file():
@@ -420,7 +427,9 @@ def render(item, base, folder):
         # one clip restarting. The slow crop drift also hides any loop point.
         playlist = item.get("background_playlist") or [item["background_video"]]
         card_index = len(playlist) if item.get("background") else None
-        audio_index = len(playlist) + (1 if card_index is not None else 0)
+        reveal_layers = item.get("word_reveal_layers", [])
+        layer_start = (card_index + 1) if card_index is not None else len(playlist)
+        audio_index = layer_start + len(reveal_layers)
         chains = []
         for index, (clip, share) in enumerate(split_background_segments(playlist, item["duration"])):
             chains.append(
@@ -432,8 +441,24 @@ def render(item, base, folder):
             # The card is a transparent RGBA PNG; composite it over the
             # stitched background after the quality-preserving scale/crop.
             chains.append(joined + f"concat=n={len(playlist)}:v=1:a=0[basev]")
-            chains.append(f"[{card_index}:v]format=rgba[card]")
-            chains.append("[basev][card]overlay=0:0:format=auto,setsar=1[v]")
+            current = "basev"
+            if card_index is not None:
+                chains.append(f"[{card_index}:v]format=rgba[card]")
+                chains.append(f"[{current}][card]overlay=0:0:format=auto,setsar=1[withcard]")
+                current = "withcard"
+            for layer_index, layer in enumerate(reveal_layers):
+                stream_index = layer_start + layer_index
+                start_time = max(0.0, float(layer.get("start", 0)))
+                end_time = max(start_time, float(layer.get("end", start_time)))
+                label = f"layer{layer_index}"
+                output = f"withlayer{layer_index}"
+                chains.append(f"[{stream_index}:v]format=rgba[{label}]")
+                chains.append(
+                    f"[{current}][{label}]overlay=0:0:enable='between(t,{start_time:.3f},{end_time:.3f})':"
+                    f"format=auto,setsar=1[{output}]"
+                )
+                current = output
+            chains.append(f"[{current}]setsar=1[v]")
             mapping = ["-map", "[v]", "-map", f"{audio_index}:a:0"]
         else:
             chains.append(joined + f"concat=n={len(playlist)}:v=1:a=0,setsar=1[v]")
