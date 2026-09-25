@@ -601,7 +601,7 @@ def download_quran_foundation(entry, destination):
 
 
 def make_card(entry, destination):
-    """Render the Arabic-only card as a transparent overlay for filmed clips."""
+    """Render the Arabic-only intro card; the ayah itself is revealed separately."""
     from PIL import Image, ImageDraw
     from arabic_text import ArabicText
     font = ROOT / 'assets' / 'Amiri-Regular.ttf'
@@ -609,44 +609,69 @@ def make_card(entry, destination):
         raise FileNotFoundError('Arabic font missing: assets/Amiri-Regular.ttf')
     image = Image.new('RGBA', (1080, 1920), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image, 'RGBA')
-    gold = '#dcc58e'
     typography = ArabicText(font)
-    def centered(text, y, size, color=gold, rtl=False):
-        typography.draw_centered(image, text, y, size, color)
-    def wrap_arabic(text, size, width=800):
-        return typography.wrap(text, size, width)
-
-    verse_size = 46
-    lines = wrap_arabic(entry.get('ayah_text', ''), verse_size)
-    # Keep the complete verse visible.  The panel has room for five compact
-    # lines; keep shrinking until that limit is met rather than silently
-    # dropping the end of a long ayah.
-    while len(lines) > 5 and verse_size > 22:
-        verse_size -= 2
-        lines = wrap_arabic(entry.get('ayah_text', ''), verse_size)
-    if len(lines) > 5:
-        raise ValueError('Complete Quran verse does not fit on the card')
-    verse_y = 975
-    line_step = max(verse_size + 14, max((typography.mask(line, verse_size).height + 12 for line in lines), default=42))
-    reciter_y = verse_y + len(lines)*line_step + 42
-    # Size the panel from the actual wrapped verse so a long verified ayah is
-    # never hidden behind its lower edge or the reciter label.
-    panel_bottom = max(1270, reciter_y + 95)
-    if panel_bottom > 1780:
-        raise ValueError('Complete Quran verse would extend outside the safe card area')
-    draw.rounded_rectangle((90, 520, 990, panel_bottom), radius=70,
+    draw.rounded_rectangle((90, 560, 990, 1135), radius=70,
                            fill=(3, 18, 22, 178), outline=(207, 180, 119, 150), width=3)
-    centered('سورة ' + entry['surah_ar'], 665, 96, '#f4f1e8', rtl=True)
-    verse_caption = verse_label(entry, arabic=True)
-    if verse_caption:
-        centered(verse_caption, 825, 58, '#e7e9e4', rtl=True)
-    draw.line((330, 945, 750, 945), fill=gold, width=2)
-    for index, line in enumerate(lines):
-        centered(line, verse_y + index*line_step, verse_size, '#f4f1e8', rtl=True)
-    centered(entry['reciter_ar'], reciter_y, 49, gold, rtl=True)
+    typography.draw_centered(image, 'سورة ' + entry['surah_ar'], 665, 96, '#f4f1e8')
+    caption = verse_label(entry, arabic=True)
+    if caption:
+        typography.draw_centered(image, caption, 825, 58, '#e7e9e4')
+    draw.line((330, 945, 750, 945), fill='#dcc58e', width=2)
+    typography.draw_centered(image, entry['reciter_ar'], 1015, 49, '#dcc58e')
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination, 'PNG')
     return destination
+
+
+def make_word_reveal_layers(entry, destination):
+    """Create cumulative Arabic ayah overlays with proportional timing estimates.
+
+    Quran Foundation does not expose per-word timing for every reciter, so the
+    reveal uses word-length proportions over the measured recitation duration.
+    """
+    from PIL import Image, ImageFilter
+    from arabic_text import ArabicText
+    font = ROOT / 'assets' / 'Amiri-Regular.ttf'
+    if not font.is_file():
+        raise FileNotFoundError('Arabic font missing: assets/Amiri-Regular.ttf')
+    words = str(entry.get('ayah_text') or '').split()
+    if not words:
+        return []
+    duration = float(entry.get('duration') or 0)
+    intro = min(3.5, max(1.5, duration * 0.18))
+    finish = max(intro + 1.0, duration - 0.65)
+    usable = max(0.5, finish - intro)
+    weights = [max(1, len(''.join(ch for ch in word if ch.isalnum()))) for word in words]
+    total_weight = float(sum(weights)) or 1.0
+    destination = Path(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    typography = ArabicText(font)
+    result = []
+    elapsed = intro
+    cumulative = []
+    for index, (word, weight) in enumerate(zip(words, weights)):
+        cumulative.append(word)
+        start = elapsed
+        end = finish if index == len(words) - 1 else elapsed + usable * weight / total_weight
+        text = ' '.join(cumulative)
+        image = Image.new('RGBA', (1080, 1920), (0, 0, 0, 0))
+        lines = typography.wrap(text, 54, 820)
+        step = 72
+        first_y = 980 - (len(lines) - 1) * step / 2
+        glow = Image.new('RGBA', image.size, (0, 0, 0, 0))
+        for line_index, line in enumerate(lines):
+            typography.draw_centered(glow, line, int(first_y + line_index * step), 54, '#fff4c2')
+        glow = glow.filter(ImageFilter.GaussianBlur(13))
+        image = Image.alpha_composite(image, glow)
+        for line_index, line in enumerate(lines):
+            typography.draw_centered(image, line, int(first_y + line_index * step), 54, '#fffdf4')
+        path = destination / ('word-%03d.png' % (index + 1))
+        image.save(path, 'PNG')
+        result.append({'path': str(path), 'start': round(start, 3), 'end': round(end, 3)})
+        elapsed = end
+    entry['word_timing_mode'] = 'proportional_word_length_estimate'
+    entry['word_reveal_intro_seconds'] = round(intro, 3)
+    return result
 
 
 def make_motion_overlay(entry, destination):
@@ -742,7 +767,7 @@ def video_background_for(entry):
     return None
 
 
-def item_for(entry, source, background, motion_overlay=None, background_video=None):
+def item_for(entry, source, background, motion_overlay=None, background_video=None, word_layers=None):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
     cta = bot.CTA_COMMENTS[cta_index]
     verse_caption = verse_label(entry)
@@ -799,6 +824,9 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
         raise ValueError('No reviewed filmed background is available')
     if motion_overlay and not filmed:
         item['motion_overlay'] = str(motion_overlay.resolve())
+    if word_layers:
+        item['word_reveal_layers'] = word_layers
+        item['word_timing_mode'] = entry.get('word_timing_mode', 'proportional_word_length_estimate')
     return item
 
 
@@ -1414,9 +1442,11 @@ def run(args, ledger=None, service=None):
         entry['visual_theme'] = custom_clip['theme']
         custom_background = download_custom_video(custom_clip, workspace / 'custom-background.mp4')
     card = make_card(entry, workspace / 'background.png')
+    reveal_layers = make_word_reveal_layers(entry, workspace / 'word-reveal')
     motion = (None if custom_background or video_background_for(entry) else
               make_motion_overlay(entry, workspace / 'moving-rain.png'))
-    job = item_for(entry, source, card, motion, background_video=custom_background)
+    job = item_for(entry, source, card, motion, background_video=custom_background,
+                   word_layers=reveal_layers)
     queue = workspace / 'queue.json'
     bot.atomic_json(queue, {'items': [job]})
     bot.load_queue(queue)  # Apply the same metadata and permission checks as local runs.
