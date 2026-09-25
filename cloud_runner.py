@@ -1633,7 +1633,7 @@ def main(argv=None):
     except Exception as error:
         # External exception bodies can contain secrets. Print only our own diagnostics.
         safe_detail_types = (CloudError, ValueError, FileNotFoundError, TooShortRecording, TooLongRecording)
-        detail = str(error) if isinstance(error, safe_detail_types) else type(error).__name__ + ': cloud run failed; check configuration, source availability and authorization'
+        detail = str(error) if isinstance(error, safe_detail_types) or (isinstance(error, RuntimeError) and str(error).startswith("Media processing failed:")) else type(error).__name__ + ": cloud run failed; check configuration, source availability and authorization"
         print(detail)
         if args.mode != 'preview':
             # Preview failures are reported by the workflow's always() step.
