@@ -667,7 +667,7 @@ def arabic_font_path():
 
 
 def make_card(entry, destination):
-    """Render the complete Arabic ayah and metadata as a persistent 9:16 overlay."""
+    """Render a compact bilingual text card over a transparent 9:16 overlay."""
     from PIL import Image, ImageDraw, ImageFilter
     from arabic_text import ArabicText
 
@@ -678,24 +678,26 @@ def make_card(entry, destination):
     draw = ImageDraw.Draw(image, 'RGBA')
     typography = ArabicText(font)
 
-    # Keep the translucent text panel compact so portrait footage remains visible
-    # around it on the full-bleed 9:16 background.
+    # Keep the text panel centered and compact, matching the reference layout.
+    # The transparent 9:16 canvas leaves moving footage visible around the card.
+    panel_left, panel_top, panel_right, panel_bottom = 70, 510, 1010, 1310
     draw.rounded_rectangle(
-        (90, 300, 990, 1620), radius=42,
-        fill=(4, 18, 27, 190), outline=(220, 198, 145, 190), width=2
+        (panel_left, panel_top, panel_right, panel_bottom), radius=48,
+        fill=(4, 18, 27, 196), outline=(220, 198, 145, 205), width=2
     )
     draw.rounded_rectangle(
-        (106, 316, 974, 1604), radius=32,
-        outline=(226, 215, 179, 45), width=1
+        (panel_left + 16, panel_top + 16, panel_right - 16, panel_bottom - 16),
+        radius=36, outline=(226, 215, 179, 45), width=1
     )
 
-    def draw_centered(text, y, size, color, width=790):
+    def draw_centered(text, y, size, color, width=840):
         mask = typography.mask(text, size)
-        while mask.width > width and size > 22:
+        while mask.width > width and size > 20:
             size -= 2
             mask = typography.mask(text, size)
-        if mask.width > width or y < 0 or y + mask.height > image.height:
-            raise ValueError('Arabic text does not fit the fixed ayah card')
+        if (mask.width > width or y < panel_top + 20 or
+                y + mask.height > panel_bottom - 20):
+            raise ValueError('Text does not fit inside the compact ayah card')
         x = (image.width - mask.width) // 2
         glow = Image.new('RGBA', image.size, (0, 0, 0, 0))
         glow.paste((240, 218, 168, 62), (x, y), mask)
@@ -706,25 +708,25 @@ def make_card(entry, destination):
         image.paste(color, (x, y), mask)
         return mask.height
 
-    draw_centered('سورة ' + str(entry['surah_ar']), 355, 62, '#f4f1e8')
+    draw_centered('سورة ' + str(entry['surah_ar']), 552, 54, '#f4f1e8', 850)
     surah_en = str(entry.get('surah_en') or '').strip()
     if surah_en:
-        draw_centered('Surah ' + surah_en, 440, 32, '#dcc58e')
+        draw_centered('Surah ' + surah_en, 620, 26, '#dcc58e', 820)
     caption = verse_label(entry, arabic=True)
     if caption:
-        draw_centered(caption, 495, 44, '#e7e9e4')
-    draw.line((390, 565, 690, 565), fill=(220, 197, 142, 190), width=2)
+        draw_centered(caption, 662, 36, '#e7e9e4', 830)
+    draw.line((390, 720, 690, 720), fill=(220, 197, 142, 190), width=2)
 
     verse = str(entry.get('ayah_text') or '').strip()
     if not verse:
         raise ValueError('Verified Arabic ayah text is required for the fixed card')
-    verse_size = 58
-    verse_width = 770
-    verse_area_top = 625
-    verse_area_height = 420
+    verse_size = 45
+    verse_width = 840
+    verse_area_top = 730
+    verse_area_height = 140
     lines = typography.wrap(verse, verse_size, verse_width)
-    line_gap = 14
-    while verse_size > 32:
+    line_gap = 8
+    while verse_size > 28:
         step = verse_size + line_gap
         if len(lines) * step <= verse_area_height:
             break
@@ -732,7 +734,7 @@ def make_card(entry, destination):
         lines = typography.wrap(verse, verse_size, verse_width)
     step = verse_size + line_gap
     if not lines or len(lines) * step > verse_area_height:
-        raise ValueError('Complete Arabic ayah is too long for the fixed card')
+        raise ValueError('Complete Arabic ayah is too long for the compact card')
     first_y = verse_area_top + (verse_area_height - len(lines) * step) // 2
     for index, line in enumerate(lines):
         draw_centered(line, first_y + index * step, verse_size, '#fffdf5', verse_width)
@@ -740,14 +742,16 @@ def make_card(entry, destination):
     translation = str(entry.get('ayah_translation') or '').strip()
     if not translation:
         raise ValueError('Verified English meaning is required for the fixed card')
-    draw_centered(TRANSLATION_CARD_LABEL, 1080, 22, '#dcc58e')
-    translation_area_top = 1120
-    translation_area_height = 210
-    translation_size = 30
-    translation_width = 770
-    translation_gap = 8
+    # Clear Quran brackets are explanatory markers; use common glyphs supported by Amiri.
+    translation = translation.replace('˹', '(').replace('˺', ')')
+    draw_centered(TRANSLATION_CARD_LABEL, 900, 18, '#dcc58e', 820)
+    translation_area_top = 930
+    translation_area_height = 160
+    translation_size = 28
+    translation_width = 840
+    translation_gap = 4
     translation_lines = typography.wrap(translation, translation_size, translation_width)
-    while translation_size > 20:
+    while translation_size > 18:
         translation_step = translation_size + translation_gap
         if len(translation_lines) * translation_step <= translation_area_height:
             break
@@ -755,7 +759,7 @@ def make_card(entry, destination):
         translation_lines = typography.wrap(translation, translation_size, translation_width)
     translation_step = translation_size + translation_gap
     if not translation_lines or len(translation_lines) * translation_step > translation_area_height:
-        raise ValueError('Complete English meaning is too long for the fixed card')
+        raise ValueError('Complete English meaning is too long for the compact card')
     translation_y = translation_area_top + (translation_area_height - len(translation_lines) * translation_step) // 2
     for index, line in enumerate(translation_lines):
         draw_centered(line, translation_y + index * translation_step,
@@ -763,13 +767,12 @@ def make_card(entry, destination):
 
     reciter = str(entry.get('reciter_ar') or '').strip()
     if reciter:
-        draw.line((430, 1380, 650, 1380), fill=(220, 197, 142, 150), width=2)
-        draw_centered(reciter, 1425, 40, '#dcc58e', 780)
+        draw.line((430, 1140, 650, 1140), fill=(220, 197, 142, 150), width=2)
+        draw_centered(reciter, 1162, 32, '#dcc58e', 820)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination, 'PNG')
     return destination
-
 
 def normalize_word_segments(segments, word_count, duration):
     """Validate Quran Foundation's [word index, start ms, end ms] timings."""
