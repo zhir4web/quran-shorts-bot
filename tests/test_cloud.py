@@ -1,4 +1,4 @@
-self.assertEqual(len(catalog['visual_themes']), 5)import base64
+import base64
 import copy
 from datetime import datetime, timedelta, timezone
 import json
@@ -342,7 +342,7 @@ class CloudTests(unittest.TestCase):
         repository_root = Path(__file__).resolve().parents[1]
         catalog = bot.read_json(repository_root / 'catalog.json')
         video_root = repository_root / 'assets' / 'backgrounds' / 'video'
-        self.assertEqual(len(catalog['visual_themes']), 5)
+        self.assertGreaterEqual(len(catalog['visual_themes']), 12)
         for theme in catalog['visual_themes']:
             with self.subTest(theme=theme):
                 self.assertTrue((video_root / f'{theme}.mp4').is_file())
