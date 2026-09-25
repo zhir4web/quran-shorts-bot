@@ -388,6 +388,8 @@ class CloudTests(unittest.TestCase):
             [[1, 200, 700], [3, 900, 1300]], 2, 35), [])
         self.assertEqual(cloud.normalize_word_segments(
             [[1, 200, 700], [2, 900, 36000]], 2, 35), [])
+        self.assertEqual(cloud.normalize_word_segments(
+            [[1, 1, 3], [2, 4, 11], [3, 12, 14]], 3, 35), [])
 
     def test_real_video_background_is_selected_for_theme(self):
         with tempfile.TemporaryDirectory() as temp:
