@@ -666,6 +666,17 @@ def make_word_reveal_layers(entry, destination):
     words = str(entry.get('ayah_text') or '').split()
     if not words:
         return []
+    # Keep the reveal phrase-based when an ayah has many words.  A small,
+    # bounded number of transparent layers keeps the cinematic render fast and
+    # reliable on GitHub runners while still revealing the verse progressively.
+    max_layers = min(8, len(words))
+    if len(words) > max_layers:
+        grouped = []
+        for bucket in range(max_layers):
+            start = round(bucket * len(words) / max_layers)
+            end = round((bucket + 1) * len(words) / max_layers)
+            grouped.append(' '.join(words[start:end]))
+        words = [group for group in grouped if group]
     duration = float(entry.get('duration') or 0)
     intro = min(3.5, max(1.5, duration * 0.18))
     finish = max(intro + 1.0, duration - 0.65)
