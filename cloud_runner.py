@@ -676,11 +676,14 @@ def make_card(entry, destination):
         image.paste(color, (x, y), mask)
         return mask.height
 
-    draw_centered('سورة ' + str(entry['surah_ar']), 380, 64, '#f4f1e8')
+    draw_centered('سورة ' + str(entry['surah_ar']), 355, 62, '#f4f1e8')
+    surah_en = str(entry.get('surah_en') or '').strip()
+    if surah_en:
+        draw_centered('Surah ' + surah_en, 440, 32, '#dcc58e')
     caption = verse_label(entry, arabic=True)
     if caption:
-        draw_centered(caption, 465, 46, '#e7e9e4')
-    draw.line((390, 550, 690, 550), fill=(220, 197, 142, 190), width=2)
+        draw_centered(caption, 495, 44, '#e7e9e4')
+    draw.line((390, 565, 690, 565), fill=(220, 197, 142, 190), width=2)
 
     verse = str(entry.get('ayah_text') or '').strip()
     if not verse:
@@ -698,7 +701,7 @@ def make_card(entry, destination):
     step = verse_size + line_gap
     if not lines or len(lines) * step > 720:
         raise ValueError('Complete Arabic ayah is too long for the fixed card')
-    first_y = 610 + (720 - len(lines) * step) // 2
+    first_y = 625 + (720 - len(lines) * step) // 2
     for index, line in enumerate(lines):
         draw_centered(line, first_y + index * step, verse_size, '#fffdf5', verse_width)
 
