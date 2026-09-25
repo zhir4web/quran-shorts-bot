@@ -704,11 +704,12 @@ def normalize_word_segments(segments, word_count, duration):
             return []
         normalized.append((start, end))
         previous_start, previous_end = start, end
-    # Some Quran Foundation records contain monotonic but impossible millisecond
-    # spans (for example, an entire verse compressed into 11 ms). Reject those
-    # so the renderer uses the safe word-length estimate across the audio.
-    minimum_span = max(0.5, word_count * 0.08)
-    if normalized[-1][1] - normalized[0][0] < minimum_span:
+    # Some records contain monotonic but collapsed word starts while the
+    # final word is stretched to the full audio duration. Validate the spread
+    # of starts as well as the end boundary so these cannot reveal the whole
+    # ayah in the first few milliseconds.
+    minimum_start_span = max(0.5, min(5.0, maximum * 0.2))
+    if normalized[-1][0] - normalized[0][0] < minimum_start_span:
         return []
     return normalized
 
