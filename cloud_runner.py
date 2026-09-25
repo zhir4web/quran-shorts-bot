@@ -239,9 +239,10 @@ def validate_verse_catalog(data):
     if data.get('visual_style') not in ('premium_rotating_scenes', 'real_video_assets'):
         raise ValueError('The real-video background style is required')
     themes = data.get('visual_themes')
-    supported = {'forest_rain', 'mist_mountains', 'starry_night', 'ocean_moon', 'dawn_mosque'}
-    if not isinstance(themes, list) or set(themes) != supported or len(themes) != len(supported):
-        raise ValueError('All premium visual themes are required exactly once')
+    if (not isinstance(themes, list) or not 12 <= len(themes) <= 30 or
+            len(set(themes)) != len(themes) or
+            any(not isinstance(theme, str) or not re.fullmatch(r'[a-z0-9_]{3,80}', theme) for theme in themes)):
+        raise ValueError('At least 12 unique licensed visual themes are required')
     if data.get('show_verified_ayah_text') is not True:
         raise ValueError('Verified ayah text must be shown')
     maximum_text = data.get('max_ayah_characters')
@@ -750,8 +751,7 @@ def verse_label(entry, arabic=False):
 def video_background_for(entry):
     """Return the primary filmed clip only when its licence is reviewed."""
     theme = entry.get('visual_theme', 'forest_rain')
-    themes = ('forest_rain', 'mist_mountains', 'starry_night', 'ocean_moon', 'dawn_mosque')
-    if theme not in themes:
+    if not isinstance(theme, str) or not re.fullmatch(r'[a-z0-9_]{3,80}', theme):
         raise ValueError(f'Unknown filmed background theme: {theme}')
     path = ROOT / 'assets' / 'backgrounds' / 'video' / f'{theme}.mp4'
     reviewed = bot.theme_clips(theme, ROOT)
@@ -817,7 +817,23 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
         # Stitch every reviewed extra clip of this theme into the render so a
         # Short shows several scenes instead of one clip looping.
         reviewed_clips = bot.theme_clips(filmed.stem, ROOT)
-        if reviewed_clips and reviewed_clips[0].resolve() == filmed:
+        folder = ROOT / 'assets' / 'backgrounds' / 'video'
+        # Build a deterministic three-scene montage from distinct, reviewed
+        # cinematic clips. The hash rotates the starting point per ayah/reciter.
+        pool = sorted(folder.glob('cinematic_*.mp4'))
+        if filmed not in pool:
+            pool.insert(0, filmed)
+        seed = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16)
+        ordered = [filmed]
+        for offset in range(len(pool)):
+            candidate = pool[(seed + offset) % len(pool)]
+            if candidate.is_file() and candidate not in ordered:
+                ordered.append(candidate)
+            if len(ordered) >= 3:
+                break
+        if len(ordered) >= 2:
+            item['background_playlist'] = [str(clip.resolve()) for clip in ordered]
+        elif reviewed_clips and reviewed_clips[0].resolve() == filmed:
             item['background_playlist'] = [str(clip.resolve()) for clip in reviewed_clips]
         item.pop('motion_overlay', None)
     if not filmed and entry.get('visual_style') == 'real_video_assets':
