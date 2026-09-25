@@ -393,7 +393,10 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(image.mode, 'RGBA')
         self.assertEqual(image.size, (1080, 1920))
         self.assertEqual(image.getpixel((0, 0))[3], 0)
-        self.assertGreaterEqual(image.getpixel((100, 300))[3], 150)
+        # The overlay stays 9:16 transparent at its edges; only the smaller
+        # centered panel has a dark fill over the moving footage.
+        self.assertEqual(image.getpixel((50, 960))[3], 0)
+        self.assertGreaterEqual(image.getpixel((100, 960))[3], 150)
         self.assertIn('سورة الإخلاص', rendered_text)
         self.assertIn('الآية ٣', rendered_text)
         self.assertIn('لَمْ يَلِدْ وَلَمْ يُولَدْ', rendered_text)
