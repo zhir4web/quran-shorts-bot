@@ -109,6 +109,11 @@ class CloudTests(unittest.TestCase):
                                      'name_arabic': 'Test', 'name_simple': 'Test'}]}
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'test text'}]}
+            if '/verses/by_key/' in url:
+                verse = url.rsplit('/', 1)[-1]
+                return {'verse': {'verse_key': verse, 'translations': [
+                    {'resource_id': 131, 'language_name': 'english',
+                     'text': 'A test English meaning.'}]}}
             return {'audio_files': [{'duration': 6 if url.endswith('1:1') else 35,
                                      'url': 'test.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
@@ -284,6 +289,11 @@ class CloudTests(unittest.TestCase):
                 return {'chapters': chapters}
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'قُلْ هُوَ اللَّهُ أَحَدٌ'}]}
+            if '/verses/by_key/' in url:
+                verse = url.rsplit('/', 1)[-1]
+                return {'verse': {'verse_key': verse, 'translations': [
+                    {'resource_id': 131, 'language_name': 'english',
+                     'text': 'A test English meaning.'}]}}
             return {'audio_files': [{'duration': 35, 'url': 'safe/test.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
             chosen = [cloud.verse_entry_for_position(catalog, {}, pos)[0]['recitation_id']
