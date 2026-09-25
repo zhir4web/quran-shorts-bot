@@ -350,7 +350,7 @@ def submit_video(source, theme, queue_path, title, attribution, rights, *, min_d
     return destination
 
 
-def validate_background_source(path):
+def validate_background_source(path, portrait=False):
     """Reject filmed sources that would need a destructive low-resolution upscale."""
     import imageio_ffmpeg
 
@@ -373,6 +373,11 @@ def validate_background_source(path):
             f"Background source {path} is only {width}x{height}; "
             "a filmed background must have a shorter dimension of at least 1080px"
         )
+    if portrait and not (0.5 <= width / height <= 0.625):
+        raise ValueError(
+            f"Background source {path} is {width}x{height}; "
+            "the Shorts library requires native 9:16 portrait footage"
+        )
     LOG.info("Background source %s: %sx%s at %s fps", path, width, height, fps)
 
 
@@ -393,21 +398,13 @@ def render(item, base, folder):
                 clip_path = (base / clip).resolve()
                 if not clip_path.is_file():
                     raise FileNotFoundError(f"Background clip missing: {clip_path}")
-                validate_background_source(clip_path)
+                validate_background_source(clip_path, portrait=item.get('background_orientation') == 'portrait')
                 inputs += ["-stream_loop", "-1", "-i", str(clip_path)]
             if item.get("background"):
                 card = (base / item["background"]).resolve()
                 if not card.is_file():
                     raise FileNotFoundError(f"Card overlay missing: {card}")
                 inputs += ["-loop", "1", "-framerate", "30", "-i", str(card)]
-            # Word-reveal layers are transparent PNGs with their own time windows.
-            # They are separate inputs so the Arabic text fades in progressively.
-            for layer in item.get("word_reveal_layers", []):
-                layer_path = (base / layer["path"]).resolve()
-                if not layer_path.is_file():
-                    raise FileNotFoundError(f"Word reveal layer missing: {layer_path}")
-                layer_length = max(0.5, float(layer.get("end", 0)) - float(layer.get("start", 0)))
-                inputs += ["-loop", "1", "-framerate", "30", "-t", f"{layer_length:.3f}", "-i", str(layer_path)]
         elif item.get("background"):
             background = (base / item["background"]).resolve()
             if not background.is_file():
@@ -435,22 +432,15 @@ def render(item, base, folder):
         # one clip restarting. The slow crop drift also hides any loop point.
         playlist = item.get("background_playlist") or [item["background_video"]]
         card_index = len(playlist) if item.get("background") else None
-        reveal_layers = item.get("word_reveal_layers", [])
-        layer_start = (card_index + 1) if card_index is not None else len(playlist)
-        audio_index = layer_start + len(reveal_layers)
+        audio_index = card_index + 1 if card_index is not None else len(playlist)
         chains = []
         segment_lengths = []
         crossfade = 0.35
         for index, (clip, share) in enumerate(split_background_segments(playlist, item["duration"], item.get("background_scene_boundaries"))):
             segment_lengths.append(float(share) + (crossfade if index else 0.0))
             chains.append(
-                f"[{index}:v]split=2[bgsrc{index}][fgsrc{index}];"
-                f"[bgsrc{index}]scale=1120:1992:flags=lanczos:force_original_aspect_ratio=increase,"
-                f"crop=1080:1920:x='20+12*sin(t/5)':y='36+10*cos(t/6)',"
-                f"boxblur=32:2,eq=brightness=-0.18:saturation=0.72,"
-                f"drawbox=x=0:y=0:w=iw:h=ih:color=0x071310@0.62:t=fill[blurred{index}];"
-                f"[fgsrc{index}]scale=1080:1920:flags=lanczos:force_original_aspect_ratio=decrease[front{index}];"
-                f"[blurred{index}][front{index}]overlay=(W-w)/2:(H-h)/2:shortest=1,"
+                f"[{index}:v]scale=1080:1920:flags=lanczos:force_original_aspect_ratio=increase,"
+                f"crop=1080:1920:(iw-1080)/2:(ih-1920)/2,"
                 f"setsar=1,fps=30,trim=duration={segment_lengths[-1]:.3f},"
                 f"setpts=PTS-STARTPTS,settb=1/30,format=yuv420p,fps=30[seg{index}]")
         current = "seg0"
@@ -466,29 +456,10 @@ def render(item, base, folder):
         chains.append(f"[{current}]trim=duration={float(item['duration']):.3f},setpts=PTS-STARTPTS[basev]")
         current = "basev"
         if card_index is not None:
-            intro_seconds = float(item.get("intro_card_seconds", 2.6))
-            card_end = max(0.0, intro_seconds - 0.35)
-            chains.append(
-                f"[{card_index}:v]format=rgba,fade=t=in:st=0:d=0.35:alpha=1,"
-                f"fade=t=out:st={card_end:.3f}:d=0.35:alpha=1[card]")
+            # The full Arabic card remains visible for the entire recitation.
+            chains.append(f"[{card_index}:v]format=rgba[card]")
             chains.append(f"[{current}][card]overlay=0:0:format=auto:eof_action=pass[withcard]")
             current = "withcard"
-        for layer_index, layer in enumerate(reveal_layers):
-            stream_index = layer_start + layer_index
-            start_time = max(0.0, float(layer.get("start", 0)))
-            end_time = max(start_time, float(layer.get("end", start_time)))
-            label = f"layer{layer_index}"
-            output = f"withlayer{layer_index}"
-            layer_length = max(0.5, end_time - start_time)
-            fade = min(0.28, layer_length / 3.0)
-            fade_out_start = max(0.0, layer_length - fade)
-            chains.append(
-                f"[{stream_index}:v]format=rgba,fade=t=in:st=0:d={fade:.3f}:alpha=1,"
-                f"fade=t=out:st={fade_out_start:.3f}:d={fade:.3f}:alpha=1,setpts=PTS-STARTPTS+{start_time:.3f}/TB[{label}]")
-            chains.append(
-                f"[{current}][{label}]overlay=0:0:enable='between(t,{start_time:.3f},{end_time:.3f})':"
-                f"format=auto:eof_action=pass[{output}]")
-            current = output
         chains.append(f"[{current}]setsar=1[v]")
         mapping = ["-map", "[v]", "-map", f"{audio_index}:a:0"]
         filters = ["-filter_complex", ";".join(chains)]

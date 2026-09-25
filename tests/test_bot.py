@@ -177,7 +177,7 @@ class PipelineTests(unittest.TestCase):
 
 
 class MediaTests(unittest.TestCase):
-    def test_real_video_render_uses_high_quality_crop_and_encode(self):
+    def test_real_video_render_uses_full_bleed_portrait_crop_and_persistent_card(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             (base / "audio.wav").write_bytes(b"audio")
@@ -186,28 +186,38 @@ class MediaTests(unittest.TestCase):
             card = base / "card.png"
             card.write_bytes(b"card")
             job = item()
-            job.update(duration=30, background=str(card), background_video=str(background), background_motion="real_video")
+            job.update(
+                duration=30, background=str(card), background_video=str(background),
+                background_motion="real_video", background_orientation="portrait",
+                word_reveal_layers=[{"path": "legacy-phrase.png", "start": 0, "end": 30}]
+            )
             captured = {}
 
             def fake_media(args):
                 captured["args"] = args
                 Path(args[-1]).write_bytes(b"rendered")
 
-            with patch.object(bot, "validate_background_source"), \
+            with patch.object(bot, "validate_background_source") as validate_background, \
                  patch.object(bot, "run_media", side_effect=fake_media), \
                  patch.object(bot, "validate_video"), \
                  patch.object(bot, "validate_visible_motion"):
                 result = bot.render(job, base, base / "real-video")
 
             self.assertTrue(result.is_file())
+            validate_background.assert_called_once_with(background.resolve(), portrait=True)
             args = captured["args"]
             graph = args[args.index("-filter_complex") + 1]
-            self.assertIn("scale=1120:1992:flags=lanczos:force_original_aspect_ratio=increase,", graph)
-            self.assertIn("crop=1080:1920:x='20+12*sin(t/5)':y='36+10*cos(t/6)',", graph)
-            self.assertIn("boxblur=32:2,eq=brightness=-0.18:saturation=0.72,", graph)
-            self.assertIn("drawbox=x=0:y=0:w=iw:h=ih:color=0x071310@0.62:t=fill[blurred0]", graph)
-            self.assertIn("[fgsrc0]scale=1080:1920:flags=lanczos:force_original_aspect_ratio=decrease[front0]", graph)
-            self.assertIn("[blurred0][front0]overlay=(W-w)/2:(H-h)/2:shortest=1", graph)
+            self.assertIn(
+                "scale=1080:1920:flags=lanczos:force_original_aspect_ratio=increase,"
+                "crop=1080:1920:(iw-1080)/2:(ih-1920)/2,",
+                graph
+            )
+            self.assertNotIn("boxblur", graph)
+            self.assertNotIn("[front0]", graph)
+            self.assertIn("[1:v]format=rgba[card]", graph)
+            self.assertIn("overlay=0:0:format=auto:eof_action=pass[withcard]", graph)
+            self.assertNotIn("fade=t=", graph)
+            self.assertNotIn("word_reveal", graph)
             self.assertIn("-b:v", args)
             self.assertEqual(args[args.index("-b:v") + 1], "10M")
             self.assertEqual(args[args.index("-maxrate") + 1], "12M")
