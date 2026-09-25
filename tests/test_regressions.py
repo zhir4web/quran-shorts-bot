@@ -178,6 +178,11 @@ class BoundaryTests(unittest.TestCase):
                 return {'chapters': [{'id': 1, 'verses_count': 6236, 'name_arabic': 'الفاتحة', 'name_simple': 'Al-Fatihah'}]}
             if 'quran/verses' in url:
                 return {'verses': [{'text_uthmani': 'قُلْ هُوَ اللَّهُ أَحَدٌ'}]}
+            if '/verses/by_key/' in url:
+                verse = url.rsplit('/', 1)[-1]
+                return {'verse': {'verse_key': verse, 'translations': [
+                    {'resource_id': 131, 'language_name': 'english',
+                     'text': 'He is One.'}]}}
             calls.append(url)
             return {'audio_files': [{'duration': 6 if '/recitations/1/' in url else 35, 'url': 'safe.mp3'}]}
 

@@ -109,6 +109,11 @@ class CloudTests(unittest.TestCase):
                                      'name_arabic': 'Test', 'name_simple': 'Test'}]}
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'test text'}]}
+            if '/verses/by_key/' in url:
+                verse = url.rsplit('/', 1)[-1]
+                return {'verse': {'verse_key': verse, 'translations': [
+                    {'resource_id': 131, 'language_name': 'english',
+                     'text': 'A test English meaning.'}]}}
             return {'audio_files': [{'duration': 6 if url.endswith('1:1') else 35,
                                      'url': 'test.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
@@ -244,6 +249,11 @@ class CloudTests(unittest.TestCase):
                 return {'chapters': chapters}
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ'}]}
+            if '/verses/by_key/' in url:
+                verse = url.rsplit('/', 1)[-1]
+                return {'verse': {'verse_key': verse, 'translations': [
+                    {'resource_id': 131, 'language_name': 'english',
+                     'text': 'In the name of Allah, the Most Merciful. <sup foot_note="1">1</sup>'}]}}
             verse = url.rsplit('/', 1)[-1]
             return {'audio_files': [{'duration': 35, 'url': f'Test/{verse}.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
@@ -253,6 +263,8 @@ class CloudTests(unittest.TestCase):
         self.assertNotEqual(first['verse_key'], second['verse_key'])
         self.assertNotEqual(first['visual_theme'], second['visual_theme'])
         self.assertTrue(first['ayah_text'])
+        self.assertEqual(first['ayah_translation'], 'In the name of Allah, the Most Merciful.')
+        self.assertEqual(first['translation_resource_id'], 131)
 
     def test_blocked_reciter_is_never_selected(self):
         catalog = {'schema': 3, 'provider': 'quran_foundation', 'reciters': 'allowlist',
@@ -277,6 +289,11 @@ class CloudTests(unittest.TestCase):
                 return {'chapters': chapters}
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'قُلْ هُوَ اللَّهُ أَحَدٌ'}]}
+            if '/verses/by_key/' in url:
+                verse = url.rsplit('/', 1)[-1]
+                return {'verse': {'verse_key': verse, 'translations': [
+                    {'resource_id': 131, 'language_name': 'english',
+                     'text': 'A test English meaning.'}]}}
             return {'audio_files': [{'duration': 35, 'url': 'safe/test.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
             chosen = [cloud.verse_entry_for_position(catalog, {}, pos)[0]['recitation_id']
@@ -317,16 +334,21 @@ class CloudTests(unittest.TestCase):
                 cloud.download_quran_verse(entry, self.root / 'recitation.mp3')
 
     def test_bilingual_metadata_has_verified_order_and_no_kurdish(self):
-        entry = dict(ENTRY, verse_number=3, verse_key='112:3', ayah_text='لَمْ يَلِدْ وَلَمْ يُولَدْ',
+        entry = dict(ENTRY, verse_number=3, verse_key='112:3',
+                     ayah_text='لَمْ يَلِدْ وَلَمْ يُولَدْ',
+                     ayah_translation='He neither begets nor is born.',
                      reciter_en='Test Reciter', style='Murattal', recitation_id=1)
         job = cloud.item_for(entry, self.root / 'audio.mp3', self.root / 'card.png')
         self.assertIn('سورة الإخلاص، الآية ٣', job['title'])
         self.assertIn('Surah Al-Ikhlas, Ayah 3', job['title'])
         parts = job['description'].split('\n\n')
         self.assertEqual(parts[0], entry['ayah_text'])
-        self.assertTrue(parts[1].startswith('Beautiful Quran recitation'))
-        self.assertEqual(parts[2], entry['attribution'])
-        self.assertEqual(parts[3], entry['permission_url'])
+        self.assertEqual(parts[1],
+                         'English meaning — The Clear Quran, translated by Dr. Mustafa Khattab (via Quran Foundation):\n'
+                         + entry['ayah_translation'])
+        self.assertTrue(parts[2].startswith('Beautiful Quran recitation'))
+        self.assertEqual(parts[3], entry['attribution'])
+        self.assertEqual(parts[4], entry['permission_url'])
         self.assertNotIn('ک', job['description'])
 
     def test_ayah_range_is_used_in_title_description_and_metadata(self):
@@ -369,6 +391,7 @@ class CloudTests(unittest.TestCase):
         from PIL import Image
 
         rendered_text = []
+        rendered_sizes = []
 
         class FakeArabicText:
             def __init__(self, font):
@@ -376,6 +399,7 @@ class CloudTests(unittest.TestCase):
 
             def mask(self, text, size):
                 rendered_text.append(text)
+                rendered_sizes.append((text, size))
                 return Image.new('L', (max(1, min(850, len(text) * size // 2)), size), 255)
 
             def wrap(self, text, size, width):
@@ -385,6 +409,7 @@ class CloudTests(unittest.TestCase):
         with patch.dict('sys.modules', {'arabic_text': fake_arabic_text}):
             entry = dict(
                 ENTRY, verse_number=3, ayah_text='لَمْ يَلِدْ وَلَمْ يُولَدْ',
+                ayah_translation='He neither begets nor is born.',
                 surah_en='Al-Ikhlas', reciter_en='Test Reciter'
             )
             card = cloud.make_card(entry, self.root / 'card.png')
@@ -401,6 +426,13 @@ class CloudTests(unittest.TestCase):
         self.assertIn('Surah Al-Ikhlas', rendered_text)
         self.assertIn('الآية ٣', rendered_text)
         self.assertIn('لَمْ يَلِدْ وَلَمْ يُولَدْ', rendered_text)
+        self.assertIn('English meaning: The Clear Quran', rendered_text)
+        self.assertIn('He neither begets nor is born.', rendered_text)
+        arabic_size = max(size for text, size in rendered_sizes
+                          if text == 'لَمْ يَلِدْ وَلَمْ يُولَدْ')
+        translation_size = max(size for text, size in rendered_sizes
+                               if text == 'He neither begets nor is born.')
+        self.assertLess(translation_size, arabic_size)
         self.assertIn('اسم القارئ', rendered_text)
         self.assertNotIn('Al-Ikhlas', rendered_text)
         self.assertNotIn('Test Reciter', rendered_text)

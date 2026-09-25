@@ -9,6 +9,7 @@ import argparse
 import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
+import html
 import json
 import math
 import os
@@ -32,6 +33,9 @@ SHORT_SURAHS = {
     113: ('الفلق', 'Al-Falaq'),
     114: ('الناس', 'An-Nas'),
 }
+ENGLISH_TRANSLATION_ID = 131
+TRANSLATION_CREDIT = 'The Clear Quran, translated by Dr. Mustafa Khattab (via Quran Foundation)'
+TRANSLATION_CARD_LABEL = 'English meaning: The Clear Quran'
 
 
 class CloudError(RuntimeError):
@@ -168,6 +172,14 @@ def get_json(url, params=None):
             if attempt == 2:
                 raise RuntimeError('Quran Foundation source is temporarily unavailable') from None
             time.sleep(2 ** attempt)
+
+
+def clean_translation_text(value):
+    """Return readable translation text without API HTML or footnote markers."""
+    text = str(value or '')
+    text = re.sub(r'<sup\b[^>]*>.*?</sup>', ' ', text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r'<[^>]*>', ' ', text)
+    return ' '.join(html.unescape(text).split())
 
 
 def api_entries(data):
@@ -366,6 +378,21 @@ def verse_entry_for_position(catalog, jobs, position):
         ayah_text = text_rows[0].get('text_uthmani', '').strip() if len(text_rows) == 1 else ''
         if not ayah_text or len(ayah_text) > catalog['max_ayah_characters']:
             continue
+        translation_payload = get_json(
+            urljoin(QURAN_API, f'verses/by_key/{expected_key}'),
+            {'translations': str(ENGLISH_TRANSLATION_ID)})
+        translated_verse = translation_payload.get('verse', {})
+        if translated_verse.get('verse_key') != expected_key:
+            raise ValueError('English translation does not match the requested verse')
+        translation_rows = translated_verse.get('translations', [])
+        translation_row = next((row for row in translation_rows
+                                if str(row.get('resource_id')) == str(ENGLISH_TRANSLATION_ID)), None)
+        if (translation_row and
+                str(translation_row.get('language_name', 'english')).casefold() != 'english'):
+            translation_row = None
+        ayah_translation = clean_translation_text(translation_row.get('text')) if translation_row else ''
+        if not ayah_translation or len(ayah_translation) > 600:
+            continue
         style = reciter.get('style') or ''
         reciter_ar = arabic_names.get(reciter_id) or reciter.get('reciter_name')
         return ({
@@ -373,7 +400,10 @@ def verse_entry_for_position(catalog, jobs, position):
             'audio_url': audio_url,
             'surah_ar': chapter['name_arabic'], 'surah_en': chapter['name_simple'],
             'verse_number': verse_number, 'verse_key': f'{chapter_id}:{verse_number}',
-            'ayah_text': ayah_text, 'word_segments': audio.get('segments'),
+            'ayah_text': ayah_text, 'ayah_translation': ayah_translation,
+            'translation_resource_id': ENGLISH_TRANSLATION_ID,
+            'translation_credit': TRANSLATION_CREDIT,
+            'word_segments': audio.get('segments'),
             'reciter_ar': reciter_ar, 'reciter_en': reciter.get('reciter_name', ''), 'style': style,
             'permission_url': catalog['permission_url'], 'attribution': catalog['attribution'],
             'rights': catalog['rights'], 'verified': True, 'whole_recording': True,
@@ -690,20 +720,46 @@ def make_card(entry, destination):
         raise ValueError('Verified Arabic ayah text is required for the fixed card')
     verse_size = 58
     verse_width = 770
+    verse_area_top = 625
+    verse_area_height = 420
     lines = typography.wrap(verse, verse_size, verse_width)
-    line_gap = 22
-    while verse_size > 34:
+    line_gap = 14
+    while verse_size > 32:
         step = verse_size + line_gap
-        if len(lines) * step <= 720:
+        if len(lines) * step <= verse_area_height:
             break
         verse_size -= 2
         lines = typography.wrap(verse, verse_size, verse_width)
     step = verse_size + line_gap
-    if not lines or len(lines) * step > 720:
+    if not lines or len(lines) * step > verse_area_height:
         raise ValueError('Complete Arabic ayah is too long for the fixed card')
-    first_y = 625 + (720 - len(lines) * step) // 2
+    first_y = verse_area_top + (verse_area_height - len(lines) * step) // 2
     for index, line in enumerate(lines):
         draw_centered(line, first_y + index * step, verse_size, '#fffdf5', verse_width)
+
+    translation = str(entry.get('ayah_translation') or '').strip()
+    if not translation:
+        raise ValueError('Verified English meaning is required for the fixed card')
+    draw_centered(TRANSLATION_CARD_LABEL, 1080, 22, '#dcc58e')
+    translation_area_top = 1120
+    translation_area_height = 210
+    translation_size = 30
+    translation_width = 770
+    translation_gap = 8
+    translation_lines = typography.wrap(translation, translation_size, translation_width)
+    while translation_size > 20:
+        translation_step = translation_size + translation_gap
+        if len(translation_lines) * translation_step <= translation_area_height:
+            break
+        translation_size -= 2
+        translation_lines = typography.wrap(translation, translation_size, translation_width)
+    translation_step = translation_size + translation_gap
+    if not translation_lines or len(translation_lines) * translation_step > translation_area_height:
+        raise ValueError('Complete English meaning is too long for the fixed card')
+    translation_y = translation_area_top + (translation_area_height - len(translation_lines) * translation_step) // 2
+    for index, line in enumerate(translation_lines):
+        draw_centered(line, translation_y + index * translation_step,
+                      translation_size, '#f0eee6', translation_width)
 
     reciter = str(entry.get('reciter_ar') or '').strip()
     if reciter:
@@ -1054,7 +1110,12 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
         reciter = entry['reciter_ar']
         room = max(1, 100 - len(prefix) - len(suffix))
         title = prefix + reciter[:room].rstrip() + suffix
+        translation_text = str(entry.get('ayah_translation') or '').strip()
+        translation_section = (
+            f"English meaning — {entry.get('translation_credit', TRANSLATION_CREDIT)}:\n"
+            f"{translation_text}\n\n" if translation_text else '')
         description = (f"{entry.get('ayah_text', '')}\n\n"
+                       f"{translation_section}"
                        f"Beautiful Quran recitation — Surah {entry['surah_en']}, "
                        f"{verse_caption}, recited by {entry['reciter_en']}\n\n"
                        f"{entry['attribution']}\n\n{entry['permission_url']}\n\n{cta}")
