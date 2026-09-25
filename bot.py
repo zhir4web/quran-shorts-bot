@@ -399,7 +399,8 @@ def render(item, base, folder):
                 layer_path = (base / layer["path"]).resolve()
                 if not layer_path.is_file():
                     raise FileNotFoundError(f"Word reveal layer missing: {layer_path}")
-                inputs += ["-loop", "1", "-framerate", "30", "-i", str(layer_path)]
+                layer_length = max(0.5, float(layer.get("end", 0)) - float(layer.get("start", 0)))
+                inputs += ["-loop", "1", "-framerate", "30", "-t", f"{layer_length:.3f}", "-i", str(layer_path)]
         elif item.get("background"):
             background = (base / item["background"]).resolve()
             if not background.is_file():
@@ -431,38 +432,51 @@ def render(item, base, folder):
         layer_start = (card_index + 1) if card_index is not None else len(playlist)
         audio_index = layer_start + len(reveal_layers)
         chains = []
+        segment_lengths = []
+        crossfade = 0.35
         for index, (clip, share) in enumerate(split_background_segments(playlist, item["duration"])):
+            segment_lengths.append(float(share))
             chains.append(
                 f"[{index}:v]scale=1120:1992:flags=lanczos:force_original_aspect_ratio=increase,"
-                f"crop=1080:1920:x='20+12*sin(t/5)':y='36+10*cos(t/6)',setsar=1,"
-                f"trim=duration={float(share):.3f},setpts=PTS-STARTPTS[seg{index}]")
-        joined = "".join(f"[seg{index}]" for index in range(len(playlist)))
+                f"crop=1080:1920:x='20+12*sin(t/5)':y='36+10*cos(t/6)',fps=30,"
+                f"trim=duration={float(share):.3f},setpts=PTS-STARTPTS,settb=1/30[seg{index}]")
+        current = "seg0"
+        elapsed = segment_lengths[0] if segment_lengths else float(item["duration"])
+        for index in range(1, len(segment_lengths)):
+            offset = max(0.0, elapsed - crossfade)
+            output = f"mix{index}"
+            chains.append(
+                f"[{current}][seg{index}]xfade=transition=fade:duration={crossfade:.3f}:"
+                f"offset={offset:.3f},format=yuv420p[{output}]")
+            current = output
+            elapsed += segment_lengths[index] - crossfade
+        chains.append(f"[{current}]trim=duration={float(item['duration']):.3f},setpts=PTS-STARTPTS[basev]")
+        current = "basev"
         if card_index is not None:
-            # The card is a transparent RGBA PNG; composite it over the
-            # stitched background after the quality-preserving scale/crop.
-            chains.append(joined + f"concat=n={len(playlist)}:v=1:a=0[basev]")
-            current = "basev"
-            if card_index is not None:
-                chains.append(f"[{card_index}:v]format=rgba[card]")
-                chains.append(f"[{current}][card]overlay=0:0:format=auto,setsar=1[withcard]")
-                current = "withcard"
-            for layer_index, layer in enumerate(reveal_layers):
-                stream_index = layer_start + layer_index
-                start_time = max(0.0, float(layer.get("start", 0)))
-                end_time = max(start_time, float(layer.get("end", start_time)))
-                label = f"layer{layer_index}"
-                output = f"withlayer{layer_index}"
-                chains.append(f"[{stream_index}:v]format=rgba[{label}]")
-                chains.append(
-                    f"[{current}][{label}]overlay=0:0:enable='between(t,{start_time:.3f},{end_time:.3f})':"
-                    f"format=auto,setsar=1[{output}]"
-                )
-                current = output
-            chains.append(f"[{current}]setsar=1[v]")
-            mapping = ["-map", "[v]", "-map", f"{audio_index}:a:0"]
-        else:
-            chains.append(joined + f"concat=n={len(playlist)}:v=1:a=0,setsar=1[v]")
-            mapping = ["-map", "[v]", "-map", f"{audio_index}:a:0"]
+            card_end = max(0.0, float(item["duration"]) - 0.65)
+            chains.append(
+                f"[{card_index}:v]format=rgba,fade=t=in:st=0:d=0.35:alpha=1,"
+                f"fade=t=out:st={card_end:.3f}:d=0.35:alpha=1[card]")
+            chains.append(f"[{current}][card]overlay=0:0:format=auto:eof_action=pass[withcard]")
+            current = "withcard"
+        for layer_index, layer in enumerate(reveal_layers):
+            stream_index = layer_start + layer_index
+            start_time = max(0.0, float(layer.get("start", 0)))
+            end_time = max(start_time, float(layer.get("end", start_time)))
+            label = f"layer{layer_index}"
+            output = f"withlayer{layer_index}"
+            layer_length = max(0.5, end_time - start_time)
+            fade = min(0.28, layer_length / 3.0)
+            fade_out_start = max(0.0, layer_length - fade)
+            chains.append(
+                f"[{stream_index}:v]format=rgba,fade=t=in:st=0:d={fade:.3f}:alpha=1,"
+                f"fade=t=out:st={fade_out_start:.3f}:d={fade:.3f}:alpha=1[{label}]")
+            chains.append(
+                f"[{current}][{label}]overlay=0:0:enable='between(t,{start_time:.3f},{end_time:.3f})':"
+                f"format=auto:eof_action=pass[{output}]")
+            current = output
+        chains.append(f"[{current}]setsar=1[v]")
+        mapping = ["-map", "[v]", "-map", f"{audio_index}:a:0"]
         filters = ["-filter_complex", ";".join(chains)]
     if item.get("background_motion") in ("calm_rain", "premium_motion") and item.get("motion_overlay"):
         # The 3840px rain sheet travels over a 1920px viewport and loops. This
@@ -479,7 +493,7 @@ def render(item, base, folder):
                  "x='20+12*sin(t/5)':y='36+10*cos(t/6)',"
                  "noise=alls=5:allf=t+u,eq=brightness='0.008*sin(t/4)',setsar=1")
         filters = ["-vf", scale]
-    encode = (["-c:v", "libx264", "-preset", "medium", "-b:v", "10M",
+    encode = (["-c:v", "libx264", "-preset", "fast", "-threads", "2", "-b:v", "10M",
                "-maxrate", "12M", "-bufsize", "24M"]
               if item.get("background_video")
               else ["-c:v", "libx264", "-preset", "fast", "-crf", "20"])
