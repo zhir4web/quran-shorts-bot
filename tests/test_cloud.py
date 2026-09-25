@@ -418,10 +418,16 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(image.mode, 'RGBA')
         self.assertEqual(image.size, (1080, 1920))
         self.assertEqual(image.getpixel((0, 0))[3], 0)
-        # The overlay stays 9:16 transparent at its edges; only the smaller
-        # centered panel has a dark fill over the moving footage.
+        # The full 9:16 canvas stays transparent outside the compact centered card.
         self.assertEqual(image.getpixel((50, 960))[3], 0)
+        self.assertEqual(image.getpixel((540, 400))[3], 0)
+        self.assertEqual(image.getpixel((540, 1500))[3], 0)
         self.assertGreaterEqual(image.getpixel((100, 960))[3], 150)
+        left, top, right, bottom = image.getchannel('A').getbbox()
+        self.assertLess(right - left, 1000)
+        self.assertLess(bottom - top, 950)
+        self.assertAlmostEqual((left + right) / 2, 540, delta=10)
+        self.assertAlmostEqual((top + bottom) / 2, 960, delta=20)
         self.assertIn('سورة الإخلاص', rendered_text)
         self.assertIn('Surah Al-Ikhlas', rendered_text)
         self.assertIn('الآية ٣', rendered_text)
