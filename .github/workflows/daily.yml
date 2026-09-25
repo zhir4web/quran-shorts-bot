@@ -97,6 +97,7 @@ jobs:
           import base64
           import glob
           import io
+          import json
           import subprocess
           import imageio_ffmpeg
           from PIL import Image, ImageDraw
