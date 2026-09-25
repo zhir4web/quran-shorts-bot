@@ -435,11 +435,11 @@ def render(item, base, folder):
         segment_lengths = []
         crossfade = 0.35
         for index, (clip, share) in enumerate(split_background_segments(playlist, item["duration"])):
-            segment_lengths.append(float(share))
+            segment_lengths.append(float(share) + (crossfade if index else 0.0))
             chains.append(
                 f"[{index}:v]scale=1120:1992:flags=lanczos:force_original_aspect_ratio=increase,"
                 f"crop=1080:1920:x='20+12*sin(t/5)':y='36+10*cos(t/6)',setsar=1,fps=30,"
-                f"trim=duration={float(share):.3f},setpts=PTS-STARTPTS,settb=1/30,format=yuv420p,fps=30[seg{index}]")
+                f"trim=duration={segment_lengths[-1]:.3f},setpts=PTS-STARTPTS,settb=1/30,format=yuv420p,fps=30[seg{index}]")
         current = "seg0"
         elapsed = segment_lengths[0] if segment_lengths else float(item["duration"])
         for index in range(1, len(segment_lengths)):
