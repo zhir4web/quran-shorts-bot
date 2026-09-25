@@ -2,19 +2,59 @@
   "schema": 3,
   "provider": "quran_foundation",
   "reciters": "allowlist",
-  "allowed_reciter_ids": [1, 2, 3, 4, 12],
-  "blocked_reciter_ids": [5],
-  "proposed_reciter_ids_for_review": [6, 7, 8, 9, 10, 11],
+  "allowed_reciter_ids": [
+    1,
+    2,
+    3,
+    4,
+    12
+  ],
+  "blocked_reciter_ids": [
+    5
+  ],
+  "proposed_reciter_ids_for_review": [
+    6,
+    7,
+    8,
+    9,
+    10,
+    11
+  ],
   "reciter_selection": {
     "tajwid_weight": 0.35,
-    "tajwid_keywords": ["tajwid", "tajweed", "mujawwad", "mujawid"]
+    "tajwid_keywords": [
+      "tajwid",
+      "tajweed",
+      "mujawwad",
+      "mujawid"
+    ]
   },
   "content": "complete_verses",
   "min_audio_seconds": 30,
   "max_audio_seconds": 58,
   "tail_silence_seconds": 1,
   "visual_style": "real_video_assets",
-  "visual_themes": ["forest_rain", "mist_mountains", "starry_night", "ocean_moon", "dawn_mosque"],
+  "visual_themes": [
+    "cinematic_coast_01",
+    "cinematic_coast_02",
+    "cinematic_coast_03",
+    "cinematic_coast_04",
+    "cinematic_forest_01",
+    "cinematic_forest_02",
+    "cinematic_mist_01",
+    "cinematic_mountain_01",
+    "cinematic_mountain_02",
+    "cinematic_mountain_03",
+    "cinematic_rain_01",
+    "cinematic_river_01"
+  ],
+  "background_clips_per_video": 3,
+  "background_crossfade_seconds": 0.45,
+  "word_reveal": {
+    "enabled": true,
+    "intro_seconds": 3.5,
+    "fade_seconds": 0.28
+  },
   "show_verified_ayah_text": true,
   "max_ayah_characters": 180,
   "permission_url": "https://api-docs.quran.com/legal/developer-terms/",
