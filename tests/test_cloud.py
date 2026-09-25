@@ -409,7 +409,7 @@ class CloudTests(unittest.TestCase):
         with patch.dict('sys.modules', {'arabic_text': fake_arabic_text}):
             entry = dict(
                 ENTRY, verse_number=3, ayah_text='لَمْ يَلِدْ وَلَمْ يُولَدْ',
-                ayah_translation='He neither begets nor is born.',
+                ayah_translation='Say, ˹O Prophet,˺ “He is Allah—One ˹and Indivisible˺.”',
                 surah_en='Al-Ikhlas', reciter_en='Test Reciter'
             )
             card = cloud.make_card(entry, self.root / 'card.png')
@@ -433,11 +433,11 @@ class CloudTests(unittest.TestCase):
         self.assertIn('الآية ٣', rendered_text)
         self.assertIn('لَمْ يَلِدْ وَلَمْ يُولَدْ', rendered_text)
         self.assertIn('English meaning: The Clear Quran', rendered_text)
-        self.assertIn('He neither begets nor is born.', rendered_text)
+        self.assertIn('Say, (O Prophet,) “He is Allah—One (and Indivisible).”', rendered_text)
         arabic_size = max(size for text, size in rendered_sizes
                           if text == 'لَمْ يَلِدْ وَلَمْ يُولَدْ')
         translation_size = max(size for text, size in rendered_sizes
-                               if text == 'He neither begets nor is born.')
+                               if text == 'Say, (O Prophet,) “He is Allah—One (and Indivisible).”')
         self.assertLess(translation_size, arabic_size)
         self.assertIn('اسم القارئ', rendered_text)
         self.assertNotIn('Al-Ikhlas', rendered_text)
