@@ -1,4 +1,4 @@
-import base64
+self.assertEqual(len(catalog['visual_themes']), 5)import base64
 import copy
 from datetime import datetime, timedelta, timezone
 import json
