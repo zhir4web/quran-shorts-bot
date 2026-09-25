@@ -453,7 +453,7 @@ def render(item, base, folder):
         chains.append(f"[{current}]trim=duration={float(item['duration']):.3f},setpts=PTS-STARTPTS[basev]")
         current = "basev"
         if card_index is not None:
-            card_end = max(0.0, float(item["duration"]) - 0.65)
+            card_end = max(0.0, float(reveal_layers[0].get("start", 3.5)) - 0.35)
             chains.append(
                 f"[{card_index}:v]format=rgba,fade=t=in:st=0:d=0.35:alpha=1,"
                 f"fade=t=out:st={card_end:.3f}:d=0.35:alpha=1[card]")
@@ -470,7 +470,7 @@ def render(item, base, folder):
             fade_out_start = max(0.0, layer_length - fade)
             chains.append(
                 f"[{stream_index}:v]format=rgba,fade=t=in:st=0:d={fade:.3f}:alpha=1,"
-                f"fade=t=out:st={fade_out_start:.3f}:d={fade:.3f}:alpha=1[{label}]")
+                f"fade=t=out:st={fade_out_start:.3f}:d={fade:.3f}:alpha=1,setpts=PTS-STARTPTS+{start_time:.3f}/TB[{label}]")
             chains.append(
                 f"[{current}][{label}]overlay=0:0:enable='between(t,{start_time:.3f},{end_time:.3f})':"
                 f"format=auto:eof_action=pass[{output}]")
