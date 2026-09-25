@@ -277,19 +277,26 @@ def theme_clips(theme, base):
     return clips
 
 
-def split_background_segments(clips, total_seconds):
-    """Assign each reviewed clip an equal share of the recitation duration.
-
-    Every clip is used before any clip repeats, so a Short built from three
-    clips shows three different scenes instead of one clip looping.
-    """
+def split_background_segments(clips, total_seconds, scene_boundaries=None):
+    """Split a Short at phrase-aligned scene boundaries when provided."""
     if not clips:
         raise ValueError("A background playlist needs at least one reviewed clip")
     total = float(total_seconds)
     if not math.isfinite(total) or total <= 0:
         raise ValueError("Background segments need a positive duration")
-    share = total / len(clips)
-    return [(clip, share) for clip in clips]
+    if scene_boundaries is None:
+        share = total / len(clips)
+        return [(clip, share) for clip in clips]
+    boundaries = [float(value) for value in scene_boundaries]
+    if len(boundaries) != len(clips) - 1:
+        raise ValueError("Background scene-boundary count does not match the playlist")
+    edges = [0.0, *boundaries, total]
+    if any(not math.isfinite(value) for value in edges):
+        raise ValueError("Background scene boundaries must be finite")
+    lengths = [right - left for left, right in zip(edges, edges[1:])]
+    if any(length < 6.0 for length in lengths):
+        raise ValueError("Background scenes must last at least six seconds")
+    return list(zip(clips, lengths))
 
 
 def submit_video(source, theme, queue_path, title, attribution, rights, *, min_duration=30,
@@ -434,12 +441,17 @@ def render(item, base, folder):
         chains = []
         segment_lengths = []
         crossfade = 0.35
-        for index, (clip, share) in enumerate(split_background_segments(playlist, item["duration"])):
+        for index, (clip, share) in enumerate(split_background_segments(playlist, item["duration"], item.get("background_scene_boundaries"))):
             segment_lengths.append(float(share) + (crossfade if index else 0.0))
             chains.append(
-                f"[{index}:v]scale=1120:1992:flags=lanczos:force_original_aspect_ratio=increase,"
-                f"crop=1080:1920:x='20+12*sin(t/5)':y='36+10*cos(t/6)',setsar=1,fps=30,"
-                f"trim=duration={segment_lengths[-1]:.3f},setpts=PTS-STARTPTS,settb=1/30,format=yuv420p,fps=30[seg{index}]")
+                f"[{index}:v]split=2[bgsrc{index}][fgsrc{index}];"
+                f"[bgsrc{index}]scale=1120:1992:flags=lanczos:force_original_aspect_ratio=increase,"
+                f"crop=1080:1920:x='20+12*sin(t/5)':y='36+10*cos(t/6)',"
+                f"boxblur=32:2,eq=brightness=-0.04:saturation=0.85[blurred{index}];"
+                f"[fgsrc{index}]scale=1080:1920:flags=lanczos:force_original_aspect_ratio=decrease[front{index}];"
+                f"[blurred{index}][front{index}]overlay=(W-w)/2:(H-h)/2:shortest=1,"
+                f"setsar=1,fps=30,trim=duration={segment_lengths[-1]:.3f},"
+                f"setpts=PTS-STARTPTS,settb=1/30,format=yuv420p,fps=30[seg{index}]")
         current = "seg0"
         elapsed = segment_lengths[0] if segment_lengths else float(item["duration"])
         for index in range(1, len(segment_lengths)):
@@ -453,7 +465,8 @@ def render(item, base, folder):
         chains.append(f"[{current}]trim=duration={float(item['duration']):.3f},setpts=PTS-STARTPTS[basev]")
         current = "basev"
         if card_index is not None:
-            card_end = max(0.0, float(reveal_layers[0].get("start", 3.5)) - 0.35)
+            intro_seconds = float(item.get("intro_card_seconds", 2.6))
+            card_end = max(0.0, intro_seconds - 0.35)
             chains.append(
                 f"[{card_index}:v]format=rgba,fade=t=in:st=0:d=0.35:alpha=1,"
                 f"fade=t=out:st={card_end:.3f}:d=0.35:alpha=1[card]")

@@ -319,7 +319,7 @@ class CloudTests(unittest.TestCase):
         entry = dict(ENTRY, verse_number=3, verse_key='112:3', ayah_text='لَمْ يَلِدْ وَلَمْ يُولَدْ',
                      reciter_en='Test Reciter', style='Murattal', recitation_id=1)
         job = cloud.item_for(entry, self.root / 'audio.mp3', self.root / 'card.png')
-        self.assertIn('سورة الإخلاص، الآية 3', job['title'])
+        self.assertIn('سورة الإخلاص، الآية ٣', job['title'])
         self.assertIn('Surah Al-Ikhlas, Ayah 3', job['title'])
         parts = job['description'].split('\n\n')
         self.assertEqual(parts[0], entry['ayah_text'])
@@ -333,7 +333,7 @@ class CloudTests(unittest.TestCase):
                      ayah_text='test range text', reciter_en='Test Reciter',
                      style='Murattal', recitation_id=1)
         job = cloud.item_for(entry, self.root / 'audio.mp3', self.root / 'card.png')
-        self.assertIn('الآيات 141–142', job['title'])
+        self.assertIn('الآيات ١٤١–١٤٢', job['title'])
         self.assertIn('Ayahs 141–142', job['title'])
         self.assertIn('Ayahs 141–142', job['description'])
         self.assertEqual((job['verse_start'], job['verse_end']), (141, 142))
@@ -363,7 +363,31 @@ class CloudTests(unittest.TestCase):
         image = Image.open(card)
         self.assertEqual(image.mode, 'RGBA')
         self.assertEqual(image.getpixel((0, 0))[3], 0)
-        self.assertGreater(image.getpixel((100, 600))[3], 0)
+        self.assertEqual(image.getpixel((100, 600))[3], 0)
+        self.assertIsNotNone(image.getchannel('A').getbbox())
+
+    def test_quran_word_segments_drive_phrase_reveal_timing(self):
+        font_source = Path(__file__).resolve().parents[1] / 'assets' / 'Amiri-Regular.ttf'
+        font_target = self.root / 'assets' / 'Amiri-Regular.ttf'
+        font_target.parent.mkdir(parents=True)
+        font_target.write_bytes(font_source.read_bytes())
+        entry = {
+            'ayah_text': 'قُلْ هُوَ اللَّهُ',
+            'duration': 35,
+            'word_segments': [[1, 200, 700], [2, 900, 1300], [3, 1900, 3100]],
+        }
+        layers = cloud.make_word_reveal_layers(entry, self.root / 'word-reveal')
+        self.assertEqual(entry['word_timing_mode'], 'quran_foundation_word_segments')
+        self.assertEqual([(layer['start'], layer['end']) for layer in layers],
+                         [(0.2, 0.9), (0.9, 1.9), (1.9, 35.0)])
+        self.assertEqual(entry['word_reveal_intro_seconds'], 2.6)
+        self.assertTrue(all(Path(layer['path']).is_file() for layer in layers))
+
+    def test_invalid_quran_word_segments_fall_back_to_estimated_timing(self):
+        self.assertEqual(cloud.normalize_word_segments(
+            [[1, 200, 700], [3, 900, 1300]], 2, 35), [])
+        self.assertEqual(cloud.normalize_word_segments(
+            [[1, 200, 700], [2, 900, 36000]], 2, 35), [])
 
     def test_real_video_background_is_selected_for_theme(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -380,6 +404,50 @@ class CloudTests(unittest.TestCase):
                 self.assertNotIn('motion_overlay', job)
             finally:
                 cloud.ROOT = original
+
+    def test_background_playlist_avoids_previously_used_clips(self):
+        with tempfile.TemporaryDirectory() as temp:
+            pool = []
+            for index in range(8):
+                clip = Path(temp) / f'cinematic_coast_{index}.mp4'
+                clip.write_bytes(b'video')
+                pool.append(clip)
+            selected, reused_clip, reused_plan = cloud.choose_background_playlist(
+                'job-next', pool[0], pool[:5], pool, count=3)
+            self.assertEqual(len(selected), 3)
+            self.assertEqual(len(set(selected)), 3)
+            self.assertTrue(set(selected).isdisjoint(set(pool[:5])))
+            self.assertFalse(reused_clip)
+            self.assertFalse(reused_plan)
+
+    def test_background_playlist_changes_order_after_clip_pool_cycle(self):
+        with tempfile.TemporaryDirectory() as temp:
+            pool = []
+            for index in range(4):
+                clip = Path(temp) / f'cinematic_forest_{index}.mp4'
+                clip.write_bytes(b'video')
+                pool.append(clip)
+            prior = [pool[0], pool[1], pool[2]]
+            selected, reused_clip, reused_plan = cloud.choose_background_playlist(
+                'job-cycle', pool[0], prior, pool, used_playlists=[prior], count=3)
+            self.assertEqual(len(set(selected)), 3)
+            self.assertTrue(reused_clip)
+            self.assertFalse(reused_plan)
+            self.assertNotEqual(selected, prior)
+
+    def test_scene_cuts_follow_phrase_boundaries_and_keep_scenes_long(self):
+        layers = [{'end': end} for end in (4.5, 9.6, 13.0, 18.0, 22.1, 27.0, 32.0)]
+        boundaries = cloud.choose_scene_cuts(36, 3, layers)
+        self.assertEqual(boundaries, [13.0, 22.1])
+        segments = bot.split_background_segments(['a.mp4', 'b.mp4', 'c.mp4'], 36, boundaries)
+        self.assertEqual([round(length, 1) for _, length in segments], [13.0, 9.1, 13.9])
+        self.assertTrue(all(length >= 6 for _, length in segments))
+
+    def test_scene_boundaries_must_match_playlist_and_minimum_duration(self):
+        with self.assertRaisesRegex(ValueError, 'count'):
+            bot.split_background_segments(['a.mp4', 'b.mp4', 'c.mp4'], 36, [12.0])
+        with self.assertRaisesRegex(ValueError, 'six seconds'):
+            bot.split_background_segments(['a.mp4', 'b.mp4', 'c.mp4'], 36, [2.0, 20.0])
 
     def test_claim_detection_blocks_reciter_and_records_incident(self):
         self.ledger.data['jobs'] = {'job': {'status': 'uploaded', 'video_id': 'blocked-video',
