@@ -398,6 +398,7 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(image.getpixel((50, 960))[3], 0)
         self.assertGreaterEqual(image.getpixel((100, 960))[3], 150)
         self.assertIn('سورة الإخلاص', rendered_text)
+        self.assertIn('Surah Al-Ikhlas', rendered_text)
         self.assertIn('الآية ٣', rendered_text)
         self.assertIn('لَمْ يَلِدْ وَلَمْ يُولَدْ', rendered_text)
         self.assertIn('اسم القارئ', rendered_text)
