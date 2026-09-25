@@ -601,11 +601,19 @@ def download_quran_foundation(entry, destination):
     return destination
 
 
+def arabic_font_path():
+    """Return the configured font, falling back to the source tree in isolated tests."""
+    candidate = ROOT / 'assets' / 'Amiri-Regular.ttf'
+    if candidate.is_file():
+        return candidate
+    return Path(__file__).resolve().parent / 'assets' / 'Amiri-Regular.ttf'
+
+
 def make_card(entry, destination):
     """Render the Arabic-only intro card; the ayah itself is revealed separately."""
     from PIL import Image, ImageDraw
     from arabic_text import ArabicText
-    font = ROOT / 'assets' / 'Amiri-Regular.ttf'
+    font = arabic_font_path()
     if not font.is_file():
         raise FileNotFoundError('Arabic font missing: assets/Amiri-Regular.ttf')
     image = Image.new('RGBA', (1080, 1920), (0, 0, 0, 0))
@@ -632,7 +640,7 @@ def make_word_reveal_layers(entry, destination):
     """
     from PIL import Image, ImageFilter
     from arabic_text import ArabicText
-    font = ROOT / 'assets' / 'Amiri-Regular.ttf'
+    font = arabic_font_path()
     if not font.is_file():
         raise FileNotFoundError('Arabic font missing: assets/Amiri-Regular.ttf')
     words = str(entry.get('ayah_text') or '').split()
