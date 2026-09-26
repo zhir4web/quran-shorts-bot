@@ -109,8 +109,8 @@ class CloudTests(unittest.TestCase):
                                      'name_arabic': 'Test', 'name_simple': 'Test'}]}
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'test text'}]}
-            if '/translations/131' in url:
-                verse = params.get('verse_key')
+            if '/verses/by_key/' in url:
+                verse = url.rsplit('/', 1)[-1]
                 return {'translations': [{'resource_id': 131, 'language_name': 'english',
                                          'verse_key': verse, 'text': 'A test English meaning.'}]}
             return {'audio_files': [{'duration': 6 if url.endswith('1:1') else 35,
@@ -121,7 +121,7 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(cursor, 2)
         self.assertEqual(entry['min_audio_seconds'], 30)
 
-    def test_translation_uses_quran_foundation_translation_resource(self):
+    def test_translation_uses_public_verse_translation_resource(self):
         catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
                    'tail_silence_seconds': 1, 'max_ayah_characters': 180,
                    'permission_url': 'https://example.com/license', 'attribution': 'test',
@@ -139,10 +139,11 @@ class CloudTests(unittest.TestCase):
                 return {'audio_files': [{'duration': 35, 'url': 'test.mp3'}]}
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'verse_key': '1:1', 'text_uthmani': 'test text'}]}
-            if '/translations/131' in url:
+            if '/verses/by_key/' in url:
                 requested.append((url, params))
-                return {'translations': [{'resource_id': 131, 'language_name': 'english',
-                                          'verse_key': '1:1', 'text': 'A verified meaning.'}]}
+                return {'verse_key': '1:1', 'translations': [
+                    {'resource_id': 131, 'language_name': 'english',
+                     'verse_key': '1:1', 'text': 'A verified meaning.'}]}
             raise AssertionError(f'Unexpected Quran API request: {url}')
 
         with patch.object(cloud, 'get_json', side_effect=api):
@@ -151,7 +152,9 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(entry['ayah_translation'], 'A verified meaning.')
         self.assertEqual(entry['translation_resource_id'], 131)
         self.assertEqual(len(requested), 1)
-        self.assertEqual(requested[0][1]['verse_key'], '1:1')
+        self.assertTrue(requested[0][0].endswith('/verses/by_key/1:1'))
+        self.assertEqual(requested[0][1]['translations'], '131')
+        self.assertEqual(requested[0][1]['translation_fields'], 'verse_key,language_name')
 
     def test_verse_search_scans_beyond_initial_180_candidates(self):
         catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
@@ -175,8 +178,8 @@ class CloudTests(unittest.TestCase):
                 return {'audio_files': [{'duration': 35, 'url': 'test.mp3'}]}
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'test text'}]}
-            if '/translations/131' in url:
-                verse = params.get('verse_key')
+            if '/verses/by_key/' in url:
+                verse = url.rsplit('/', 1)[-1]
                 return {'translations': [{'resource_id': 131, 'language_name': 'english',
                                          'verse_key': verse, 'text': 'A test English meaning.'}]}
             raise AssertionError(f'Unexpected Quran API request: {url}')
@@ -315,8 +318,8 @@ class CloudTests(unittest.TestCase):
                 return {'chapters': chapters}
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ'}]}
-            if '/translations/131' in url:
-                verse = params.get('verse_key')
+            if '/verses/by_key/' in url:
+                verse = url.rsplit('/', 1)[-1]
                 return {'translations': [{'resource_id': 131, 'language_name': 'english',
                                          'verse_key': verse, 'text': 'In the name of Allah, the Most Merciful. <sup foot_note="1">1</sup>'}]}
             verse = url.rsplit('/', 1)[-1]
@@ -354,8 +357,8 @@ class CloudTests(unittest.TestCase):
                 return {'chapters': chapters}
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'قُلْ هُوَ اللَّهُ أَحَدٌ'}]}
-            if '/translations/131' in url:
-                verse = params.get('verse_key')
+            if '/verses/by_key/' in url:
+                verse = url.rsplit('/', 1)[-1]
                 return {'translations': [{'resource_id': 131, 'language_name': 'english',
                                          'verse_key': verse, 'text': 'A test English meaning.'}]}
             return {'audio_files': [{'duration': 35, 'url': 'safe/test.mp3'}]}

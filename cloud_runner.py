@@ -398,27 +398,20 @@ def verse_entry_for_position(catalog, jobs, position):
         if not ayah_text or len(ayah_text) > catalog['max_ayah_characters']:
             rejected['arabic_text_unavailable_or_too_long'] += 1
             continue
-        # Use the dedicated translation endpoint documented by Quran Foundation.
-        # The older verse-by-key response has varied between nested and flat
-        # translation payloads, so accept either response shape during migration.
+        # The established verse endpoint includes the requested translation in the
+        # same public v4 response and does not require separate Content API credentials.
         translation_payload = get_json(
-            urljoin(QURAN_API, f'translations/{ENGLISH_TRANSLATION_ID}'),
-            {'verse_key': expected_key, 'fields': 'verse_key,language_name'})
-        translation_rows = translation_payload.get('translations', [])
+            urljoin(QURAN_API, f'verses/by_key/{expected_key}'),
+            {'translations': str(ENGLISH_TRANSLATION_ID),
+             'translation_fields': 'verse_key,language_name'})
+        translated_verse = translation_payload.get('verse', translation_payload)
+        returned_key = translated_verse.get('verse_key') or translation_payload.get('verse_key')
+        if returned_key not in (None, expected_key):
+            raise ValueError('English translation does not match the requested verse')
+        translation_rows = (
+            translated_verse.get('translations') or translation_payload.get('translations') or [])
         translation_row = next((row for row in translation_rows
                                 if str(row.get('resource_id')) == str(ENGLISH_TRANSLATION_ID)), None)
-        if not translation_row:
-            # Compatibility fallback for Quran Foundation's legacy verse endpoint.
-            legacy_payload = get_json(
-                urljoin(QURAN_API, f'verses/by_key/{expected_key}'),
-                {'translations': str(ENGLISH_TRANSLATION_ID),
-                 'translation_fields': 'verse_key,language_name'})
-            translated_verse = legacy_payload.get('verse', legacy_payload)
-            if (translated_verse.get('verse_key') not in (None, expected_key)):
-                raise ValueError('English translation does not match the requested verse')
-            legacy_rows = translated_verse.get('translations', [])
-            translation_row = next((row for row in legacy_rows
-                                    if str(row.get('resource_id')) == str(ENGLISH_TRANSLATION_ID)), None)
         if translation_row and translation_row.get('verse_key') not in (None, expected_key):
             raise ValueError('English translation does not match the requested verse')
         if (translation_row and
