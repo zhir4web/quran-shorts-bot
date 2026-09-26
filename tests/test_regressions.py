@@ -184,7 +184,9 @@ class BoundaryTests(unittest.TestCase):
                     {'resource_id': 131, 'language_name': 'english',
                      'text': 'He is One.'}]}}
             calls.append(url)
-            return {'audio_files': [{'duration': 6 if '/recitations/1/' in url else 35, 'url': 'safe.mp3'}]}
+            if '/recitations/1/' in url:
+                return {'audio_files': []}
+            return {'audio_files': [{'duration': 35, 'url': 'safe.mp3'}]}
 
         jobs = {'a': {'reciter_id': 2}, 'b': {'reciter_id': 2}}
         with patch.object(cloud, 'get_json', side_effect=api):

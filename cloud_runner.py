@@ -312,6 +312,34 @@ def _reciter_order(reciters, jobs, position, catalog):
     return [item[4] for item in ranked]
 
 
+def passage_overlaps_jobs(jobs, chapter_id, verse_start, verse_end):
+    """Return True when a previously uploaded/in-flight ayah overlaps this passage."""
+    chapter_id = int(chapter_id)
+    verse_start, verse_end = int(verse_start), int(verse_end)
+    for job_id, row in jobs.items():
+        if not isinstance(row, dict) or row.get('status') not in ('uploaded', 'uploading'):
+            continue
+        existing_chapter = row.get('chapter_id')
+        existing_start = row.get('verse_start')
+        existing_end = row.get('verse_end')
+        match = re.fullmatch(
+            r'qf-v-r\d+-a(\d+)-(\d+)(?:-to-(\d+))?', str(job_id))
+        if match:
+            existing_chapter = existing_chapter or match.group(1)
+            existing_start = existing_start or match.group(2)
+            existing_end = existing_end or match.group(3) or match.group(2)
+        try:
+            existing_chapter = int(existing_chapter)
+            existing_start = int(existing_start)
+            existing_end = int(existing_end if existing_end is not None else existing_start)
+        except (TypeError, ValueError):
+            continue
+        if (existing_chapter == chapter_id and
+                existing_start <= verse_end and existing_end >= verse_start):
+            return True
+    return False
+
+
 def verse_entry_for_position(catalog, jobs, position):
     print('Loading Quran Foundation reciter and chapter metadata...', flush=True)
     english = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'en'}).get('recitations', [])
@@ -337,6 +365,13 @@ def verse_entry_for_position(catalog, jobs, position):
     candidate_limit = min(total_verses * len(english), max_candidates)
     deadline = time.monotonic() + search_timeout
     ordered_reciters = _reciter_order(english, jobs, position, catalog)
+    min_duration = max(30.0, float(catalog.get('min_audio_seconds', 30)))
+    max_duration = float(catalog['max_audio_seconds'])
+    max_ayah_characters = int(catalog['max_ayah_characters'])
+    try:
+        max_passage_verses = min(24, max(1, int(catalog.get('max_passage_verses', 16))))
+    except (TypeError, ValueError):
+        max_passage_verses = 16
     rejected = {
         'already_published': 0,
         'audio_unavailable': 0,
@@ -344,17 +379,86 @@ def verse_entry_for_position(catalog, jobs, position):
         'arabic_text_unavailable_or_too_long': 0,
         'english_translation_unavailable_or_too_long': 0,
     }
+
+    def fetch_audio(reciter_id, chapter_id, verse_number):
+        expected_key = f'{chapter_id}:{verse_number}'
+        payload = get_json(
+            urljoin(QURAN_API, f'recitations/{reciter_id}/by_ayah/{expected_key}'),
+            {'fields': 'chapter_id,verse_number,verse_key,duration,url,segments'})
+        files = payload.get('audio_files', [])
+        if len(files) != 1:
+            return None
+        audio = files[0]
+        if audio.get('verse_key', expected_key) != expected_key:
+            raise ValueError('Audio verse does not match the requested verse')
+        try:
+            duration = float(audio.get('duration') or 0)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(duration) or duration <= 0:
+            return None
+        try:
+            audio_url = quran_audio_url(audio.get('url', ''))
+        except ValueError:
+            return None
+        return {'verse_key': expected_key, 'verse_number': verse_number,
+                'duration': duration, 'audio_url': audio_url,
+                'segments': audio.get('segments')}
+
+    def fetch_texts(chapter_id, audio_parts):
+        arabic_texts = []
+        translations = []
+        for part in audio_parts:
+            expected_key = part['verse_key']
+            text_payload = get_json(
+                urljoin(QURAN_API, 'quran/verses/uthmani'),
+                {'verse_key': expected_key})
+            text_rows = text_payload.get('verses', [])
+            if len(text_rows) != 1:
+                return None
+            if text_rows[0].get('verse_key', expected_key) != expected_key:
+                raise ValueError('Quran text does not match the requested verse')
+            arabic_text = str(text_rows[0].get('text_uthmani') or '').strip()
+            if not arabic_text:
+                return None
+            arabic_number = str(part['verse_number']).translate(
+                str.maketrans('0123456789', '٠١٢٣٤٥٦٧٨٩'))
+            arabic_texts.append(arabic_text if len(audio_parts) == 1 else
+                                f'{arabic_text} ۝{arabic_number}')
+
+            translation_payload = get_json(
+                urljoin(QURAN_API, f'verses/by_key/{expected_key}'),
+                {'translations': str(ENGLISH_TRANSLATION_ID),
+                 'translation_fields': 'verse_key,language_name'})
+            translated_verse = translation_payload.get('verse', translation_payload)
+            returned_key = translated_verse.get('verse_key') or translation_payload.get('verse_key')
+            if returned_key not in (None, expected_key):
+                raise ValueError('English translation does not match the requested verse')
+            translation_rows = (
+                translated_verse.get('translations') or translation_payload.get('translations') or [])
+            translation_row = next((row for row in translation_rows
+                                    if str(row.get('resource_id')) == str(ENGLISH_TRANSLATION_ID)), None)
+            if translation_row and translation_row.get('verse_key') not in (None, expected_key):
+                raise ValueError('English translation does not match the requested verse')
+            if (translation_row and
+                    str(translation_row.get('language_name') or 'english').casefold() != 'english'):
+                translation_row = None
+            translation = clean_translation_text(translation_row.get('text')) if translation_row else ''
+            if not translation:
+                return None
+            translations.append(translation)
+        arabic = ' '.join(arabic_texts)
+        english = ' / '.join(translations)
+        return arabic, english
+
     for attempt in range(candidate_limit):
         if time.monotonic() >= deadline:
             raise NoEligibleVerse(position, attempt, timed_out=True, rejected=rejected)
         if attempt == 0 or (attempt + 1) % 100 == 0:
-            print(f'Checking complete-verse candidate {attempt + 1}/{candidate_limit}...', flush=True)
-        # Try other reciters when the preferred one's candidates are unsuitable.
+            print(f'Checking complete-passage candidate {attempt + 1}/{candidate_limit}...', flush=True)
         reciter = ordered_reciters[attempt % len(ordered_reciters)]
         reciter_index = english.index(reciter)
         batch = position // len(english)
-        # Every adjacent post changes both reciter and verse. Each reciter still
-        # visits every Quran verse exactly once before the sequence repeats.
         verse_index = (batch + reciter_index * 521) % total_verses
         remaining = verse_index
         chapter = None
@@ -367,85 +471,82 @@ def verse_entry_for_position(catalog, jobs, position):
             remaining -= count
         reciter_id = reciter['id']
         chapter_id = int(chapter['id'])
-        key = f'qf-v-r{reciter_id}-a{chapter_id}-{verse_number}'
-        next_position = position + 1
-        position = next_position
-        if key in jobs:
-            rejected['already_published'] += 1
-            continue
-        payload = get_json(urljoin(QURAN_API, f'recitations/{reciter_id}/by_ayah/{chapter_id}:{verse_number}'),
-                           {'fields': 'chapter_id,verse_number,verse_key,duration,url,segments'})
-        files = payload.get('audio_files', [])
-        if len(files) != 1:
+        verse_count = int(chapter['verses_count'])
+        candidate_position = position
+        position += 1
+
+        first_audio = fetch_audio(reciter_id, chapter_id, verse_number)
+        if first_audio is None:
             rejected['audio_unavailable'] += 1
             continue
-        audio = files[0]
-        hint = float(audio.get('duration') or 0)
-        if not float(catalog.get('min_audio_seconds', 30)) <= hint <= float(catalog['max_audio_seconds']):
+        audio_parts = [first_audio]
+        total_duration = first_audio['duration']
+        if total_duration > max_duration:
             rejected['duration_out_of_range'] += 1
             continue
-        relative_url = audio.get('url', '')
-        audio_url = quran_audio_url(relative_url)
-        expected_key = f'{chapter_id}:{verse_number}'
-        if audio.get('verse_key', expected_key) != expected_key:
-            raise ValueError('Audio verse does not match the requested verse')
-        text_payload = get_json(urljoin(QURAN_API, 'quran/verses/uthmani'),
-                                {'verse_key': f'{chapter_id}:{verse_number}'})
-        text_rows = text_payload.get('verses', [])
-        if len(text_rows) == 1 and text_rows[0].get('verse_key', expected_key) != expected_key:
-            raise ValueError('Quran text does not match the requested verse')
-        ayah_text = text_rows[0].get('text_uthmani', '').strip() if len(text_rows) == 1 else ''
-        if not ayah_text or len(ayah_text) > catalog['max_ayah_characters']:
-            rejected['arabic_text_unavailable_or_too_long'] += 1
+
+        # Some QF recordings are short per ayah. Combine only consecutive complete
+        # ayahs from this same reciter and Surah until the whole passage reaches 30s.
+        while total_duration < min_duration and len(audio_parts) < max_passage_verses:
+            next_verse = verse_number + len(audio_parts)
+            if next_verse > verse_count:
+                break
+            next_audio = fetch_audio(reciter_id, chapter_id, next_verse)
+            if next_audio is None:
+                break
+            if total_duration + next_audio['duration'] > max_duration:
+                break
+            audio_parts.append(next_audio)
+            total_duration += next_audio['duration']
+        if total_duration < min_duration or total_duration > max_duration:
+            rejected['duration_out_of_range'] += 1
             continue
-        # The established verse endpoint includes the requested translation in the
-        # same public v4 response and does not require separate Content API credentials.
-        translation_payload = get_json(
-            urljoin(QURAN_API, f'verses/by_key/{expected_key}'),
-            {'translations': str(ENGLISH_TRANSLATION_ID),
-             'translation_fields': 'verse_key,language_name'})
-        translated_verse = translation_payload.get('verse', translation_payload)
-        returned_key = translated_verse.get('verse_key') or translation_payload.get('verse_key')
-        if returned_key not in (None, expected_key):
-            raise ValueError('English translation does not match the requested verse')
-        translation_rows = (
-            translated_verse.get('translations') or translation_payload.get('translations') or [])
-        translation_row = next((row for row in translation_rows
-                                if str(row.get('resource_id')) == str(ENGLISH_TRANSLATION_ID)), None)
-        if translation_row and translation_row.get('verse_key') not in (None, expected_key):
-            raise ValueError('English translation does not match the requested verse')
-        if (translation_row and
-                str(translation_row.get('language_name') or 'english').casefold() != 'english'):
-            translation_row = None
-        ayah_translation = clean_translation_text(translation_row.get('text')) if translation_row else ''
-        if not ayah_translation or len(ayah_translation) > 800:
+
+        verse_end = audio_parts[-1]['verse_number']
+        if passage_overlaps_jobs(jobs, chapter_id, verse_number, verse_end):
+            rejected['already_published'] += 1
+            continue
+        text_pair = fetch_texts(chapter_id, audio_parts)
+        if text_pair is None:
             rejected['english_translation_unavailable_or_too_long'] += 1
             continue
+        ayah_text, ayah_translation = text_pair
+        if len(ayah_text) > max_ayah_characters:
+            rejected['arabic_text_unavailable_or_too_long'] += 1
+            continue
+        if len(ayah_translation) > 800:
+            rejected['english_translation_unavailable_or_too_long'] += 1
+            continue
+
         style = reciter.get('style') or ''
         reciter_ar = arabic_names.get(reciter_id) or reciter.get('reciter_name')
+        passage_id = (f'qf-v-r{reciter_id}-a{chapter_id}-{verse_number}' if verse_number == verse_end else
+                      f'qf-v-r{reciter_id}-a{chapter_id}-{verse_number}-to-{verse_end}')
+        verse_key = (f'{chapter_id}:{verse_number}' if verse_number == verse_end else
+                     f'{chapter_id}:{verse_number}-{verse_end}')
         return ({
-            'id': key, 'source_type': 'quran_verse', 'recitation_id': reciter_id,
-            'audio_url': audio_url,
+            'id': passage_id, 'source_type': 'quran_passage' if len(audio_parts) > 1 else 'quran_verse',
+            'recitation_id': reciter_id,
+            'audio_url': audio_parts[0]['audio_url'],
+            'audio_urls': [part['audio_url'] for part in audio_parts],
             'surah_ar': chapter['name_arabic'], 'surah_en': chapter['name_simple'],
-            'verse_number': verse_number, 'verse_key': f'{chapter_id}:{verse_number}',
+            'chapter_id': chapter_id, 'verse_number': verse_number, 'verse_start': verse_number, 'verse_end': verse_end,
+            'verse_key': verse_key,
             'ayah_text': ayah_text, 'ayah_translation': ayah_translation,
             'translation_resource_id': ENGLISH_TRANSLATION_ID,
             'translation_credit': TRANSLATION_CREDIT,
-            'word_segments': audio.get('segments'),
+            'word_segments': audio_parts[0]['segments'] if len(audio_parts) == 1 else None,
             'reciter_ar': reciter_ar, 'reciter_en': reciter.get('reciter_name', ''), 'style': style,
             'permission_url': catalog['permission_url'], 'attribution': catalog['attribution'],
             'rights': catalog['rights'], 'verified': True, 'whole_recording': True,
-            'min_audio_seconds': max(30, float(catalog.get('min_audio_seconds', 30))),
-            'max_audio_seconds': float(catalog['max_audio_seconds']),
+            'duration': total_duration,
+            'min_audio_seconds': min_duration,
+            'max_audio_seconds': max_duration,
             'tail_silence_seconds': float(catalog['tail_silence_seconds']),
             'visual_style': catalog['visual_style'],
-            # Rotate scenes deterministically so adjacent Shorts cannot use the
-            # same visual theme, even after a restart.
-            'visual_theme': catalog['visual_themes'][(next_position - 1) % len(catalog['visual_themes'])],
-        }, next_position)
+            'visual_theme': catalog['visual_themes'][candidate_position % len(catalog['visual_themes'])],
+        }, position)
     raise NoEligibleVerse(position, candidate_limit, rejected=rejected)
-
-
 def load_catalog(path):
     data = bot.read_json(path)
     if not isinstance(data, dict):
@@ -479,6 +580,8 @@ def load_catalog(path):
 
 
 def download_recording(entry, destination):
+    if entry.get('source_type') == 'quran_passage':
+        return download_quran_passage(entry, destination)
     if entry.get('source_type') == 'quran_verse':
         return download_quran_verse(entry, destination)
     if entry.get('source_type') == 'quran_foundation':
@@ -580,6 +683,61 @@ def media_duration(path):
         raise RuntimeError('Cannot measure the complete audio recording')
     hours, minutes, seconds = match.groups()
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def download_quran_passage(entry, destination):
+    """Download consecutive complete ayahs and join them in one final audio encode."""
+    audio_urls = entry.get('audio_urls')
+    if not isinstance(audio_urls, list) or len(audio_urls) < 2 or len(audio_urls) > 24:
+        raise ValueError('A Quran passage must contain between 2 and 24 verified audio parts')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    parts = []
+    total_bytes = 0
+    for index, audio_url in enumerate(audio_urls, 1):
+        raw = destination.with_name(f'recitation-part-{index:02}.mp3')
+        response = requests.get(
+            audio_url, stream=True, timeout=(15, 60),
+            headers={'User-Agent': 'quran-shorts-bot/4.0'})
+        if response.status_code >= 400:
+            response.close()
+            raise RuntimeError(f'Verse audio source returned HTTP {response.status_code}')
+        part_bytes = 0
+        with response:
+            with raw.open('wb') as handle:
+                for block in response.iter_content(65536):
+                    part_bytes += len(block)
+                    total_bytes += len(block)
+                    if part_bytes > 20 * 1024 * 1024 or total_bytes > 50 * 1024 * 1024:
+                        raise ValueError('Quran passage audio exceeds the size limit')
+                    handle.write(block)
+        parts.append(raw)
+
+    measured_parts = [media_duration(part) for part in parts]
+    source_duration = sum(measured_parts)
+    minimum = max(30.0, float(entry.get('min_audio_seconds', 30)))
+    maximum = float(entry['max_audio_seconds'])
+    if source_duration < minimum:
+        raise TooShortRecording('Complete Quran passage is shorter than 30 seconds')
+    if source_duration > maximum:
+        raise TooLongRecording('Complete Quran passage is too long for a Short')
+
+    inputs = []
+    for part in parts:
+        inputs.extend(['-i', str(part)])
+    stream_labels = ''.join(f'[{index}:a]' for index in range(len(parts)))
+    filters = (stream_labels + f'concat=n={len(parts)}:v=0:a=1[joined];'
+               f'[joined]apad=pad_dur={float(entry["tail_silence_seconds"])}[out]')
+    temporary = destination.with_suffix('.part.mp3')
+    bot.run_media([
+        '-y', *inputs, '-filter_complex', filters, '-map', '[out]',
+        '-c:a', 'libmp3lame', '-b:a', '192k', str(temporary)])
+    padded = media_duration(temporary)
+    if padded > 60:
+        raise TooLongRecording('Quran passage with its ending exceeds the Shorts limit')
+    os.replace(temporary, destination)
+    entry['duration'] = round(padded, 2)
+    entry['sha256'] = bot.file_hash(destination)
+    return destination
 
 
 def download_quran_verse(entry, destination):
@@ -1893,6 +2051,9 @@ def run(args, ledger=None, service=None):
     jobs[entry['id']] = {'status': 'uploading', 'audio_sha256': entry['sha256'],
                          'reciter_id': entry.get('recitation_id'),
                          'reciter_name': entry.get('reciter_en'),
+                         'chapter_id': entry.get('chapter_id'),
+                         'verse_start': entry.get('verse_start', entry.get('verse_number')),
+                         'verse_end': entry.get('verse_end', entry.get('verse_number')),
                          'visual_theme': job.get('visual_theme'),
                          'background_playlist': job.get('background_playlist', []),
                          'word_timing_mode': job.get('word_timing_mode'),

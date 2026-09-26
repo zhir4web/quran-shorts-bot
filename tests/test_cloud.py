@@ -95,31 +95,88 @@ class CloudTests(unittest.TestCase):
                 else:
                     bot.validate_video(self.root / 'video.mp4', 30, minimum=30)
 
-    def test_six_second_api_candidate_is_skipped(self):
+    def test_short_consecutive_ayahs_form_a_complete_30_second_passage(self):
         catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
-                   'tail_silence_seconds': 1, 'max_ayah_characters': 180,
+                   'tail_silence_seconds': 1, 'max_ayah_characters': 240,
                    'permission_url': 'https://example.com/license', 'attribution': 'test',
                    'rights': 'test', 'visual_style': 'premium_rotating_scenes',
                    'visual_themes': ['forest_rain']}
+        requested_audio = []
+
         def api(url, params=None):
             if 'resources/recitations' in url:
                 return {'recitations': [{'id': 1, 'reciter_name': 'Test'}]}
             if url.endswith('/chapters'):
                 return {'chapters': [{'id': 1, 'verses_count': 6236,
-                                     'name_arabic': 'Test', 'name_simple': 'Test'}]}
+                                      'name_arabic': 'سورة اختبار', 'name_simple': 'Test'}]}
+            if '/recitations/1/by_ayah/' in url:
+                key = url.rsplit('/', 1)[-1]
+                requested_audio.append(key)
+                return {'audio_files': [{'verse_key': key, 'duration': 16,
+                                         'url': key.replace(':', '-') + '.mp3'}]}
             if 'quran/verses/uthmani' in url:
-                return {'verses': [{'text_uthmani': 'test text'}]}
+                key = params['verse_key']
+                return {'verses': [{'verse_key': key, 'text_uthmani': 'نَصٌّ قُرْآنِيٌّ'}]}
             if '/verses/by_key/' in url:
-                verse = url.rsplit('/', 1)[-1]
-                return {'translations': [{'resource_id': 131, 'language_name': 'english',
-                                         'verse_key': verse, 'text': 'A test English meaning.'}]}
-            return {'audio_files': [{'duration': 6 if url.endswith('1:1') else 35,
-                                     'url': 'test.mp3'}]}
+                key = url.rsplit('/', 1)[-1]
+                return {'verse_key': key, 'translations': [
+                    {'resource_id': 131, 'language_name': 'english',
+                     'verse_key': key, 'text': 'A verified English meaning.'}]}
+            raise AssertionError(f'Unexpected Quran API request: {url}')
+
         with patch.object(cloud, 'get_json', side_effect=api):
             entry, cursor = cloud.verse_entry_for_position(catalog, {}, 0)
-        self.assertEqual(entry['verse_key'], '1:2')
-        self.assertEqual(cursor, 2)
-        self.assertEqual(entry['min_audio_seconds'], 30)
+
+        self.assertEqual(entry['source_type'], 'quran_passage')
+        self.assertEqual(entry['verse_key'], '1:1-2')
+        self.assertEqual((entry['verse_start'], entry['verse_end']), (1, 2))
+        self.assertEqual(entry['duration'], 32)
+        self.assertEqual(len(entry['audio_urls']), 2)
+        self.assertIn('۝٢', entry['ayah_text'])
+        self.assertEqual(entry['ayah_translation'].count(' / '), 1)
+        self.assertEqual(requested_audio, ['1:1', '1:2'])
+        self.assertEqual(cursor, 1)
+
+    def test_passage_audio_is_concatenated_and_encoded_once(self):
+        entry = {'source_type': 'quran_passage',
+                 'audio_urls': ['https://audio.example/1.mp3', 'https://audio.example/2.mp3'],
+                 'min_audio_seconds': 30, 'max_audio_seconds': 58,
+                 'tail_silence_seconds': 1}
+        response = Mock()
+        response.status_code = 200
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.iter_content.return_value = [b'audio']
+        durations = iter([15, 17, 33])
+
+        def write_output(command):
+            Path(command[-1]).write_bytes(b'joined audio')
+
+        with patch.object(cloud.requests, 'get', return_value=response) as request, \
+             patch.object(cloud, 'media_duration', side_effect=lambda path: next(durations)), \
+             patch.object(bot, 'run_media', side_effect=write_output) as media, \
+             patch.object(bot, 'file_hash', return_value='a' * 64):
+            destination = self.root / 'passage.mp3'
+            cloud.download_quran_passage(entry, destination)
+
+        self.assertTrue(destination.is_file())
+        self.assertEqual(request.call_count, 2)
+        media.assert_called_once()
+        command = media.call_args.args[0]
+        self.assertIn('-filter_complex', command)
+        self.assertIn('concat=n=2', command[command.index('-filter_complex') + 1])
+        self.assertEqual(entry['duration'], 33)
+        self.assertEqual(entry['sha256'], 'a' * 64)
+
+    def test_passage_selection_skips_ayahs_already_uploaded_or_uploading(self):
+        jobs = {
+            'qf-v-r9-a2-5-to-8': {'status': 'uploaded'},
+            'qf-v-r3-a2-12': {'status': 'uploading'},
+        }
+        self.assertTrue(cloud.passage_overlaps_jobs(jobs, 2, 7, 9))
+        self.assertTrue(cloud.passage_overlaps_jobs(jobs, 2, 12, 13))
+        self.assertFalse(cloud.passage_overlaps_jobs(jobs, 2, 9, 11))
+        self.assertFalse(cloud.passage_overlaps_jobs(jobs, 3, 5, 8))
 
     def test_translation_uses_public_verse_translation_resource(self):
         catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
