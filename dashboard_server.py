@@ -461,6 +461,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_GATEWAY, {'error': str(error) if isinstance(error, DashboardError) else 'Remote request failed'})
 
     def _serve_static(self, path):
+        path = urlparse(path).path
+        if path in ('/dashboard', '/dashboard/'):
+            path = '/'
+        elif path.startswith('/dashboard/'):
+            path = path[len('/dashboard'):]
         relative = 'index.html' if path in ('/', '') else path.lstrip('/')
         candidate = (DASHBOARD_ROOT / relative).resolve()
         try:
