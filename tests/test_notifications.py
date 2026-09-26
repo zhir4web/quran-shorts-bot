@@ -21,8 +21,7 @@ ENTRY = dict(id='sample-112', verified=True, whole_recording=True,
 
 
 def env(**overrides):
-    base = {'TELEGRAM_BOT_TOKEN': 'tok', 'TELEGRAM_CHAT_ID': '42',
-            'DISCORD_WEBHOOK_URL': 'https://discord.example/hook',
+    base = {'DISCORD_WEBHOOK_URL': 'https://discord.example/hook',
             'HEARTBEAT_URL': 'https://hc.example/ping/uuid'}
     base.update(overrides)
     return base
@@ -44,23 +43,9 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(notify('hello', env={}, session=client), [])
         client.post.assert_not_called()
 
-    def test_telegram_message_reaches_configured_chat(self):
-        client = session()
-        delivered = notify('Video published', kind='success',
-                           env=env(DISCORD_WEBHOOK_URL=''), session=client)
-        self.assertEqual(delivered, ['telegram'])
-        client.post.assert_called_once()
-        call = client.post.call_args
-        url, body = call[0][0], call[1]['json']
-        self.assertEqual(url, 'https://api.telegram.org/bottok/sendMessage')
-        self.assertEqual(body['chat_id'], '42')
-        self.assertIn('Video published', body['text'])
-        self.assertIn('✅', body['text'])
-
     def test_discord_message_uses_webhook_content(self):
         client = session()
-        delivered = notify('Render failed', kind='failure',
-                           env=env(TELEGRAM_BOT_TOKEN='', TELEGRAM_CHAT_ID=''), session=client)
+        delivered = notify('Render failed', kind='failure', env=env(), session=client)
         self.assertEqual(delivered, ['discord'])
         call = client.post.call_args
         url, body = call[0][0], call[1]['json']
@@ -70,16 +55,15 @@ class NotificationTests(unittest.TestCase):
 
     def test_plain_http_webhook_is_rejected_without_a_request(self):
         client = session()
-        delivered = notify('x', env=env(TELEGRAM_BOT_TOKEN='', TELEGRAM_CHAT_ID='',
-                                        DISCORD_WEBHOOK_URL='http://discord.example/hook'),
+        delivered = notify('x', env=env(DISCORD_WEBHOOK_URL='http://discord.example/hook'),
                            session=client)
         self.assertEqual(delivered, [])
         client.post.assert_not_called()
 
-    def test_channel_failure_never_blocks_the_other_channel(self):
+    def test_network_failure_is_swallowed(self):
         client = session()
-        client.post.side_effect = [TimeoutError(), Mock(status_code=204)]
-        self.assertEqual(notify('x', env=env(), session=client), ['discord'])
+        client.post.side_effect = TimeoutError()
+        self.assertEqual(notify('x', env=env(), session=client), [])
 
     def test_http_error_from_channel_is_swallowed(self):
         client = session(status=500)
@@ -87,21 +71,17 @@ class NotificationTests(unittest.TestCase):
 
     def test_keyed_events_are_delivered_once_per_process(self):
         client = session()
-        self.assertEqual(notify('x', key='upload:a', env=env(), session=client),
-                         ['telegram', 'discord'])
+        self.assertEqual(notify('x', key='upload:a', env=env(), session=client), ['discord'])
         self.assertEqual(notify('x', key='upload:a', env=env(), session=client), [])
-        self.assertEqual(client.post.call_count, 2)
+        self.assertEqual(client.post.call_count, 1)
 
     def test_unkeyed_events_repeat_every_time(self):
         client = session()
         notify('x', env=env(), session=client)
         notify('x', env=env(), session=client)
-        self.assertEqual(client.post.call_count, 4)
+        self.assertEqual(client.post.call_count, 2)
 
     def test_config_channel_flags(self):
-        self.assertTrue(Config(env=env()).telegram_ready)
-        self.assertFalse(Config(env={}).telegram_ready)
-        self.assertFalse(Config(env=env(TELEGRAM_CHAT_ID='')).telegram_ready)
         self.assertTrue(Config(env=env()).discord_ready)
         self.assertFalse(Config(env=env(DISCORD_WEBHOOK_URL='http://x/hook')).discord_ready)
         self.assertTrue(Config(env=env()).heartbeat_ready)
