@@ -324,11 +324,11 @@ def verse_entry_for_position(catalog, jobs, position):
     try:
         max_candidates = max(30, int(os.environ.get('QURAN_MAX_CANDIDATES', '1200')))
     except (TypeError, ValueError):
-        max_candidates = 180
+        max_candidates = 1200
     try:
         search_timeout = max(60.0, float(os.environ.get('QURAN_SEARCH_TIMEOUT_SECONDS', '900')))
     except (TypeError, ValueError):
-        search_timeout = 420.0
+        search_timeout = 900.0
     candidate_limit = min(total_verses * len(english), max_candidates)
     deadline = time.monotonic() + search_timeout
     ordered_reciters = _reciter_order(english, jobs, position, catalog)
