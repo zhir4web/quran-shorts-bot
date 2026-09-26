@@ -239,7 +239,7 @@
 
   function updateButtons() {
     const blocked = !state.overview?.channel?.enabled || state.overview?.health?.uncertain_uploads?.length > 0;
-    $('[data-action]').forEach((button) => { const mode = button.dataset.action; button.disabled = state.busy || !state.overview || (blocked && !['preview', 'report'].includes(mode)); });
+    $$('[data-action]').forEach((button) => { const mode = button.dataset.action; button.disabled = state.busy || !state.overview || (blocked && !['preview', 'report'].includes(mode)); });
     $('#manual-publish').disabled = state.busy || !state.overview || blocked;
   }
 
