@@ -122,6 +122,42 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(cursor, 2)
         self.assertEqual(entry['min_audio_seconds'], 30)
 
+    def test_verse_search_scans_beyond_initial_180_candidates(self):
+        catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
+                   'tail_silence_seconds': 1, 'max_ayah_characters': 180,
+                   'permission_url': 'https://example.com/license', 'attribution': 'test',
+                   'rights': 'test', 'visual_style': 'premium_rotating_scenes',
+                   'visual_themes': ['forest_rain']}
+        attempts = 0
+
+        def api(url, params=None):
+            nonlocal attempts
+            if 'resources/recitations' in url:
+                return {'recitations': [{'id': 1, 'reciter_name': 'Test'}]}
+            if url.endswith('/chapters'):
+                return {'chapters': [{'id': 1, 'verses_count': 6236,
+                                      'name_arabic': 'Test', 'name_simple': 'Test'}]}
+            if '/recitations/1/by_ayah/' in url:
+                attempts += 1
+                if attempts <= 180:
+                    return {'audio_files': []}
+                return {'audio_files': [{'duration': 35, 'url': 'test.mp3'}]}
+            if 'quran/verses/uthmani' in url:
+                return {'verses': [{'text_uthmani': 'test text'}]}
+            if '/verses/by_key/' in url:
+                verse = url.rsplit('/', 1)[-1]
+                return {'verse': {'verse_key': verse, 'translations': [
+                    {'resource_id': 131, 'language_name': 'english',
+                     'text': 'A test English meaning.'}]}}
+            raise AssertionError(f'Unexpected Quran API request: {url}')
+
+        with patch.object(cloud, 'get_json', side_effect=api):
+            entry, cursor = cloud.verse_entry_for_position(catalog, {}, 0)
+
+        self.assertEqual(attempts, 181)
+        self.assertEqual(cursor, 181)
+        self.assertEqual(entry['verse_key'], '1:181')
+
     def test_write_ahead_then_upload_then_completion(self):
         events = []
         self.ledger.save.side_effect = lambda: events.append(self.ledger.data['jobs'][ENTRY['id']]['status'])
