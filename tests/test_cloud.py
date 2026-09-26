@@ -802,47 +802,47 @@ class ScheduleTests(unittest.TestCase):
     def now(self, hour, minute=0, day=18):
         return datetime(2026, 9, day, hour, minute, tzinfo=cloud.BAGHDAD)
 
-    def row(self, hour=5, slot='2026-09-18/05:00'):
+    def row(self, hour=6, slot='2026-09-18/06:00'):
         return {'status': 'uploaded', 'video_id': 'test',
                 'uploaded_at': self.now(hour).isoformat(), 'schedule_slot': slot}
 
     def test_baghdad_boundary_and_utc_conversion(self):
-        self.assertIsNone(cloud.next_schedule_slot({}, self.now(4, 59)))
-        self.assertEqual(cloud.next_schedule_slot({}, self.now(5).astimezone(timezone.utc)),
-                         '2026-09-18/05:00')
+        self.assertIsNone(cloud.next_schedule_slot({}, self.now(5, 59)))
+        self.assertEqual(cloud.next_schedule_slot({}, self.now(6).astimezone(timezone.utc)),
+                         '2026-09-18/06:00')
         self.assertEqual(cloud.next_schedule_slot({}, self.now(22)),
-                         '2026-09-18/05:00')
+                         '2026-09-18/06:00')
         self.assertIsNone(cloud.next_schedule_slot({}, self.now(2)))
 
     def test_late_heartbeat_catches_up_after_final_target(self):
         self.assertEqual(cloud.next_schedule_slot({}, self.now(23, 45)),
-                         '2026-09-18/05:00')
+                         '2026-09-18/06:00')
 
     def test_duplicate_triggers_wait_for_next_slot(self):
         jobs = {'a': self.row()}
         self.assertIsNone(cloud.next_schedule_slot(jobs, self.now(8)))
-        self.assertEqual(cloud.next_schedule_slot(jobs, self.now(10)), '2026-09-18/09:00')
+        self.assertEqual(cloud.next_schedule_slot(jobs, self.now(12)), '2026-09-18/12:00')
 
     def test_delayed_run_catches_oldest_slot_and_daily_cap(self):
         jobs = {}
-        for hour in (5, 9, 15):
+        for hour in (6, 12, 18):
             slot = f'2026-09-18/{hour:02d}:00'
             self.assertEqual(cloud.next_schedule_slot(jobs, self.now(21)), slot)
             jobs[str(hour)] = self.row(hour, slot)
         self.assertIsNone(cloud.next_schedule_slot(jobs, self.now(21)))
         self.assertEqual(cloud.next_schedule_slot(jobs, self.now(11, day=19)),
-                         '2026-09-19/05:00')
+                         '2026-09-19/06:00')
 
     def test_legacy_daytime_upload_counts_but_overnight_test_does_not(self):
         self.assertIsNone(cloud.next_schedule_slot({'a': self.row(slot='')}, self.now(8)))
         self.assertEqual(cloud.next_schedule_slot({'a': self.row(3, '')}, self.now(8)),
-                         '2026-09-18/05:00')
+                         '2026-09-18/06:00')
 
     def test_backlog_uploads_have_spacing(self):
         jobs = {'a': self.row(15)}
         self.assertIsNone(cloud.next_schedule_slot(jobs, self.now(15, 19)))
         self.assertEqual(cloud.next_schedule_slot(jobs, self.now(15, 20)),
-                         '2026-09-18/09:00')
+                         '2026-09-18/12:00')
 
     def test_malformed_timestamp_fails_closed(self):
         row = self.row()
@@ -851,11 +851,11 @@ class ScheduleTests(unittest.TestCase):
             cloud.next_schedule_slot({'a': row}, self.now(14))
 
     def test_schedule_timing_summary_reports_recent_offset(self):
-        target = self.now(5)
+        target = self.now(6)
         triggered = target + timedelta(minutes=7)
         uploaded = target + timedelta(minutes=19)
         history = [{'triggered_at': triggered.astimezone(timezone.utc).isoformat(),
-                    'target_slot': '2026-09-18/05:00', 'outcome': 'uploaded',
+                    'target_slot': '2026-09-18/06:00', 'outcome': 'uploaded',
                     'uploaded_at': uploaded.astimezone(timezone.utc).isoformat(),
                     'upload_offset_minutes': 19.0}]
         report = cloud.schedule_timing_summary(history, now=self.now(18))
@@ -866,8 +866,8 @@ class ScheduleTests(unittest.TestCase):
 
     def test_record_schedule_event_is_trimmed_and_durable(self):
         ledger = Mock(data={'schema': 1, 'jobs': {}})
-        event = cloud.record_schedule_event(ledger, '2026-09-18/05:00',
-                                            self.now(5).astimezone(timezone.utc), 'selected')
+        event = cloud.record_schedule_event(ledger, '2026-09-18/06:00',
+                                            self.now(6).astimezone(timezone.utc), 'selected')
         self.assertEqual(event['trigger_offset_minutes'], 0.0)
         self.assertEqual(ledger.data['schedule_history'][0]['outcome'], 'selected')
         ledger.save.assert_called_once()
@@ -888,7 +888,7 @@ class ScheduledFlowTests(unittest.TestCase):
         self.ledger.save.assert_called_once()
 
     def test_slot_is_saved_before_upload_and_survives_completion(self):
-        slot = '2026-09-18/05:00'
+        slot = '2026-09-18/06:00'
         upload = Mock(side_effect=lambda *a: self.assertEqual(
             self.ledger.data['jobs'][ENTRY['id']]['schedule_slot'], slot) or 'video123')
         with patch.object(cloud, 'next_schedule_slot', return_value=slot):
