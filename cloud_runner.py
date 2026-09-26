@@ -418,7 +418,7 @@ def verse_entry_for_position(catalog, jobs, position):
                 str(translation_row.get('language_name') or 'english').casefold() != 'english'):
             translation_row = None
         ayah_translation = clean_translation_text(translation_row.get('text')) if translation_row else ''
-        if not ayah_translation or len(ayah_translation) > 600:
+        if not ayah_translation or len(ayah_translation) > 800:
             rejected['english_translation_unavailable_or_too_long'] += 1
             continue
         style = reciter.get('style') or ''
@@ -751,10 +751,10 @@ def make_card(entry, destination):
     verse_size = 45
     verse_width = 840
     verse_area_top = 730
-    verse_area_height = 140
+    verse_area_height = 160
     lines = typography.wrap(verse, verse_size, verse_width)
-    line_gap = 8
-    while verse_size > 28:
+    line_gap = 4
+    while verse_size > 26:
         step = verse_size + line_gap
         if len(lines) * step <= verse_area_height:
             break
@@ -774,7 +774,7 @@ def make_card(entry, destination):
     translation = translation.replace('˹', '(').replace('˺', ')')
     draw_centered(TRANSLATION_CARD_LABEL, 900, 18, '#dcc58e', 820)
     translation_area_top = 930
-    translation_area_height = 160
+    translation_area_height = 200
     translation_size = 28
     translation_width = 840
     translation_gap = 4
