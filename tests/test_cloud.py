@@ -112,7 +112,7 @@ class CloudTests(unittest.TestCase):
             if '/translations/131' in url:
                 verse = params.get('verse_key')
                 return {'translations': [{'resource_id': 131, 'language_name': 'english',
-                                         'verse_key': verse, 'text': 'A test English meaning.}]}
+                                         'verse_key': verse, 'text': 'A test English meaning.'}]}
             return {'audio_files': [{'duration': 6 if url.endswith('1:1') else 35,
                                      'url': 'test.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
@@ -178,7 +178,7 @@ class CloudTests(unittest.TestCase):
             if '/translations/131' in url:
                 verse = params.get('verse_key')
                 return {'translations': [{'resource_id': 131, 'language_name': 'english',
-                                         'verse_key': verse, 'text': 'A test English meaning.}]}
+                                         'verse_key': verse, 'text': 'A test English meaning.'}]}
             raise AssertionError(f'Unexpected Quran API request: {url}')
 
         with patch.object(cloud, 'get_json', side_effect=api):
@@ -318,7 +318,7 @@ class CloudTests(unittest.TestCase):
             if '/translations/131' in url:
                 verse = params.get('verse_key')
                 return {'translations': [{'resource_id': 131, 'language_name': 'english',
-                                         'verse_key': verse, 'text': 'In the name of Allah, the Most Merciful. <sup foot_note="1">1</sup>}]}
+                                         'verse_key': verse, 'text': 'In the name of Allah, the Most Merciful. <sup foot_note="1">1</sup>'}]}
             verse = url.rsplit('/', 1)[-1]
             return {'audio_files': [{'duration': 35, 'url': f'Test/{verse}.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
@@ -357,7 +357,7 @@ class CloudTests(unittest.TestCase):
             if '/translations/131' in url:
                 verse = params.get('verse_key')
                 return {'translations': [{'resource_id': 131, 'language_name': 'english',
-                                         'verse_key': verse, 'text': 'A test English meaning.}]}
+                                         'verse_key': verse, 'text': 'A test English meaning.'}]}
             return {'audio_files': [{'duration': 35, 'url': 'safe/test.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
             chosen = [cloud.verse_entry_for_position(catalog, {}, pos)[0]['recitation_id']
