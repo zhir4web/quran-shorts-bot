@@ -33,10 +33,6 @@ SHORT_SURAHS = {
     113: ('الفلق', 'Al-Falaq'),
     114: ('الناس', 'An-Nas'),
 }
-ENGLISH_TRANSLATION_ID = 131
-TRANSLATION_CREDIT = 'The Clear Quran, translated by Dr. Mustafa Khattab (via Quran Foundation)'
-TRANSLATION_CARD_LABEL = 'English meaning: The Clear Quran'
-
 
 class CloudError(RuntimeError):
     """A diagnostic safe to display without external response bodies."""
@@ -181,14 +177,6 @@ def get_json(url, params=None):
             if attempt == 2:
                 raise RuntimeError('Quran Foundation source is temporarily unavailable') from None
             time.sleep(2 ** attempt)
-
-
-def clean_translation_text(value):
-    """Return readable translation text without API HTML or footnote markers."""
-    text = str(value or '')
-    text = re.sub(r'<sup\b[^>]*>.*?</sup>', ' ', text, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r'<[^>]*>', ' ', text)
-    return ' '.join(html.unescape(text).split())
 
 
 def api_entries(data):
@@ -377,7 +365,6 @@ def verse_entry_for_position(catalog, jobs, position):
         'audio_unavailable': 0,
         'duration_out_of_range': 0,
         'arabic_text_unavailable_or_too_long': 0,
-        'english_translation_unavailable_or_too_long': 0,
     }
 
     def fetch_audio(reciter_id, chapter_id, verse_number):
@@ -405,9 +392,8 @@ def verse_entry_for_position(catalog, jobs, position):
                 'duration': duration, 'audio_url': audio_url,
                 'segments': audio.get('segments')}
 
-    def fetch_texts(chapter_id, audio_parts):
+    def fetch_arabic_text(audio_parts):
         arabic_texts = []
-        translations = []
         for part in audio_parts:
             expected_key = part['verse_key']
             text_payload = get_json(
@@ -425,31 +411,7 @@ def verse_entry_for_position(catalog, jobs, position):
                 str.maketrans('0123456789', '٠١٢٣٤٥٦٧٨٩'))
             arabic_texts.append(arabic_text if len(audio_parts) == 1 else
                                 f'{arabic_text} ۝{arabic_number}')
-
-            translation_payload = get_json(
-                urljoin(QURAN_API, f'verses/by_key/{expected_key}'),
-                {'translations': str(ENGLISH_TRANSLATION_ID),
-                 'translation_fields': 'resource_id,verse_key,language_name,text'})
-            translated_verse = translation_payload.get('verse', translation_payload)
-            returned_key = translated_verse.get('verse_key') or translation_payload.get('verse_key')
-            if returned_key not in (None, expected_key):
-                raise ValueError('English translation does not match the requested verse')
-            translation_rows = (
-                translated_verse.get('translations') or translation_payload.get('translations') or [])
-            translation_row = next((row for row in translation_rows
-                                    if str(row.get('resource_id')) == str(ENGLISH_TRANSLATION_ID)), None)
-            if translation_row and translation_row.get('verse_key') not in (None, expected_key):
-                raise ValueError('English translation does not match the requested verse')
-            if (translation_row and
-                    str(translation_row.get('language_name') or 'english').casefold() != 'english'):
-                translation_row = None
-            translation = clean_translation_text(translation_row.get('text')) if translation_row else ''
-            if not translation:
-                return None
-            translations.append(translation)
-        arabic = ' '.join(arabic_texts)
-        english = ' / '.join(translations)
-        return arabic, english
+        return ' '.join(arabic_texts)
 
     for attempt in range(candidate_limit):
         if time.monotonic() >= deadline:
@@ -506,16 +468,12 @@ def verse_entry_for_position(catalog, jobs, position):
         if passage_overlaps_jobs(jobs, chapter_id, verse_number, verse_end):
             rejected['already_published'] += 1
             continue
-        text_pair = fetch_texts(chapter_id, audio_parts)
-        if text_pair is None:
-            rejected['english_translation_unavailable_or_too_long'] += 1
-            continue
-        ayah_text, ayah_translation = text_pair
-        if len(ayah_text) > max_ayah_characters:
+        ayah_text = fetch_arabic_text(audio_parts)
+        if not ayah_text:
             rejected['arabic_text_unavailable_or_too_long'] += 1
             continue
-        if len(ayah_translation) > 800:
-            rejected['english_translation_unavailable_or_too_long'] += 1
+        if len(ayah_text) > max_ayah_characters:
+            rejected['arabic_text_unavailable_or_too_long'] += 1
             continue
 
         style = reciter.get('style') or ''
@@ -532,9 +490,7 @@ def verse_entry_for_position(catalog, jobs, position):
             'surah_ar': chapter['name_arabic'], 'surah_en': chapter['name_simple'],
             'chapter_id': chapter_id, 'verse_number': verse_number, 'verse_start': verse_number, 'verse_end': verse_end,
             'verse_key': verse_key,
-            'ayah_text': ayah_text, 'ayah_translation': ayah_translation,
-            'translation_resource_id': ENGLISH_TRANSLATION_ID,
-            'translation_credit': TRANSLATION_CREDIT,
+            'ayah_text': ayah_text,
             'word_segments': audio_parts[0]['segments'] if len(audio_parts) == 1 else None,
             'reciter_ar': reciter_ar, 'reciter_en': reciter.get('reciter_name', ''), 'style': style,
             'permission_url': catalog['permission_url'], 'attribution': catalog['attribution'],
@@ -853,7 +809,7 @@ def arabic_font_path():
 
 
 def make_card(entry, destination):
-    """Render a compact bilingual text card over a transparent 9:16 overlay."""
+    """Render a compact Arabic-only ayah card over a transparent 9:16 overlay."""
     from PIL import Image, ImageDraw, ImageFilter
     from arabic_text import ArabicText
 
@@ -861,19 +817,63 @@ def make_card(entry, destination):
     if not font.is_file():
         raise FileNotFoundError('Arabic font missing: assets/Amiri-Regular.ttf')
     image = Image.new('RGBA', (1080, 1920), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image, 'RGBA')
     typography = ArabicText(font)
 
-    # Keep the text panel centered and compact, matching the reference layout.
-    # The transparent 9:16 canvas leaves moving footage visible around the card.
-    panel_left, panel_top, panel_right, panel_bottom = 70, 510, 1010, 1310
+    surah = 'سورة ' + str(entry['surah_ar']).strip()
+    caption = verse_label(entry, arabic=True)
+    verse = str(entry.get('ayah_text') or '').strip()
+    reciter = str(entry.get('reciter_ar') or '').strip()
+    if not verse:
+        raise ValueError('Verified Arabic ayah text is required for the fixed card')
+
+    def fit_text(text, size, width, minimum):
+        mask = typography.mask(text, size)
+        while mask.width > width and size > minimum:
+            size -= 2
+            mask = typography.mask(text, size)
+        if mask.width > width:
+            raise ValueError('Arabic label does not fit inside the compact ayah card')
+        return size, mask.height
+
+    surah_size, surah_height = fit_text(surah, 54, 850, 32)
+    caption_size, caption_height = fit_text(caption, 36, 840, 24) if caption else (0, 0)
+    reciter_size, reciter_height = fit_text(reciter, 32, 820, 22) if reciter else (0, 0)
+
+    verse_size = 45
+    verse_width = 840
+    verse_gap = 8
+    max_verse_height = 360
+    lines = typography.wrap(verse, verse_size, verse_width)
+    line_heights = [typography.mask(line, verse_size).height for line in lines]
+    verse_height = sum(line_heights) + max(0, len(lines) - 1) * verse_gap
+    while verse_size > 27 and (not lines or verse_height > max_verse_height):
+        verse_size -= 2
+        lines = typography.wrap(verse, verse_size, verse_width)
+        line_heights = [typography.mask(line, verse_size).height for line in lines]
+        verse_height = sum(line_heights) + max(0, len(lines) - 1) * verse_gap
+    if not lines or verse_height > max_verse_height:
+        raise ValueError('Complete Arabic ayah is too long for the compact card')
+
+    top_pad, bottom_pad = 30, 30
+    caption_block = 12 + caption_height if caption else 0
+    reciter_block = 20 + reciter_height + bottom_pad if reciter else 20 + bottom_pad
+    panel_height = max(
+        390,
+        top_pad + surah_height + caption_block + 20 + 2 + 18 +
+        verse_height + 20 + 2 + reciter_block
+    )
+    panel_left, panel_right = 70, 1010
+    panel_top = (image.height - panel_height) // 2
+    panel_bottom = panel_top + panel_height
+
+    draw = ImageDraw.Draw(image, 'RGBA')
     draw.rounded_rectangle(
-        (panel_left, panel_top, panel_right, panel_bottom), radius=48,
+        (panel_left, panel_top, panel_right, panel_bottom), radius=42,
         fill=(4, 18, 27, 196), outline=(220, 198, 145, 205), width=2
     )
     draw.rounded_rectangle(
         (panel_left + 16, panel_top + 16, panel_right - 16, panel_bottom - 16),
-        radius=36, outline=(226, 215, 179, 45), width=1
+        radius=32, outline=(226, 215, 179, 45), width=1
     )
 
     def draw_centered(text, y, size, color, width=840):
@@ -881,9 +881,9 @@ def make_card(entry, destination):
         while mask.width > width and size > 20:
             size -= 2
             mask = typography.mask(text, size)
-        if (mask.width > width or y < panel_top + 20 or
-                y + mask.height > panel_bottom - 20):
-            raise ValueError('Text does not fit inside the compact ayah card')
+        if (mask.width > width or y < panel_top + 18 or
+                y + mask.height > panel_bottom - 18):
+            raise ValueError('Arabic text does not fit inside the compact ayah card')
         x = (image.width - mask.width) // 2
         glow = Image.new('RGBA', image.size, (0, 0, 0, 0))
         glow.paste((240, 218, 168, 62), (x, y), mask)
@@ -894,67 +894,27 @@ def make_card(entry, destination):
         image.paste(color, (x, y), mask)
         return mask.height
 
-    draw_centered('سورة ' + str(entry['surah_ar']), 552, 54, '#f4f1e8', 850)
-    surah_en = str(entry.get('surah_en') or '').strip()
-    if surah_en:
-        draw_centered('Surah ' + surah_en, 620, 26, '#dcc58e', 820)
-    caption = verse_label(entry, arabic=True)
+    cursor = panel_top + top_pad
+    draw_centered(surah, cursor, surah_size, '#f4f1e8', 850)
+    cursor += surah_height
     if caption:
-        draw_centered(caption, 662, 36, '#e7e9e4', 830)
-    draw.line((390, 720, 690, 720), fill=(220, 197, 142, 190), width=2)
-
-    verse = str(entry.get('ayah_text') or '').strip()
-    if not verse:
-        raise ValueError('Verified Arabic ayah text is required for the fixed card')
-    verse_size = 45
-    verse_width = 840
-    verse_area_top = 730
-    verse_area_height = 160
-    lines = typography.wrap(verse, verse_size, verse_width)
-    line_gap = 4
-    while verse_size > 26:
-        step = verse_size + line_gap
-        if len(lines) * step <= verse_area_height:
-            break
-        verse_size -= 2
-        lines = typography.wrap(verse, verse_size, verse_width)
-    step = verse_size + line_gap
-    if not lines or len(lines) * step > verse_area_height:
-        raise ValueError('Complete Arabic ayah is too long for the compact card')
-    first_y = verse_area_top + (verse_area_height - len(lines) * step) // 2
+        cursor += 12
+        draw_centered(caption, cursor, caption_size, '#e7e9e4', 840)
+        cursor += caption_height + 18
+    else:
+        cursor += 18
+    draw.line((390, cursor, 690, cursor), fill=(220, 197, 142, 190), width=2)
+    cursor += 20
     for index, line in enumerate(lines):
-        draw_centered(line, first_y + index * step, verse_size, '#fffdf5', verse_width)
-
-    translation = str(entry.get('ayah_translation') or '').strip()
-    if not translation:
-        raise ValueError('Verified English meaning is required for the fixed card')
-    # Clear Quran brackets are explanatory markers; use common glyphs supported by Amiri.
-    translation = translation.replace('˹', '(').replace('˺', ')')
-    draw_centered(TRANSLATION_CARD_LABEL, 900, 18, '#dcc58e', 820)
-    translation_area_top = 930
-    translation_area_height = 200
-    translation_size = 28
-    translation_width = 840
-    translation_gap = 4
-    translation_lines = typography.wrap(translation, translation_size, translation_width)
-    while translation_size > 18:
-        translation_step = translation_size + translation_gap
-        if len(translation_lines) * translation_step <= translation_area_height:
-            break
-        translation_size -= 2
-        translation_lines = typography.wrap(translation, translation_size, translation_width)
-    translation_step = translation_size + translation_gap
-    if not translation_lines or len(translation_lines) * translation_step > translation_area_height:
-        raise ValueError('Complete English meaning is too long for the compact card')
-    translation_y = translation_area_top + (translation_area_height - len(translation_lines) * translation_step) // 2
-    for index, line in enumerate(translation_lines):
-        draw_centered(line, translation_y + index * translation_step,
-                      translation_size, '#f0eee6', translation_width)
-
-    reciter = str(entry.get('reciter_ar') or '').strip()
+        draw_centered(line, cursor, verse_size, '#fffdf5', verse_width)
+        cursor += line_heights[index]
+        if index < len(lines) - 1:
+            cursor += verse_gap
+    cursor += 20
     if reciter:
-        draw.line((430, 1140, 650, 1140), fill=(220, 197, 142, 150), width=2)
-        draw_centered(reciter, 1162, 32, '#dcc58e', 820)
+        draw.line((430, cursor, 650, cursor), fill=(220, 197, 142, 150), width=2)
+        cursor += 20
+        draw_centered(reciter, cursor, reciter_size, '#dcc58e', 820)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination, 'PNG')
@@ -1291,30 +1251,23 @@ def choose_scene_cuts(duration, scene_count, word_layers, minimum_segment=6.0):
 def item_for(entry, source, background, motion_overlay=None, background_video=None, used_clips=None, used_playlists=None, portrait_backgrounds=False, background_clip_count=3):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
     cta = bot.CTA_COMMENTS[cta_index]
-    verse_caption = verse_label(entry)
-    arabic_verse_caption = verse_label(entry, arabic=True)
+    verse_caption = verse_label(entry, arabic=True)
     if verse_caption:
-        suffix = f" | Surah {entry['surah_en']}, {verse_caption} #Shorts"
-        prefix = f"سورة {entry['surah_ar']}، {arabic_verse_caption} | القارئ "
+        suffix = " #Shorts"
+        prefix = f"سورة {entry['surah_ar']}، {verse_caption} | القارئ "
         reciter = entry['reciter_ar']
         room = max(1, 100 - len(prefix) - len(suffix))
         title = prefix + reciter[:room].rstrip() + suffix
-        translation_text = str(entry.get('ayah_translation') or '').strip()
-        translation_section = (
-            f"English meaning — {entry.get('translation_credit', TRANSLATION_CREDIT)}:\n"
-            f"{translation_text}\n\n" if translation_text else '')
         description = (f"{entry.get('ayah_text', '')}\n\n"
-                       f"{translation_section}"
-                       f"Beautiful Quran recitation — Surah {entry['surah_en']}, "
-                       f"{verse_caption}, recited by {entry['reciter_en']}\n\n"
+                       f"تلاوة سورة {entry['surah_ar']}، {verse_caption}، بصوت {entry['reciter_ar']}\n\n"
                        f"{entry['attribution']}\n\n{entry['permission_url']}\n\n{cta}")
     else:
-        suffix = f" | Surah {entry['surah_en']} #Shorts"
+        suffix = " #Shorts"
         prefix = f"سورة {entry['surah_ar']} | القارئ "
         room = max(1, 100 - len(prefix) - len(suffix))
         title = prefix + entry['reciter_ar'][:room].rstrip() + suffix
-        description = (f"Beautiful Quran recitation — Surah {entry['surah_en']}, "
-                       f"recited by {entry.get('reciter_en', entry['reciter_ar'])}\n\n"
+        description = (f"تلاوة سورة {entry['surah_ar']}، بصوت "
+                       f"{entry.get('reciter_ar', 'قارئ')}.\n\n"
                        f"{entry['attribution']}\n\n{entry['permission_url']}\n\n{cta}")
     item = {'id': entry['id'], 'mode': 'compose', 'source': str(source.resolve()),
             'background': str(background.resolve()), 'start': 0, 'duration': entry['duration'],
