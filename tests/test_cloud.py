@@ -118,10 +118,8 @@ class CloudTests(unittest.TestCase):
                 key = params['verse_key']
                 return {'verses': [{'verse_key': key, 'text_uthmani': 'نَصٌّ قُرْآنِيٌّ'}]}
             if '/verses/by_key/' in url:
-                key = url.rsplit('/', 1)[-1]
-                return {'verse_key': key, 'translations': [
-                    {'resource_id': 131, 'language_name': 'english',
-                     'verse_key': key, 'text': 'A verified English meaning.'}]}
+                raise AssertionError('Arabic-only publishing must not request translations')
+
             raise AssertionError(f'Unexpected Quran API request: {url}')
 
         with patch.object(cloud, 'get_json', side_effect=api):
@@ -133,7 +131,7 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(entry['duration'], 32)
         self.assertEqual(len(entry['audio_urls']), 2)
         self.assertIn('۝٢', entry['ayah_text'])
-        self.assertEqual(entry['ayah_translation'].count(' / '), 1)
+        self.assertNotIn('ayah_translation', entry)
         self.assertEqual(requested_audio, ['1:1', '1:2'])
         self.assertEqual(cursor, 1)
 
@@ -178,13 +176,12 @@ class CloudTests(unittest.TestCase):
         self.assertFalse(cloud.passage_overlaps_jobs(jobs, 2, 9, 11))
         self.assertFalse(cloud.passage_overlaps_jobs(jobs, 3, 5, 8))
 
-    def test_translation_uses_public_verse_translation_resource(self):
+    def test_verse_selection_does_not_depend_on_english_translation_api(self):
         catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
                    'tail_silence_seconds': 1, 'max_ayah_characters': 180,
                    'permission_url': 'https://example.com/license', 'attribution': 'test',
                    'rights': 'test', 'visual_style': 'premium_rotating_scenes',
                    'visual_themes': ['forest_rain']}
-        requested = []
 
         def api(url, params=None):
             if 'resources/recitations' in url:
@@ -195,33 +192,25 @@ class CloudTests(unittest.TestCase):
             if '/recitations/1/by_ayah/' in url:
                 return {'audio_files': [{'duration': 35, 'url': 'test.mp3'}]}
             if 'quran/verses/uthmani' in url:
-                return {'verses': [{'verse_key': '1:1', 'text_uthmani': 'test text'}]}
+                return {'verses': [{'verse_key': '1:1', 'text_uthmani': 'بِسْمِ اللَّهِ'}]}
             if '/verses/by_key/' in url:
-                requested.append((url, params))
-                return {'verse_key': '1:1', 'translations': [
-                    {'resource_id': 131, 'language_name': 'english',
-                     'verse_key': '1:1', 'text': 'A verified meaning.'}]}
+                raise AssertionError('Arabic-only publishing must not request translations')
             raise AssertionError(f'Unexpected Quran API request: {url}')
 
         with patch.object(cloud, 'get_json', side_effect=api):
             entry, _ = cloud.verse_entry_for_position(catalog, {}, 0)
 
-        self.assertEqual(entry['ayah_translation'], 'A verified meaning.')
-        self.assertEqual(entry['translation_resource_id'], 131)
-        self.assertEqual(len(requested), 1)
-        self.assertTrue(requested[0][0].endswith('/verses/by_key/1:1'))
-        self.assertEqual(requested[0][1]['translations'], '131')
-        self.assertEqual(requested[0][1]['translation_fields'],
-                         'resource_id,verse_key,language_name,text')
+        self.assertEqual(entry['ayah_text'], 'بِسْمِ اللَّهِ')
+        self.assertNotIn('ayah_translation', entry)
+        self.assertNotIn('translation_resource_id', entry)
 
-    def test_long_complete_ayah_and_translation_are_eligible_with_expanded_card_limits(self):
+    def test_long_complete_arabic_ayah_is_eligible_without_translation(self):
         catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
                    'tail_silence_seconds': 1, 'max_ayah_characters': 240,
                    'permission_url': 'https://example.com/license', 'attribution': 'test',
                    'rights': 'test', 'visual_style': 'premium_rotating_scenes',
                    'visual_themes': ['forest_rain']}
         arabic = 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ ' * 6
-        english = 'A verified English meaning for this complete ayah. ' * 14
 
         def api(url, params=None):
             if 'resources/recitations' in url:
@@ -234,23 +223,20 @@ class CloudTests(unittest.TestCase):
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'verse_key': '1:1', 'text_uthmani': arabic}]}
             if '/verses/by_key/' in url:
-                return {'translations': [{'resource_id': 131, 'language_name': 'english',
-                                          'verse_key': '1:1', 'text': english}]}
+                raise AssertionError('Arabic-only publishing must not request translations')
             raise AssertionError(f'Unexpected Quran API request: {url}')
 
         with patch.object(cloud, 'get_json', side_effect=api):
             entry, _ = cloud.verse_entry_for_position(catalog, {}, 0)
 
         self.assertEqual(entry['ayah_text'], arabic.strip())
-        self.assertEqual(entry['ayah_translation'], english.strip())
         self.assertGreater(len(entry['ayah_text']), 180)
-        self.assertGreater(len(entry['ayah_translation']), 600)
+        self.assertNotIn('ayah_translation', entry)
 
-    def test_compact_card_renders_long_bilingual_ayah_without_overflow(self):
+    def test_compact_card_renders_long_arabic_ayah_without_overflow(self):
         entry = dict(ENTRY, surah_ar='الإسراء', surah_en='Al-Isra',
                      reciter_ar='اسم القارئ', verse_number=23,
-                     ayah_text='بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ ' * 6,
-                     ayah_translation='A verified English meaning for this complete ayah. ' * 14)
+                     ayah_text='بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ ' * 6)
         target = cloud.make_card(entry, self.root / 'long-card.png')
         self.assertTrue(target.is_file())
         self.assertGreater(target.stat().st_size, 0)
@@ -277,10 +263,7 @@ class CloudTests(unittest.TestCase):
                 return {'audio_files': [{'duration': 35, 'url': 'test.mp3'}]}
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'test text'}]}
-            if '/verses/by_key/' in url:
-                verse = url.rsplit('/', 1)[-1]
-                return {'translations': [{'resource_id': 131, 'language_name': 'english',
-                                         'verse_key': verse, 'text': 'A test English meaning.'}]}
+
             raise AssertionError(f'Unexpected Quran API request: {url}')
 
         with patch.object(cloud, 'get_json', side_effect=api):
@@ -418,9 +401,8 @@ class CloudTests(unittest.TestCase):
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ'}]}
             if '/verses/by_key/' in url:
-                verse = url.rsplit('/', 1)[-1]
-                return {'translations': [{'resource_id': 131, 'language_name': 'english',
-                                         'verse_key': verse, 'text': 'In the name of Allah, the Most Merciful. <sup foot_note="1">1</sup>'}]}
+                raise AssertionError('Arabic-only publishing must not request translations')
+
             verse = url.rsplit('/', 1)[-1]
             return {'audio_files': [{'duration': 35, 'url': f'Test/{verse}.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
@@ -430,8 +412,8 @@ class CloudTests(unittest.TestCase):
         self.assertNotEqual(first['verse_key'], second['verse_key'])
         self.assertNotEqual(first['visual_theme'], second['visual_theme'])
         self.assertTrue(first['ayah_text'])
-        self.assertEqual(first['ayah_translation'], 'In the name of Allah, the Most Merciful.')
-        self.assertEqual(first['translation_resource_id'], 131)
+        self.assertNotIn('ayah_translation', first)
+        self.assertNotIn('translation_resource_id', first)
 
     def test_blocked_reciter_is_never_selected(self):
         catalog = {'schema': 3, 'provider': 'quran_foundation', 'reciters': 'allowlist',
@@ -457,9 +439,8 @@ class CloudTests(unittest.TestCase):
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'قُلْ هُوَ اللَّهُ أَحَدٌ'}]}
             if '/verses/by_key/' in url:
-                verse = url.rsplit('/', 1)[-1]
-                return {'translations': [{'resource_id': 131, 'language_name': 'english',
-                                         'verse_key': verse, 'text': 'A test English meaning.'}]}
+                raise AssertionError('Arabic-only publishing must not request translations')
+
             return {'audio_files': [{'duration': 35, 'url': 'safe/test.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
             chosen = [cloud.verse_entry_for_position(catalog, {}, pos)[0]['recitation_id']
@@ -499,22 +480,20 @@ class CloudTests(unittest.TestCase):
             with self.assertRaises(cloud.TooLongRecording):
                 cloud.download_quran_verse(entry, self.root / 'recitation.mp3')
 
-    def test_bilingual_metadata_has_verified_order_and_no_kurdish(self):
+    def test_video_metadata_is_arabic_without_verse_translation(self):
         entry = dict(ENTRY, verse_number=3, verse_key='112:3',
                      ayah_text='لَمْ يَلِدْ وَلَمْ يُولَدْ',
-                     ayah_translation='He neither begets nor is born.',
                      reciter_en='Test Reciter', style='Murattal', recitation_id=1)
         job = cloud.item_for(entry, self.root / 'audio.mp3', self.root / 'card.png')
         self.assertIn('سورة الإخلاص، الآية ٣', job['title'])
-        self.assertIn('Surah Al-Ikhlas, Ayah 3', job['title'])
+        self.assertNotIn('Surah Al-Ikhlas', job['title'])
         parts = job['description'].split('\n\n')
         self.assertEqual(parts[0], entry['ayah_text'])
-        self.assertEqual(parts[1],
-                         'English meaning — The Clear Quran, translated by Dr. Mustafa Khattab (via Quran Foundation):\n'
-                         + entry['ayah_translation'])
-        self.assertTrue(parts[2].startswith('Beautiful Quran recitation'))
-        self.assertEqual(parts[3], entry['attribution'])
-        self.assertEqual(parts[4], entry['permission_url'])
+        self.assertEqual(parts[1], 'تلاوة سورة الإخلاص، الآية ٣، بصوت اسم القارئ')
+        self.assertEqual(parts[2], entry['attribution'])
+        self.assertEqual(parts[3], entry['permission_url'])
+        self.assertNotIn('English meaning', job['description'])
+        self.assertNotIn('Beautiful Quran recitation', job['description'])
         self.assertNotIn('ک', job['description'])
 
     def test_ayah_range_is_used_in_title_description_and_metadata(self):
@@ -523,8 +502,8 @@ class CloudTests(unittest.TestCase):
                      style='Murattal', recitation_id=1)
         job = cloud.item_for(entry, self.root / 'audio.mp3', self.root / 'card.png')
         self.assertIn('الآيات ١٤١–١٤٢', job['title'])
-        self.assertIn('Ayahs 141–142', job['title'])
-        self.assertIn('Ayahs 141–142', job['description'])
+        self.assertNotIn('Ayahs 141–142', job['title'])
+        self.assertIn('الآيات ١٤١–١٤٢', job['description'])
         self.assertEqual((job['verse_start'], job['verse_end']), (141, 142))
 
     def test_all_catalog_themes_have_checked_in_filmed_assets(self):
@@ -575,7 +554,7 @@ class CloudTests(unittest.TestCase):
         with patch.dict('sys.modules', {'arabic_text': fake_arabic_text}):
             entry = dict(
                 ENTRY, verse_number=3, ayah_text='لَمْ يَلِدْ وَلَمْ يُولَدْ',
-                ayah_translation='Say, ˹O Prophet,˺ “He is Allah—One ˹and Indivisible˺.”',
+                ayah_translation='English text is intentionally ignored',
                 surah_en='Al-Ikhlas', reciter_en='Test Reciter'
             )
             card = cloud.make_card(entry, self.root / 'card.png')
@@ -593,18 +572,12 @@ class CloudTests(unittest.TestCase):
         self.assertLess(right - left, 1000)
         self.assertLessEqual(bottom - top, 820)
         self.assertAlmostEqual((left + right) / 2, 540, delta=10)
-        self.assertAlmostEqual((top + bottom) / 2, 910, delta=20)
+        self.assertAlmostEqual((top + bottom) / 2, 960, delta=20)
         self.assertIn('سورة الإخلاص', rendered_text)
-        self.assertIn('Surah Al-Ikhlas', rendered_text)
         self.assertIn('الآية ٣', rendered_text)
         self.assertIn('لَمْ يَلِدْ وَلَمْ يُولَدْ', rendered_text)
-        self.assertIn('English meaning: The Clear Quran', rendered_text)
-        self.assertIn('Say, (O Prophet,) “He is Allah—One (and Indivisible).”', rendered_text)
-        arabic_size = max(size for text, size in rendered_sizes
-                          if text == 'لَمْ يَلِدْ وَلَمْ يُولَدْ')
-        translation_size = max(size for text, size in rendered_sizes
-                               if text == 'Say, (O Prophet,) “He is Allah—One (and Indivisible).”')
-        self.assertLess(translation_size, arabic_size)
+        self.assertTrue(all(not any(char.isascii() and char.isalpha() for char in text)
+                            for text in rendered_text))
         self.assertIn('اسم القارئ', rendered_text)
         self.assertNotIn('Al-Ikhlas', rendered_text)
         self.assertNotIn('Test Reciter', rendered_text)
