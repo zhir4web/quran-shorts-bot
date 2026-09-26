@@ -26,7 +26,7 @@ Node.js 22 یان نوێتر بۆ تاقیکردنەوەکانی JavaScript پێ
 
 GitHub Actions پێویستی بە secret ـی `YOUTUBE_TOKEN` هەیە. `GITHUB_TOKEN` لە workflow دابین دەکرێت. scope ـەکان `youtube.upload`، `youtube.readonly`، `youtube.force-ssl` و `yt-analytics.readonly` ـن. بۆ login ـی ناوخۆیی، OAuth desktop client لە `client_secrets.json` دابنێ و `run.bat auth` جێبەجێ بکە. بۆ چالاککردنی داتای تەندروستی (retention)، تۆکین ـەکە بە scope ـی `yt-analytics.readonly` نوێ بکەرەوە؛ پێش ئەوە ڕاپۆرت وەک «نابەردەست» نیشان دەدرێت و بڵاوکردنەوە کاریگەری لێ نابینێت.
 
-ئاگادارکردنەوە ئارەزوومەندانەن و بە secret ـی خۆکاری کار دەکەن: `TELEGRAM_BOT_TOKEN` و `TELEGRAM_CHAT_ID`، یان `DISCORD_WEBHOOK_URL`، بۆ پەیامی سەرکەوتن، شکست، پاراستن و تەندروستی؛ `HEARTBEAT_URL` بۆ پشکنینی دەمرمەنی کە کاتێک خۆکاری بێدەنگ بوەستێت لە خزمەتگوزاری دەرەکییەوە ئاگادارت دەکاتەوە. ئەگەر هیچیان ڕێکنەخرابێت، هیچ تۆڕێک ناکوێژرێت و بڵاوکردنەوە بەبێ ئەوان کار دەکات.
+ئاگادارکردنەوەی GitHub بۆ workflow ـە شکست‌خواردووەکان لە ڕێکخستنی هەژماری خۆتەوە چالاک دەکرێت. `DISCORD_WEBHOOK_URL` بۆ ئاگادارکردنەوەی Discord ئارەزوومەندانەیە؛ `HEARTBEAT_URL` بۆ چاودێریی دەرەکییە. ئەگەر هیچ کامیان ڕێکنەخرابێت، تۆڕێکی دەرەکی پەیوەندی پێوە ناکرێت و بڵاوکردنەوە بەردەوام دەبێت.
 
 لە Actions، `preview` بۆ پشکنینی ڤیدیۆ، `scheduled` بۆ گرتنەوەی slot، یان `publish` بۆ پۆستی دەستی هەڵبژێرە. `count` لە 1 تا 5 تەنها لە publish کار دەکات. پۆستەکانی یەک داواکاری لە یەک workflow بە ڕیز جێبەجێ دەبن؛ شکستی پۆستێک batch ڕادەگرێت.
 

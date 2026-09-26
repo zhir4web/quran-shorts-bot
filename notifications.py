@@ -1,4 +1,4 @@
-"""Optional run-status delivery: Telegram, Discord and a dead-man's-switch ping.
+"""Optional run-status delivery: Discord and a dead-man's-switch ping.
 
 Publishing must never depend on notifications. Every send is best-effort,
 every failure is swallowed with a safe diagnostic, and all credentials arrive
@@ -14,7 +14,6 @@ import os
 LOG = logging.getLogger("quran-bot.notify")
 
 REQUEST_TIMEOUT = (10, 30)  # connect, read seconds
-TELEGRAM_LIMIT = 3800       # Telegram allows 4096 characters per message
 DISCORD_LIMIT = 1900        # Discord allows 2000 characters per message
 
 KIND_LABELS = {
@@ -36,15 +35,9 @@ class Config:
 
     def __init__(self, env=None):
         env = os.environ if env is None else env
-        self.telegram_token = str(env.get("TELEGRAM_BOT_TOKEN", "")).strip()
-        self.telegram_chat_id = str(env.get("TELEGRAM_CHAT_ID", "")).strip()
         self.discord_webhook = str(env.get("DISCORD_WEBHOOK_URL", "")).strip()
         self.heartbeat_url = str(env.get("HEARTBEAT_URL", "")).strip()
         self.run_link = str(env.get("NOTIFY_RUN_URL", "")).strip()
-
-    @property
-    def telegram_ready(self):
-        return bool(self.telegram_token and self.telegram_chat_id)
 
     @property
     def discord_ready(self):
@@ -66,12 +59,6 @@ def _post(url, body, session=None):
         raise RuntimeError(f"Notification endpoint returned HTTP {response.status_code}")
 
 
-def _telegram(config, text, session=None):
-    _post(f"https://api.telegram.org/bot{config.telegram_token}/sendMessage",
-          {"chat_id": config.telegram_chat_id, "text": text,
-           "disable_web_page_preview": True}, session)
-
-
 def _discord(config, text, session=None):
     _post(config.discord_webhook, {"content": text}, session)
 
@@ -86,28 +73,18 @@ def notify(text, kind="info", key=None, env=None, session=None):
             return []
         _DELIVERED.add(key)
     config = Config(env)
-    channels = []
-    if config.telegram_ready:
-        channels.append("telegram")
-    if config.discord_ready:
-        channels.append("discord")
-    if not channels:
+    if not config.discord_ready:
         return []
     label = KIND_LABELS.get(kind, KIND_LABELS["info"])
     message = label + "\n" + text.strip()
     if config.run_link:
         message += "\n" + config.run_link
-    delivered = []
-    for channel in channels:
-        try:
-            if channel == "telegram":
-                _telegram(config, message[:TELEGRAM_LIMIT], session)
-            else:
-                _discord(config, message[:DISCORD_LIMIT], session)
-            delivered.append(channel)
-        except Exception as exc:
-            LOG.warning("Notification channel %s unavailable: %s", channel, type(exc).__name__)
-    return delivered
+    try:
+        _discord(config, message[:DISCORD_LIMIT], session)
+        return ["discord"]
+    except Exception as exc:
+        LOG.warning("Notification channel discord unavailable: %s", type(exc).__name__)
+        return []
 
 
 def heartbeat(ok=True, env=None, session=None):
