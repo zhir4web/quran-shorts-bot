@@ -147,6 +147,9 @@
       youtube_not_verified: 'پەیوەندیی YouTube تازە پشتڕاست نەکراوەتەوە', workflow_failed: 'دوایین کار سەرکەوتوو نەبووە',
       workflow_unknown: 'دۆخی کارەکان نادیارە', automation_disabled: 'بڵاوکردنەوە ناچالاکە', invalid_schedule_data: 'تۆماری کات کێشەی هەیە' };
     $('#health-state').textContent = ({ attention: 'ئاگاداری', healthy: 'باشە', unknown: 'نادیارە' })[health.state] || 'نادیارە';
+    const metricsDate = health.metrics_checked_at ? new Date(health.metrics_checked_at).toLocaleString('ku-IQ', { dateStyle: 'short', timeStyle: 'short' }) : '';
+    $('#metrics-check').textContent = health.metrics_status === 'current' ? '✓' : health.metrics_status === 'unavailable' || health.metrics_status === 'stale' ? '!' : '○';
+    $('#metrics-copy').textContent = health.metrics_status === 'current' ? `نوێکراوەتەوە: ${metricsDate}` : health.metrics_status === 'unavailable' ? `پشکنینی نوێ سەرکەوتوو نەبوو${metricsDate ? ` · دوا داتای سەرکەوتوو: ${metricsDate}` : ''}` : health.metrics_status === 'stale' ? `داتاکە کۆنە · دوا پشکنین: ${metricsDate}` : 'هێشتا پشکنینی YouTube نەکراوە';
     $('#health-detail').textContent = issues.map((issue) => labels[issue] || issue).join(' · ') || 'هیچ ئاگادارییەک نییە';
     $('#health-badge').textContent = health.state === 'healthy' ? '✓' : '!';
     const channel = data.channel || {};
@@ -179,7 +182,11 @@
 
   function rowHtml(row) {
     const date = row.uploaded_at ? new Date(row.uploaded_at).toLocaleString('ku-IQ', { dateStyle: 'short', timeStyle: 'short' }) : '—';
-    return `<tr><td><div class="video-cell"><span class="video-thumb">▶</span><span>${escapeHtml(row.video_id)}</span></div></td><td>${escapeHtml(row.reciter)}</td><td>${escapeHtml(row.theme)}</td><td>${escapeHtml(date)}</td><td><span class="status-pill">uploaded</span></td><td><a class="table-link" href="${escapeHtml(row.url)}" target="_blank" rel="noreferrer">بینین ↗</a></td></tr>`;
+    const privacy = { public: 'گشتی', unlisted: 'بە بەستەر', private: 'تایبەت', unknown: 'نەپشکنراوە' }[row.privacy_status] || escapeHtml(row.privacy_status || 'نەپشکنراوە');
+    const flagLabels = { 'visibility problem': 'کێشەی بینراوی', 'no traction': 'بینەر نییە', 'video unavailable': 'ڤیدیۆ لە YouTube نەدۆزرایەوە', 'safety incident': 'کێشەی پاراستن' };
+    const flags = Array.isArray(row.flags) ? row.flags.map((flag) => escapeHtml(flagLabels[flag] || flag)).join('، ') : '';
+    const status = `<span class="status-pill">uploaded · ${privacy}</span>${flags ? `<small class="status-warning">${flags}</small>` : ''}`;
+    return `<tr><td><div class="video-cell"><span class="video-thumb">▶</span><span>${escapeHtml(row.video_id)}</span></div></td><td>${escapeHtml(row.reciter)}</td><td>${escapeHtml(row.theme)}</td><td>${escapeHtml(date)}</td><td>${status}</td><td><a class="table-link" href="${escapeHtml(row.url)}" target="_blank" rel="noreferrer">بینین ↗</a></td></tr>`;
   }
 
   function renderAnalytics(data) {
@@ -212,8 +219,6 @@
       const data = await api('/api/overview');
       state.overview = data;
       renderStats(data); renderSchedule(data); renderTables(data); renderAnalytics(data);
-      $('#metrics-check').textContent = '✓';
-      $('#metrics-copy').textContent = 'کۆتا داتا بەردەستە';
       $('#health-heading').textContent = ({ attention: 'پێویستی بە سەرنج هەیە', healthy: 'پشکنینەکان باشن', unknown: 'دۆخی سیستەم تەواو نەپشکنراوە' })[data.health?.state] || 'نادیارە';
       $('#health-copy').textContent = $('#health-detail').textContent;
       $('#health-ring').textContent = data.health?.state === 'healthy' ? '✓' : '?';
@@ -234,7 +239,7 @@
 
   function updateButtons() {
     const blocked = !state.overview?.channel?.enabled || state.overview?.health?.uncertain_uploads?.length > 0;
-    $$('[data-action]').forEach((button) => { button.disabled = state.busy || !state.overview || (button.dataset.action !== 'preview' && blocked); });
+    $('[data-action]').forEach((button) => { const mode = button.dataset.action; button.disabled = state.busy || !state.overview || (blocked && !['preview', 'report'].includes(mode)); });
     $('#manual-publish').disabled = state.busy || !state.overview || blocked;
   }
 
@@ -242,11 +247,11 @@
     if (state.busy) return;
     state.busy = true;
     updateButtons();
-    const names = { publish: 'پۆستکردن', preview: 'دروستکردنی preview', scheduled: 'گرتنەوەی schedule' };
+    const names = { publish: 'پۆستکردن', preview: 'دروستکردنی preview', scheduled: 'گرتنەوەی schedule', report: 'پشکنینی ڕاستەقینەی YouTube' };
     toast(`${names[mode] || 'کردار'} دەستی پێکرد...`);
     try {
       const result = await api('/api/workflow', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, count }) });
-      toast(`داواکاریی ${result.requested_count} پۆست نێردرا؛ ئەمە پشتڕاستکردنەوەی بڵاوکردنەوە نییە.`);
+      toast(mode === 'report' ? 'داواکاریی پشکنین نێردرا؛ دوای تەواوبوونی GitHub Actions دۆخی ڤیدیۆکان نوێ دەبێتەوە.' : `داواکاریی ${result.requested_count} پۆست نێردرا؛ ئەمە پشتڕاستکردنەوەی بڵاوکردنەوە نییە.`);
       window.setTimeout(refresh, 4500);
     } catch (error) { toast(`کردارەکە سەرکەوتوو نەبوو: ${error.message}`, true); }
     finally { state.busy = false; updateButtons(); }
