@@ -3,19 +3,19 @@
   "rewrites": [
     {
       "source": "/api/overview",
-      "destination": "/api"
+      "destination": "/api?route=overview"
     },
     {
       "source": "/api/config",
-      "destination": "/api"
+      "destination": "/api?route=config"
     },
     {
       "source": "/api/workflow",
-      "destination": "/api"
+      "destination": "/api?route=workflow"
     },
     {
       "source": "/api/submit-clip",
-      "destination": "/api"
+      "destination": "/api?route=submit-clip"
     },
     {
       "source": "/",
