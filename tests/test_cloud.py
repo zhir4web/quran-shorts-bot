@@ -211,7 +211,8 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(len(requested), 1)
         self.assertTrue(requested[0][0].endswith('/verses/by_key/1:1'))
         self.assertEqual(requested[0][1]['translations'], '131')
-        self.assertEqual(requested[0][1]['translation_fields'], 'verse_key,language_name')
+        self.assertEqual(requested[0][1]['translation_fields'],
+                         'resource_id,verse_key,language_name,text')
 
     def test_long_complete_ayah_and_translation_are_eligible_with_expanded_card_limits(self):
         catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
