@@ -4,6 +4,8 @@ from unittest.mock import Mock, patch
 import http.client
 import json
 import threading
+import tempfile
+from pathlib import Path
 
 import dashboard_server as dashboard
 
@@ -173,6 +175,15 @@ class HttpTests(unittest.TestCase):
         status, _, _ = self.request('POST', '/api/workflow', '{}',
                                   {'Content-Type': 'application/json', 'Origin': 'https://evil.example'})
         self.assertEqual(status, 403)
+
+    def test_rewritten_dashboard_static_path_resolves_to_dashboard_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'index.html').write_text('<main>dashboard</main>', encoding='utf-8')
+            with patch.object(dashboard, 'DASHBOARD_ROOT', root):
+                status, _, raw = self.request('GET', '/dashboard/index.html')
+        self.assertEqual(status, 200)
+        self.assertIn(b'<main>dashboard</main>', raw)
 
     def test_static_ui_has_csp_and_external_service_worker_registration(self):
         status, headers, raw = self.request('GET', '/')
