@@ -81,8 +81,8 @@ class DashboardTests(unittest.TestCase):
 
     def test_schedule_uses_actual_slots_not_total_posts(self):
         now = datetime(2026, 9, 22, 18, tzinfo=timezone.utc)
-        jobs = {'a': {'status': 'uploaded', 'video_id': 'a', 'uploaded_at': '2026-09-22T12:00:00Z',
-                      'schedule_slot': '2026-09-22/15:00'}}
+        jobs = {'a': {'status': 'uploaded', 'video_id': 'a', 'uploaded_at': '2026-09-22T15:00:00Z',
+                      'schedule_slot': '2026-09-22/18:00'}}
         result = dashboard.build_overview({'enabled': True}, {}, {'jobs': jobs}, now)
         self.assertEqual([slot['completed'] for slot in result['schedule']['slot_states']], [False, False, True])
 
