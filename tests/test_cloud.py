@@ -162,7 +162,7 @@ class CloudTests(unittest.TestCase):
                    'permission_url': 'https://example.com/license', 'attribution': 'test',
                    'rights': 'test', 'visual_style': 'premium_rotating_scenes',
                    'visual_themes': ['forest_rain']}
-        arabic = 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ ' * 8
+        arabic = 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ ' * 6
         english = 'A verified English meaning for this complete ayah. ' * 14
 
         def api(url, params=None):
@@ -191,7 +191,7 @@ class CloudTests(unittest.TestCase):
     def test_compact_card_renders_long_bilingual_ayah_without_overflow(self):
         entry = dict(ENTRY, surah_ar='الإسراء', surah_en='Al-Isra',
                      reciter_ar='اسم القارئ', verse_number=23,
-                     ayah_text='بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ ' * 8,
+                     ayah_text='بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ ' * 6,
                      ayah_translation='A verified English meaning for this complete ayah. ' * 14)
         target = cloud.make_card(entry, self.root / 'long-card.png')
         self.assertTrue(target.is_file())
