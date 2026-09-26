@@ -29,7 +29,7 @@
   "functions": {
     "api/index.py": {
       "maxDuration": 30,
-      "excludeFiles": "{tests/**,work/**,state/**,.bot-state/**,assets/**,dashboard/**,diagnostics/**,legacy/**,outputs/**,.github/**,**/*.mp4,**/*.mov,**/*.webm,**/*.mp3,**/*.wav,**/*.png,**/*.jpg,**/*.zip,**/*.ttf}"
+      "excludeFiles": "{tests/**,work/**,state/**,.bot-state/**,assets/**,diagnostics/**,legacy/**,outputs/**,.github/**,**/*.mp4,**/*.mov,**/*.webm,**/*.mp3,**/*.wav,**/*.png,**/*.jpg,**/*.zip,**/*.ttf}"
     }
   }
 }
