@@ -429,7 +429,7 @@ def verse_entry_for_position(catalog, jobs, position):
             translation_payload = get_json(
                 urljoin(QURAN_API, f'verses/by_key/{expected_key}'),
                 {'translations': str(ENGLISH_TRANSLATION_ID),
-                 'translation_fields': 'verse_key,language_name'})
+                 'translation_fields': 'resource_id,verse_key,language_name,text'})
             translated_verse = translation_payload.get('verse', translation_payload)
             returned_key = translated_verse.get('verse_key') or translation_payload.get('verse_key')
             if returned_key not in (None, expected_key):
