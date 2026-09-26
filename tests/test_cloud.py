@@ -156,6 +156,47 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(requested[0][1]['translations'], '131')
         self.assertEqual(requested[0][1]['translation_fields'], 'verse_key,language_name')
 
+    def test_long_complete_ayah_and_translation_are_eligible_with_expanded_card_limits(self):
+        catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
+                   'tail_silence_seconds': 1, 'max_ayah_characters': 240,
+                   'permission_url': 'https://example.com/license', 'attribution': 'test',
+                   'rights': 'test', 'visual_style': 'premium_rotating_scenes',
+                   'visual_themes': ['forest_rain']}
+        arabic = 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ ' * 8
+        english = 'A verified English meaning for this complete ayah. ' * 14
+
+        def api(url, params=None):
+            if 'resources/recitations' in url:
+                return {'recitations': [{'id': 1, 'reciter_name': 'Test'}]}
+            if url.endswith('/chapters'):
+                return {'chapters': [{'id': 1, 'verses_count': 6236,
+                                      'name_arabic': 'Test', 'name_simple': 'Test'}]}
+            if '/recitations/1/by_ayah/' in url:
+                return {'audio_files': [{'duration': 35, 'url': 'test.mp3'}]}
+            if 'quran/verses/uthmani' in url:
+                return {'verses': [{'verse_key': '1:1', 'text_uthmani': arabic}]}
+            if '/verses/by_key/' in url:
+                return {'translations': [{'resource_id': 131, 'language_name': 'english',
+                                          'verse_key': '1:1', 'text': english}]}
+            raise AssertionError(f'Unexpected Quran API request: {url}')
+
+        with patch.object(cloud, 'get_json', side_effect=api):
+            entry, _ = cloud.verse_entry_for_position(catalog, {}, 0)
+
+        self.assertEqual(entry['ayah_text'], arabic)
+        self.assertEqual(entry['ayah_translation'], english)
+        self.assertGreater(len(entry['ayah_text']), 180)
+        self.assertGreater(len(entry['ayah_translation']), 600)
+
+    def test_compact_card_renders_long_bilingual_ayah_without_overflow(self):
+        entry = dict(ENTRY, surah_ar='الإسراء', surah_en='Al-Isra',
+                     reciter_ar='اسم القارئ', verse_number=23,
+                     ayah_text='بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ ' * 8,
+                     ayah_translation='A verified English meaning for this complete ayah. ' * 14)
+        target = cloud.make_card(entry, self.root / 'long-card.png')
+        self.assertTrue(target.is_file())
+        self.assertGreater(target.stat().st_size, 0)
+
     def test_verse_search_scans_beyond_initial_180_candidates(self):
         catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
                    'tail_silence_seconds': 1, 'max_ayah_characters': 180,
