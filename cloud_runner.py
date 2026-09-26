@@ -51,8 +51,12 @@ class TooLongRecording(RuntimeError):
 
 
 class NoEligibleVerse(CloudError):
-    def __init__(self, cursor):
-        super().__init__('No eligible verse found in this bounded scan; the next publication resumes the search')
+    def __init__(self, cursor, candidates_checked=0, timed_out=False):
+        reason = 'timed out' if timed_out else 'found no eligible verse'
+        super().__init__(
+            f'Quran Foundation search {reason} after {candidates_checked} candidates; '
+            f'the next run resumes at position {cursor}'
+        )
         self.cursor = cursor
 
 
@@ -318,20 +322,20 @@ def verse_entry_for_position(catalog, jobs, position):
     if total_verses < 6000:
         raise RuntimeError('Quran Foundation chapter metadata is incomplete')
     try:
-        max_candidates = max(30, int(os.environ.get('QURAN_MAX_CANDIDATES', '180')))
+        max_candidates = max(30, int(os.environ.get('QURAN_MAX_CANDIDATES', '1200')))
     except (TypeError, ValueError):
-        max_candidates = 180
+        max_candidates = 1200
     try:
-        search_timeout = max(60.0, float(os.environ.get('QURAN_SEARCH_TIMEOUT_SECONDS', '420')))
+        search_timeout = max(60.0, float(os.environ.get('QURAN_SEARCH_TIMEOUT_SECONDS', '900')))
     except (TypeError, ValueError):
-        search_timeout = 420.0
+        search_timeout = 900.0
     candidate_limit = min(total_verses * len(english), max_candidates)
     deadline = time.monotonic() + search_timeout
     ordered_reciters = _reciter_order(english, jobs, position, catalog)
     for attempt in range(candidate_limit):
         if time.monotonic() >= deadline:
-            raise CloudError('Quran Foundation verse search timed out; the next run will retry safely')
-        if attempt == 0 or attempt % 5 == 0:
+            raise NoEligibleVerse(position, attempt, timed_out=True)
+        if attempt == 0 or (attempt + 1) % 100 == 0:
             print(f'Checking complete-verse candidate {attempt + 1}/{candidate_limit}...', flush=True)
         # Try other reciters when the preferred one's candidates are unsuitable.
         reciter = ordered_reciters[attempt % len(ordered_reciters)]
@@ -415,7 +419,7 @@ def verse_entry_for_position(catalog, jobs, position):
             # same visual theme, even after a restart.
             'visual_theme': catalog['visual_themes'][(next_position - 1) % len(catalog['visual_themes'])],
         }, next_position)
-    raise NoEligibleVerse(position)
+    raise NoEligibleVerse(position, candidate_limit)
 
 
 def load_catalog(path):
