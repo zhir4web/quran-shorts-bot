@@ -45,6 +45,12 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(body, {'ref': 'main', 'inputs': {'mode': 'publish', 'count': '2'}})
         self.assertNotIn('secret-token', repr(body))
 
+    def test_dispatch_404_explains_vercel_token_permissions(self):
+        client = dashboard.GitHubClient('secret-token', 'owner/repo', 'main')
+        client.session.post = Mock(return_value=Mock(status_code=404))
+        with self.assertRaisesRegex(dashboard.DashboardError, 'Actions: write'):
+            client.dispatch('publish', 1)
+
     def test_dispatch_rejects_unknown_mode(self):
         client = dashboard.GitHubClient('secret-token', 'owner/repo')
         with self.assertRaises(dashboard.DashboardError):
