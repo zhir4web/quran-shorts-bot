@@ -30,7 +30,8 @@ function boot(fetch) {
   const ids = new Map([...html.matchAll(/id="([^"]+)"/g)].map((m) => ['#' + m[1], element()]));
   const action = element(); action.dataset.action = 'publish'; action.dataset.count = '1';
   const preview = element(); preview.dataset.action = 'preview';
-  const selectors = new Map([['[data-action]', [action, preview]]]);
+  const report = element(); report.dataset.action = 'report';
+  const selectors = new Map([['[data-action]', [action, preview, report]]]);
   const document = { querySelector(selector) {
     if (selector.startsWith('#')) { assert.ok(ids.has(selector), `Missing UI element ${selector}`); return ids.get(selector); }
     return element();
@@ -43,7 +44,7 @@ function boot(fetch) {
     navigator: { serviceWorker: { register: async () => { registered = true; } } },
     window: { setTimeout: () => 1, clearTimeout() {}, setInterval: (fn) => { interval = fn; }, scrollTo() {} },
   });
-  return { ids, action, preview, storage, tick: () => interval(), registered: () => registered };
+  return { ids, action, preview, report, storage, tick: () => interval(), registered: () => registered };
 }
 
 test('uncertain upload disables publishing and an ID does not claim a verified connection', async () => {
@@ -103,6 +104,25 @@ test('rapid repeated clicks create only one publication request', async () => {
   complete(response(202, { requested_count: 1, dispatched: 1 }));
   await first;
   assert.equal(ui.action.disabled, false);
+});
+
+test('YouTube status report is available without enabling publication and does not request a post', async () => {
+  const data = overview();
+  data.channel.enabled = false;
+  data.health.uncertain_uploads = [{ id: 'needs-review' }];
+  const requests = [];
+  const ui = boot(async (_path, options) => {
+    requests.push(options);
+    return options.method === 'POST' ? response(202, { requested_count: 1 }) : response(200, data);
+  });
+  await flush();
+  assert.equal(ui.action.disabled, true);
+  assert.equal(ui.report.disabled, false);
+  await ui.report.emit('click');
+  const body = JSON.parse(requests.find((item) => item.method === 'POST').body);
+  assert.equal(body.mode, 'report');
+  assert.equal(body.count, 1);
+  assert.match(ui.ids.get('#toast').textContent, /GitHub Actions/);
 });
 
 test('analytics section renders retention bars, CTA variants and playlists safely', async () => {

@@ -73,10 +73,21 @@ def build_overview(automation, catalog, ledger, now=None, workflow=None):
         raise DashboardError('Invalid remote ledger job')
     today = now.astimezone(BAGHDAD).date()
     uploaded = []
+    metrics_history = ledger.get('metrics_history', {})
+    health_flags = ledger.get('health_flags', {})
     for job_id, row in jobs.items():
         if not isinstance(row, dict) or row.get('status') != 'uploaded' or not row.get('video_id'):
             continue
         uploaded_at = parse_iso(row.get('uploaded_at') or row.get('started_at'))
+        video_history = metrics_history.get(row['video_id'], []) if isinstance(metrics_history, dict) else []
+        latest_metric = video_history[-1] if isinstance(video_history, list) and video_history else {}
+        if not isinstance(latest_metric, dict):
+            latest_metric = {}
+        video_flags = health_flags.get(row['video_id'], []) if isinstance(health_flags, dict) else []
+        if not isinstance(video_flags, list):
+            video_flags = []
+        if row.get('safety_incident'):
+            video_flags = [*video_flags, 'safety incident']
         uploaded.append({
             'id': job_id,
             'video_id': row['video_id'],
@@ -87,6 +98,8 @@ def build_overview(automation, catalog, ledger, now=None, workflow=None):
             'theme': row.get('visual_theme') or 'Unknown theme',
             'schedule_slot': row.get('schedule_slot'),
             'cta_ok': row.get('cta_comment_succeeded'),
+            'privacy_status': latest_metric.get('privacy_status') if isinstance(latest_metric.get('privacy_status'), str) else 'unknown',
+            'flags': [str(flag)[:80] for flag in video_flags if isinstance(flag, str)],
         })
     uploaded.sort(key=lambda row: row.get('uploaded_at') or '', reverse=True)
     retention = []
@@ -109,9 +122,8 @@ def build_overview(automation, catalog, ledger, now=None, workflow=None):
     except ValueError:
         issues.append('invalid_schedule_data')
         slot_states = []
-    metrics = ledger.get('metrics_history', {}) if isinstance(ledger, dict) else {}
     views = []
-    for history in metrics.values() if isinstance(metrics, dict) else []:
+    for history in metrics_history.values() if isinstance(metrics_history, dict) else []:
         if isinstance(history, list) and history and isinstance(history[-1], dict):
             views.append(safe_int(history[-1].get('view_count')))
     flags = ledger.get('health_flags', {}) if isinstance(ledger, dict) else {}
@@ -129,6 +141,13 @@ def build_overview(automation, catalog, ledger, now=None, workflow=None):
     verified = bool(checked_at and timedelta(0) <= now - checked_at <= timedelta(hours=24)
                     and connection.get('channel_id') == automation.get('channel_id')
                     and connection.get('ok') is True)
+    metrics_checked = parse_iso(ledger.get('metrics_checked_at'))
+    metrics_fresh = bool(metrics_checked and timedelta(0) <= now - metrics_checked <= timedelta(hours=24))
+    recent_check_failed = bool(checked_at and timedelta(0) <= now - checked_at <= timedelta(hours=24)
+                               and isinstance(connection, dict) and connection.get('ok') is False)
+    metrics_status = ('current' if metrics_fresh and verified else
+                      'unavailable' if recent_check_failed else
+                      'stale' if metrics_checked else 'never')
     if not verified:
         issues.append('youtube_not_verified')
     if workflow and workflow.get('conclusion') in ('failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure'):
@@ -176,6 +195,8 @@ def build_overview(automation, catalog, ledger, now=None, workflow=None):
             'flagged_videos': flagged,
             'tracked_videos': len(uploaded),
             'average_latest_views': round(sum(views) / len(views), 1) if views else 0,
+            'metrics_status': metrics_status,
+            'metrics_checked_at': metrics_checked.isoformat() if metrics_checked else None,
         },
         'integrations': {
             'youtube': verified,
@@ -257,7 +278,7 @@ class GitHubClient:
             raise DashboardError(f'Cannot write {path} (HTTP {response.status_code})')
 
     def dispatch(self, mode, count=1, custom_id=''):
-        if not isinstance(mode, str) or mode not in {'publish', 'preview', 'scheduled'}:
+        if not isinstance(mode, str) or mode not in {'publish', 'preview', 'scheduled', 'report'}:
             raise BadRequest('Unsupported workflow mode')
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 5:
             raise BadRequest('count must be an integer between 1 and 5')

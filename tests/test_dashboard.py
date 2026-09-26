@@ -24,17 +24,30 @@ class DashboardTests(unittest.TestCase):
                 },
                 'job-2': {'status': 'uploading', 'video_id': None},
             },
-            'metrics_history': {'abc123': [{'view_count': 42}]},
-            'health_flags': {},
+            'metrics_history': {'abc123': [{'view_count': 42, 'privacy_status': 'public'}]},
+            'metrics_checked_at': now.isoformat(),
+            'youtube_check': {'ok': True, 'channel_id': 'channel', 'checked_at': now.isoformat()},
+            'health_flags': {'abc123': []},
         }
         overview = dashboard.build_overview(automation, {}, ledger, now=now)
         self.assertEqual(overview['schedule']['today_count'], 1)
         self.assertEqual(overview['health']['tracked_videos'], 1)
         self.assertEqual(overview['health']['average_latest_views'], 42.0)
         self.assertEqual(overview['recent'][0]['url'], 'https://www.youtube.com/shorts/abc123')
-        self.assertFalse(overview['integrations']['youtube'])
+        self.assertEqual(overview['recent'][0]['privacy_status'], 'public')
+        self.assertEqual(overview['recent'][0]['flags'], [])
+        self.assertEqual(overview['health']['metrics_status'], 'current')
+        self.assertTrue(overview['integrations']['youtube'])
         self.assertEqual(overview['health']['state'], 'attention')
         self.assertEqual(overview['health']['uncertain_uploads'][0]['id'], 'job-2')
+
+    def test_read_only_report_dispatch_uses_single_input(self):
+        client = dashboard.GitHubClient('secret-token', 'owner/repo', 'main')
+        client.session.post = Mock(return_value=Mock(status_code=204))
+        self.assertEqual(client.dispatch('report', 1), 1)
+        body = client.session.post.call_args.kwargs['json']
+        self.assertEqual(body, {'ref': 'main', 'inputs': {'mode': 'report', 'count': '1'}})
+        self.assertNotIn('secret-token', repr(body))
 
     def test_dispatch_uses_workflow_input_without_exposing_token(self):
         client = dashboard.GitHubClient('secret-token', 'owner/repo', 'main')
@@ -67,6 +80,18 @@ class DashboardTests(unittest.TestCase):
         with self.assertRaises(dashboard.BadRequest):
             client.dispatch('preview', 2)
         client.session.post.assert_not_called()
+
+    def test_metrics_status_surfaces_stale_and_failed_youtube_checks(self):
+        now = datetime(2026, 9, 22, tzinfo=timezone.utc)
+        config = {'enabled': True, 'channel_id': 'expected'}
+        stale = {'jobs': {}, 'metrics_checked_at': (now - timedelta(hours=25)).isoformat(),
+                 'youtube_check': {'ok': True, 'channel_id': 'expected', 'checked_at': (now - timedelta(hours=25)).isoformat()}}
+        failed = {'jobs': {}, 'metrics_checked_at': (now - timedelta(hours=26)).isoformat(),
+                  'youtube_check': {'ok': False, 'checked_at': (now - timedelta(hours=1)).isoformat()}}
+        self.assertEqual(dashboard.build_overview(config, {}, stale, now)['health']['metrics_status'], 'stale')
+        failed_overview = dashboard.build_overview(config, {}, failed, now)
+        self.assertEqual(failed_overview['health']['metrics_status'], 'unavailable')
+        self.assertEqual(failed_overview['health']['metrics_checked_at'], failed['metrics_checked_at'])
 
     def test_connection_requires_recent_matching_success(self):
         now = datetime(2026, 9, 22, tzinfo=timezone.utc)
@@ -191,6 +216,17 @@ class HttpTests(unittest.TestCase):
         self.assertIn("frame-ancestors 'none'", headers['Content-Security-Policy'])
         self.assertNotIn(b'<script>', raw)
         self.assertEqual(self.request('GET', '/../automation.json')[0], 404)
+
+    def test_report_dispatch_remains_available_when_publishing_is_blocked(self):
+        overview = {'channel': {'enabled': False}, 'health': {'uncertain_uploads': [{'id': 'uncertain'}]}}
+        client = Mock(repository='owner/repo')
+        client.dispatch.return_value = 1
+        with patch.object(dashboard.DashboardHandler, '_read_model', return_value=(overview, client)):
+            status, _, raw = self.request('POST', '/api/workflow', '{"mode":"report","count":1}',
+                {'Content-Type': 'application/json', 'X-Dashboard-Key': 'test-key'})
+        self.assertEqual(status, 202)
+        self.assertEqual(json.loads(raw)['mode'], 'report')
+        client.dispatch.assert_called_once_with('report', 1)
 
     def test_dispatch_uses_one_batch_and_blocks_uncertain_upload(self):
         overview = {'channel': {'enabled': True}, 'health': {'uncertain_uploads': []}}

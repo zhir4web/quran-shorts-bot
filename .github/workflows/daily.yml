@@ -18,9 +18,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Preview, force one publish, or safely catch up the schedule
+        description: Preview, publish, catch up the schedule, or sync YouTube status without publishing
         type: choice
-        options: [preview, publish, scheduled]
+        options: [preview, publish, scheduled, report]
         default: preview
       count:
         description: Number of posts in one publish batch (other modes require 1)
@@ -75,7 +75,7 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: python -m pip install -r requirements-lock.txt
       - name: Create or publish the next recording
-        if: steps.gate.outputs.run == 'true'
+        if: steps.gate.outputs.run == 'true' && inputs.mode != 'report'
         env:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

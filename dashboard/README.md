@@ -20,6 +20,11 @@ reverse proxy. Missing remote configuration is an error, not a local fallback.
 
 - One publish request dispatches daily.yml once with mode and count. Counts
   1–5 execute sequentially inside that workflow. Other modes require 1.
+- The YouTube health page has a read-only status sync action. It runs the
+  existing video statistics/privacy check through GitHub Actions without
+  rendering or uploading; updated results appear after the report completes.
+- Recent videos show their last checked visibility and any active health flags.
+  The check timestamp distinguishes current, stale, unavailable and never-checked data.
 - The workflow uses queue: max to retain pending runs. GitHub queue capacity
   and availability remain external limits.
 - Dispatch acceptance means requested, not uploaded. A timeout is an unknown
