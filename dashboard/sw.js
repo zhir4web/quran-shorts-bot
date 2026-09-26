@@ -1,4 +1,4 @@
-const CACHE = 'quran-shorts-dashboard-v2';
+const CACHE = 'quran-shorts-dashboard-v3';
 const SHELL = ['/', '/styles.css', '/app.js', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', (event) => {
