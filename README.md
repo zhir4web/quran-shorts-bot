@@ -60,3 +60,8 @@ $env:GITHUB_BRANCH = "main"
 TikTok تەنها لاپەڕەی زانیارییە؛ پۆستکردنی هێشتا جێبەجێ نەکراوە.
 
 ڕێنمایی زیاتر: [داشبۆرد](dashboard/README.md)، [خۆکارکردن](AUTOMATION.md)، [Cloud Run](CLOUD_RUN.md)، [پشکنین](AUDIT.md).
+
+
+## چاودێری قورئانخوێنی نوێ
+
+workflow ـی reciter watcher هەموو دووشەممە کاتژمێر 08:00 بە کاتی بەغداد لیستی Quran Foundation دەپشکنێت. پشکنینی یەکەم تەنها بنەمای داتا تۆمار دەکات؛ لە هەفتەکانی دواتردا ناسنامە نوێیەکان تەنها بۆ proposed_reciter_ids_for_review زیاد دەکرێن و هەرگیز خۆکارانە ناچنە allowlist. وردەکاری و ناوی قورئانخوێنە نوێیەکان لە Actions → Quran reciter watcher → Summary دەبینرێن؛ ئەگەر DISCORD_WEBHOOK_URL ڕێکخرابێت، ئاگادارکردنەوە لە Discord ـیش دەنێردرێت. شکستی API تەنها لە ڕاپۆرتی ئەم workflow ـەدا نیشان دەدرێت و کاریگەری لە پۆستکردنی ڕۆژانە نییە.
