@@ -183,7 +183,7 @@ class CloudTests(unittest.TestCase):
         with patch.object(cloud, 'get_json', side_effect=api):
             entry, _ = cloud.verse_entry_for_position(catalog, {}, 0)
 
-        self.assertEqual(entry['ayah_text'], arabic)
+        self.assertEqual(entry['ayah_text'], arabic.strip())
         self.assertEqual(entry['ayah_translation'], english)
         self.assertGreater(len(entry['ayah_text']), 180)
         self.assertGreater(len(entry['ayah_translation']), 600)
