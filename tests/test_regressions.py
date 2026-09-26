@@ -190,7 +190,10 @@ class BoundaryTests(unittest.TestCase):
         with patch.object(cloud, 'get_json', side_effect=api):
             entry, _ = cloud.verse_entry_for_position(catalog, jobs, 0)
         self.assertEqual(entry['recitation_id'], 2)
-        self.assertEqual(len(calls), 2)
+        audio_calls = [url for url in calls if '/recitations/' in url]
+        self.assertEqual(len(audio_calls), 2)
+        self.assertTrue(any('/recitations/1/' in url for url in audio_calls))
+        self.assertTrue(any('/recitations/2/' in url for url in audio_calls))
 
 
 if __name__ == '__main__':

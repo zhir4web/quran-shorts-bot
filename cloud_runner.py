@@ -51,10 +51,15 @@ class TooLongRecording(RuntimeError):
 
 
 class NoEligibleVerse(CloudError):
-    def __init__(self, cursor, candidates_checked=0, timed_out=False):
+    def __init__(self, cursor, candidates_checked=0, timed_out=False, rejected=None):
         reason = 'timed out' if timed_out else 'found no eligible verse'
+        details = ''
+        if rejected:
+            summary = ', '.join(f'{key}={value}' for key, value in rejected.items() if value)
+            if summary:
+                details = f' ({summary})'
         super().__init__(
-            f'Quran Foundation search {reason} after {candidates_checked} candidates; '
+            f'Quran Foundation search {reason} after {candidates_checked} candidates{details}; '
             f'the next run resumes at position {cursor}'
         )
         self.cursor = cursor
@@ -332,9 +337,16 @@ def verse_entry_for_position(catalog, jobs, position):
     candidate_limit = min(total_verses * len(english), max_candidates)
     deadline = time.monotonic() + search_timeout
     ordered_reciters = _reciter_order(english, jobs, position, catalog)
+    rejected = {
+        'already_published': 0,
+        'audio_unavailable': 0,
+        'duration_out_of_range': 0,
+        'arabic_text_unavailable_or_too_long': 0,
+        'english_translation_unavailable_or_too_long': 0,
+    }
     for attempt in range(candidate_limit):
         if time.monotonic() >= deadline:
-            raise NoEligibleVerse(position, attempt, timed_out=True)
+            raise NoEligibleVerse(position, attempt, timed_out=True, rejected=rejected)
         if attempt == 0 or (attempt + 1) % 100 == 0:
             print(f'Checking complete-verse candidate {attempt + 1}/{candidate_limit}...', flush=True)
         # Try other reciters when the preferred one's candidates are unsuitable.
@@ -359,15 +371,18 @@ def verse_entry_for_position(catalog, jobs, position):
         next_position = position + 1
         position = next_position
         if key in jobs:
+            rejected['already_published'] += 1
             continue
         payload = get_json(urljoin(QURAN_API, f'recitations/{reciter_id}/by_ayah/{chapter_id}:{verse_number}'),
                            {'fields': 'chapter_id,verse_number,verse_key,duration,url,segments'})
         files = payload.get('audio_files', [])
         if len(files) != 1:
+            rejected['audio_unavailable'] += 1
             continue
         audio = files[0]
         hint = float(audio.get('duration') or 0)
         if not float(catalog.get('min_audio_seconds', 30)) <= hint <= float(catalog['max_audio_seconds']):
+            rejected['duration_out_of_range'] += 1
             continue
         relative_url = audio.get('url', '')
         audio_url = quran_audio_url(relative_url)
@@ -381,21 +396,37 @@ def verse_entry_for_position(catalog, jobs, position):
             raise ValueError('Quran text does not match the requested verse')
         ayah_text = text_rows[0].get('text_uthmani', '').strip() if len(text_rows) == 1 else ''
         if not ayah_text or len(ayah_text) > catalog['max_ayah_characters']:
+            rejected['arabic_text_unavailable_or_too_long'] += 1
             continue
+        # Use the dedicated translation endpoint documented by Quran Foundation.
+        # The older verse-by-key response has varied between nested and flat
+        # translation payloads, so accept either response shape during migration.
         translation_payload = get_json(
-            urljoin(QURAN_API, f'verses/by_key/{expected_key}'),
-            {'translations': str(ENGLISH_TRANSLATION_ID)})
-        translated_verse = translation_payload.get('verse', {})
-        if translated_verse.get('verse_key') != expected_key:
-            raise ValueError('English translation does not match the requested verse')
-        translation_rows = translated_verse.get('translations', [])
+            urljoin(QURAN_API, f'translations/{ENGLISH_TRANSLATION_ID}'),
+            {'verse_key': expected_key, 'fields': 'verse_key,language_name'})
+        translation_rows = translation_payload.get('translations', [])
         translation_row = next((row for row in translation_rows
                                 if str(row.get('resource_id')) == str(ENGLISH_TRANSLATION_ID)), None)
+        if not translation_row:
+            # Compatibility fallback for Quran Foundation's legacy verse endpoint.
+            legacy_payload = get_json(
+                urljoin(QURAN_API, f'verses/by_key/{expected_key}'),
+                {'translations': str(ENGLISH_TRANSLATION_ID),
+                 'translation_fields': 'verse_key,language_name'})
+            translated_verse = legacy_payload.get('verse', legacy_payload)
+            if (translated_verse.get('verse_key') not in (None, expected_key)):
+                raise ValueError('English translation does not match the requested verse')
+            legacy_rows = translated_verse.get('translations', [])
+            translation_row = next((row for row in legacy_rows
+                                    if str(row.get('resource_id')) == str(ENGLISH_TRANSLATION_ID)), None)
+        if translation_row and translation_row.get('verse_key') not in (None, expected_key):
+            raise ValueError('English translation does not match the requested verse')
         if (translation_row and
-                str(translation_row.get('language_name', 'english')).casefold() != 'english'):
+                str(translation_row.get('language_name') or 'english').casefold() != 'english'):
             translation_row = None
         ayah_translation = clean_translation_text(translation_row.get('text')) if translation_row else ''
         if not ayah_translation or len(ayah_translation) > 600:
+            rejected['english_translation_unavailable_or_too_long'] += 1
             continue
         style = reciter.get('style') or ''
         reciter_ar = arabic_names.get(reciter_id) or reciter.get('reciter_name')
@@ -419,7 +450,7 @@ def verse_entry_for_position(catalog, jobs, position):
             # same visual theme, even after a restart.
             'visual_theme': catalog['visual_themes'][(next_position - 1) % len(catalog['visual_themes'])],
         }, next_position)
-    raise NoEligibleVerse(position, candidate_limit)
+    raise NoEligibleVerse(position, candidate_limit, rejected=rejected)
 
 
 def load_catalog(path):

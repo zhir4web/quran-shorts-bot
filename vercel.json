@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/api/overview", "destination": "/api" },
+    { "source": "/api/config", "destination": "/api" },
+    { "source": "/api/workflow", "destination": "/api" },
+    { "source": "/api/submit-clip", "destination": "/api" },
+    { "source": "/", "destination": "/dashboard/index.html" },
+    { "source": "/(.*)", "destination": "/dashboard/$1" }
+  ],
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 30,
+      "excludeFiles": "{tests/**,work/**,state/**,.bot-state/**,assets/**,dashboard/**,diagnostics/**,legacy/**,outputs/**,.github/**,**/*.mp4,**/*.mov,**/*.webm,**/*.mp3,**/*.wav,**/*.png,**/*.jpg,**/*.zip,**/*.ttf}"
+    }
+  }
+}

@@ -275,6 +275,12 @@ class GitHubClient:
             }, timeout=20)
         except requests.RequestException:
             raise DashboardError('Dispatch outcome unknown; check GitHub Actions before retrying') from None
+        if response.status_code == HTTPStatus.NOT_FOUND:
+            raise DashboardError(
+                'GitHub could not dispatch this workflow. Check that Vercel GITHUB_TOKEN has '
+                'Contents: read and Actions: write access to this repository, and that '
+                'workflow_dispatch is enabled.'
+            )
         if response.status_code != HTTPStatus.NO_CONTENT:
             raise DashboardError(f'Workflow dispatch failed (HTTP {response.status_code})')
         return count
