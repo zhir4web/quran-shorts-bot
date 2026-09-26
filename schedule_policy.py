@@ -3,8 +3,8 @@ from datetime import datetime, timedelta, timezone
 
 
 BAGHDAD = timezone(timedelta(hours=3), 'Asia/Baghdad')
-# Deliberately early slots absorb GitHub Actions queue delay.
-PUBLICATION_HOURS = (5, 9, 15)
+# Baghdad publication slots; workflow cron heartbeats begin five minutes early.
+PUBLICATION_HOURS = (6, 12, 18)
 
 
 def parse_iso(value):

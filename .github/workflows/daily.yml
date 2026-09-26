@@ -1,21 +1,20 @@
 name: Quran Shorts - 3 Daily
 on:
   schedule:
-    # Baghdad windows: 04:55-05:45, 08:55-09:45, and 14:55-15:45.
-    # The first heartbeat starts five minutes before each target so a small
-    # GitHub queue delay does not push the post into the next window. The
-    # runner catches up 05:00/09:00/15:00 slots and the durable ledger makes
-    # repeated triggers safe. GitHub cron is still best-effort; the timing
-    # report measures any remaining platform delay.
-    - cron: '55 1 * * *'
-    - cron: '0,15,30,45 2 * * *'
-    - cron: '55 5 * * *'
-    - cron: '0,15,30,45 6 * * *'
-    - cron: '55 11 * * *'
-    - cron: '0,15,30,45 12 * * *'
+    # Baghdad windows: 05:55-06:45, 11:55-12:45, and 17:55-18:45.
+    # Cron is UTC: these windows start at 02:55, 08:55, and 14:55 UTC.
+    # The runner catches up 06:00/12:00/18:00 Baghdad slots; the durable
+    # ledger makes repeated triggers safe. GitHub cron is best-effort; the
+    # timing report measures any remaining platform delay.
+    - cron: '55 2 * * *'
+    - cron: '0,15,30,45 3 * * *'
+    - cron: '55 8 * * *'
+    - cron: '0,15,30,45 9 * * *'
+    - cron: '55 14 * * *'
+    - cron: '0,15,30,45 15 * * *'
     # Recovery heartbeats after the final target let a delayed runner catch up
     # all due slots with the ledger's twenty-minute spacing protection.
-    - cron: '0,15,30,45 13,14,15,16,17 * * *'
+    - cron: '0,15,30,45 16,17,18,19,20 * * *'
   workflow_dispatch:
     inputs:
       mode:

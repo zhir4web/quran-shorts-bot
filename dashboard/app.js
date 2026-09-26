@@ -166,7 +166,7 @@
   }
 
   function renderSchedule(data) {
-    const slots = data.schedule?.slots || ['05:00', '09:00', '15:00'];
+    const slots = data.schedule?.slots || ['06:00', '12:00', '18:00'];
     const states = data.schedule?.slot_states || [];
     const rows = slots.map((slot, index) => {
       const done = states[index]?.completed === true;
