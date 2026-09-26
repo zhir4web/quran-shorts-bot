@@ -51,7 +51,7 @@
   "background_clips_per_video": 2,
   "background_crossfade_seconds": 0.45,
   "show_verified_ayah_text": true,
-  "max_ayah_characters": 180,
+  "max_ayah_characters": 240,
   "permission_url": "https://api-docs.quran.com/legal/developer-terms/",
   "attribution": "Recitation audio provided by Quran Foundation (Quran.com)",
   "rights": "Used in a credited social-media video under the Quran Foundation Developer Terms",
