@@ -1925,7 +1925,11 @@ def run_performance_report(service, ledger, analytics=None):
         ledger.load()
         verify_channel(service, ledger, config)
         report = collect_performance_metrics(service, ledger, config.get('privacy', 'private'))
-        catalog = load_catalog(ROOT / 'catalog.json')
+        try:
+            catalog = load_catalog(ROOT / 'catalog.json')
+        except Exception as error:
+            print(f"Performance preference configuration unavailable: {type(error).__name__}")
+            catalog = {}
         report['selection_bias'] = {
             'enabled': bool(catalog.get('performance_bias_enabled', False)),
             'minimum_videos': catalog.get('performance_bias_min_videos', 3),
@@ -1937,7 +1941,7 @@ def run_performance_report(service, ledger, analytics=None):
                 kind="health", key=f"health:{row['video_id']}:{row['flag']}")
         alerted_slots = ledger.data.setdefault('schedule_alerts', {})
         saved_alert = False
-        for row in (report.get('schedule') or {}).get('overdue_slots', []):
+        for row in report.get('schedule', {}).get('overdue_slots', []):
             slot = row['slot']
             if slot in alerted_slots:
                 continue
