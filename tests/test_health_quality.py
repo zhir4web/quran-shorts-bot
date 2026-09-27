@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+from datetime import datetime
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import bot
 import cloud_runner as cloud
