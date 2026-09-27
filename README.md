@@ -65,3 +65,16 @@ TikTok تەنها لاپەڕەی زانیارییە؛ پۆستکردنی هێش�
 ## چاودێری قورئانخوێنی نوێ
 
 workflow ـی reciter watcher هەموو دووشەممە کاتژمێر 08:00 بە کاتی بەغداد لیستی Quran Foundation دەپشکنێت. پشکنینی یەکەم تەنها بنەمای داتا تۆمار دەکات؛ لە هەفتەکانی دواتردا ناسنامە نوێیەکان تەنها بۆ proposed_reciter_ids_for_review زیاد دەکرێن و هەرگیز خۆکارانە ناچنە allowlist. وردەکاری و ناوی قورئانخوێنە نوێیەکان لە Actions → Quran reciter watcher → Summary دەبینرێن؛ ئەگەر DISCORD_WEBHOOK_URL ڕێکخرابێت، ئاگادارکردنەوە لە Discord ـیش دەنێردرێت. شکستی API تەنها لە ڕاپۆرتی ئەم workflow ـەدا نیشان دەدرێت و کاریگەری لە پۆستکردنی ڕۆژانە نییە.
+
+## باگراوندی تازەی Pexels
+
+بۆ چالاککردنی کلیپی portraitی نوێی Pexels، API key ـێک لە Pexels Developer بگرە و لە
+GitHub repository ـەکەدا بیخە ناو **Settings → Secrets and variables → Actions → New repository secret**.
+ناوی secret دەبێت بە وردی \`PEXELS_API_KEY\` بێت. ئەم کلیلە تەنها لە GitHub Actions ـی
+publish بەکاردێت؛ پێویست ناکات لە Vercel دایبنێیت.
+
+بۆتەکە بە API کلیپی نوێی portrait بە کوالیتی گونجاو دەهێنێت، کلیپی بەکارهاتوو تا
+تەواوبوونی ئەنجامە بەردەستەکان دووبارە هەڵنابژێرێت، و ناوی دروستکەر و بەستەری
+Pexels و license لە description زیاد دەکات. زانیاری ناسنامە و checksum لە ledger
+دەمێنێت، خودی کلیپەکان دوای render پاک دەکرێنەوە. ئەگەر secret نەبێت یان API
+بەردەست نەبێت، publish بە کلیپە ناوخۆییە پشکنراوەکان بەردەوام دەبێت.
