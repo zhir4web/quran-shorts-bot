@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import requests
 
 
-SEARCH_URL = "https://api.pexels.com/videos/search"
+SEARCH_URL = "https://api.pexels.com/v1/videos/search"
 MIN_SHORT_DIMENSION = 1080
 MIN_PORTRAIT_RATIO = 1.55
 MIN_DURATION_SECONDS = 6
