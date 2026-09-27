@@ -14,11 +14,14 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 from urllib.parse import urljoin, urlparse
 
 import requests
+import background_provider
 import bot
 import notifications
 from schedule_policy import BAGHDAD, PUBLICATION_HOURS as PUBLICATION_HOURS, schedule_state
@@ -1247,7 +1250,7 @@ def choose_scene_cuts(duration, scene_count, word_layers, minimum_segment=6.0):
     return boundaries
 
 
-def item_for(entry, source, background, motion_overlay=None, background_video=None, used_clips=None, used_playlists=None, portrait_backgrounds=False, background_clip_count=3):
+def item_for(entry, source, background, motion_overlay=None, background_video=None, used_clips=None, used_playlists=None, portrait_backgrounds=False, background_clip_count=3, external_backgrounds=None):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
     cta = bot.CTA_COMMENTS[cta_index]
     verse_caption = verse_label(entry, arabic=True)
@@ -1268,6 +1271,17 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
         description = (f"تلاوة سورة {entry['surah_ar']}، بصوت "
                        f"{entry.get('reciter_ar', 'قارئ')}.\n\n"
                        f"{entry['attribution']}\n\n{entry['permission_url']}\n\n{cta}")
+    external_backgrounds = [row for row in (external_backgrounds or [])
+                            if isinstance(row, dict)]
+    if external_backgrounds:
+        credits = []
+        for row in external_backgrounds:
+            creator = str(row.get('creator') or 'Pexels creator').strip()
+            page_url = str(row.get('page_url') or 'https://www.pexels.com/')
+            credits.append(f"خلفية الفيديو: {creator} — Pexels: {page_url}")
+        credits.append("الترخيص: Pexels License — https://www.pexels.com/license/")
+        description = description.rstrip() + "\n\n" + "\n".join(credits)
+
     item = {'id': entry['id'], 'mode': 'compose', 'source': str(source.resolve()),
             'background': str(background.resolve()), 'start': 0, 'duration': entry['duration'],
             'min_duration_seconds': 30,
@@ -1287,7 +1301,14 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
         item['verse_key'] = entry['verse_key']
     explicit_background = Path(background_video).resolve() if background_video else None
     folder = ROOT / 'assets' / 'backgrounds' / 'video'
-    if portrait_backgrounds and explicit_background is None:
+    external_paths = [Path(row['path']).resolve() for row in external_backgrounds
+                      if row.get('path')]
+    if external_backgrounds and explicit_background is None:
+        if len(external_paths) < 2 or any(not path.is_file() for path in external_paths):
+            raise FileNotFoundError('Pexels backgrounds are incomplete')
+        filmed = external_paths[0]
+        pool = external_paths
+    elif portrait_backgrounds and explicit_background is None:
         pool = reviewed_background_pool(folder, portrait=True)
         if len(pool) < 2:
             raise FileNotFoundError('At least two licensed 9:16 background clips are required')
@@ -1311,18 +1332,35 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
     if filmed:
         item['background_video'] = str(filmed.resolve())
         item['background_motion'] = 'real_video'
-        item['visual_theme'] = filmed.stem
-        if portrait_backgrounds and explicit_background is None:
+        item['visual_theme'] = (entry.get('visual_theme', filmed.stem)
+                                if external_backgrounds and explicit_background is None
+                                else filmed.stem)
+        if external_backgrounds and explicit_background is None:
+            ordered = external_paths
             item['background_orientation'] = 'portrait'
-        ordered, repeated_clip, repeated_plan = choose_background_playlist(
-            entry['id'], filmed, used_clips, pool,
-            used_playlists=used_playlists, count=background_clip_count
-        )
-        if len(ordered) < 2 and portrait_backgrounds and explicit_background is None:
-            raise FileNotFoundError('A Short needs at least two distinct portrait clips')
+            item['background_sources'] = [
+                {key: row.get(key) for key in (
+                    'video_id', 'creator', 'creator_url', 'page_url', 'license',
+                    'license_url', 'sha256', 'width', 'height', 'duration', 'reused'
+                ) if row.get(key) is not None}
+                for row in external_backgrounds
+            ]
+            item['background_clip_cycle_reused'] = any(
+                row.get('reused') is True for row in external_backgrounds
+            )
+            item['background_playlist_reused'] = item['background_clip_cycle_reused']
+        else:
+            if portrait_backgrounds and explicit_background is None:
+                item['background_orientation'] = 'portrait'
+            ordered, repeated_clip, repeated_plan = choose_background_playlist(
+                entry['id'], filmed, used_clips, pool,
+                used_playlists=used_playlists, count=background_clip_count
+            )
+            if len(ordered) < 2 and portrait_backgrounds and explicit_background is None:
+                raise FileNotFoundError('A Short needs at least two distinct portrait clips')
+            item['background_clip_cycle_reused'] = repeated_clip
+            item['background_playlist_reused'] = repeated_plan
         item['background_playlist'] = [str(clip.resolve()) for clip in ordered]
-        item['background_clip_cycle_reused'] = repeated_clip
-        item['background_playlist_reused'] = repeated_plan
         item['background_scene_boundaries'] = choose_scene_cuts(
             float(entry['duration']), len(ordered), None
         )
@@ -1356,6 +1394,33 @@ def reviewed_background_pool(folder, portrait=False):
                 continue
         clips.append(clip.resolve())
     return clips
+
+
+def best_effort_pexels_backgrounds(api_key, theme, used_ids, count, destination=None):
+    """Download and validate stock footage without ever blocking local fallback."""
+    if not api_key:
+        return [], None
+    folder = Path(destination) if destination else Path(
+        tempfile.mkdtemp(prefix='quran-shorts-pexels-')
+    )
+    try:
+        sources = background_provider.download_fresh_backgrounds(
+            api_key, theme, used_ids, destination=folder, count=count
+        )
+        for source in sources:
+            bot.validate_background_source(Path(source['path']), portrait=True)
+        return sources, folder
+    except Exception as error:
+        shutil.rmtree(folder, ignore_errors=True)
+        # Do not log response bodies, URLs, or credentials.
+        print('Pexels backgrounds unavailable; using reviewed local footage '
+              f'({type(error).__name__}).', flush=True)
+        return [], None
+
+
+def cleanup_pexels_backgrounds(folder):
+    if folder:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def surah_playlist_title(entry):
@@ -1982,17 +2047,35 @@ def run(args, ledger=None, service=None):
                         for path in row.get('background_playlist', [])}
     prior_playlists = [row.get('background_playlist', []) for row in jobs.values()
                        if row.get('background_playlist')]
+    background_clip_count = int(catalog_settings.get('background_clips_per_video', 3))
+    used_pexels_ids = {
+        str(source.get('video_id'))
+        for row in jobs.values() if isinstance(row, dict)
+        for source in row.get('background_sources', [])
+        if isinstance(source, dict) and source.get('video_id') is not None
+    }
+    external_backgrounds, pexels_temp = [], None
+    if (not custom_background and
+            catalog_settings.get('pexels_backgrounds_enabled') is True):
+        external_backgrounds, pexels_temp = best_effort_pexels_backgrounds(
+            os.environ.get('PEXELS_API_KEY', '').strip(),
+            entry.get('visual_theme'), used_pexels_ids, background_clip_count
+        )
     job = item_for(
         entry, source, card, motion, background_video=custom_background,
         used_clips=used_backgrounds, used_playlists=prior_playlists,
         portrait_backgrounds=(catalog_settings.get('background_orientation') == 'portrait'),
-        background_clip_count=int(catalog_settings.get('background_clips_per_video', 3))
+        background_clip_count=background_clip_count,
+        external_backgrounds=external_backgrounds
     )
     print('Rendering cinematic montage with crossfades...', flush=True)
     queue = workspace / 'queue.json'
-    bot.atomic_json(queue, {'items': [job]})
-    bot.load_queue(queue)  # Apply the same metadata and permission checks as local runs.
-    target = bot.render(job, ROOT, workspace)
+    try:
+        bot.atomic_json(queue, {'items': [job]})
+        bot.load_queue(queue)  # Apply the same metadata and permission checks as local runs.
+        target = bot.render(job, ROOT, workspace)
+    finally:
+        cleanup_pexels_backgrounds(pexels_temp)
     if media_duration(target) < 30:
         raise TooShortRecording('Rendered video is under 30 seconds; upload blocked')
     print('Preview ready:', target)
@@ -2008,6 +2091,7 @@ def run(args, ledger=None, service=None):
                          'verse_end': entry.get('verse_end', entry.get('verse_number')),
                          'visual_theme': job.get('visual_theme'),
                          'background_playlist': job.get('background_playlist', []),
+                         'background_sources': job.get('background_sources', []),
                          'word_timing_mode': job.get('word_timing_mode'),
                          'render_sha256': bot.file_hash(target),
                          'started_at': datetime.now(timezone.utc).isoformat()}
