@@ -57,5 +57,8 @@
   "attribution": "Recitation audio provided by Quran Foundation (Quran.com)",
   "rights": "Used in a credited social-media video under the Quran Foundation Developer Terms",
   "background_orientation": "portrait",
-  "text_presentation": "static_full_ayah"
+  "text_presentation": "static_full_ayah",
+  "performance_bias_enabled": false,
+  "performance_bias_min_videos": 3,
+  "performance_bias_strength": 0.15
 }
