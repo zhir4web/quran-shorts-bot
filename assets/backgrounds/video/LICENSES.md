@@ -30,3 +30,22 @@ Each Short mixes two different clips from the individually license-verified nati
 | `starry_night.mp4` | `starry_night` | https://www.pexels.com/video/starry-night-4483990/ | Pexels License |
 | `ocean_moon.mp4` | `ocean_moon` | https://www.pexels.com/video/full-moon-over-tranquil-ocean-waves-at-dusk-29125229/ | Pexels License |
 | `dawn_mosque.mp4` | `dawn_mosque` | https://www.pexels.com/video/sunset-mosque-17874608/ | Pexels License |
+
+## Optional live Pexels API backgrounds
+
+When \`pexels_backgrounds_enabled\` is true in \`catalog.json\` and the
+\`PEXELS_API_KEY\` GitHub Actions secret is configured, the renderer can
+search Pexels for native portrait videos that are at least 1080 pixels on
+their shorter side. It uses the Pexels API and the Pexels License; it does
+not download arbitrary YouTube videos. Existing render code uses only the
+video stream, so any source-clip audio is discarded and the Quran recitation
+remains the soundtrack.
+
+The selected Pexels video IDs, source page, creator, license, dimensions,
+and SHA-256 checksum are saved with the uploaded job in the durable ledger.
+The description credits each creator and links to Pexels and its license.
+Downloaded files are temporary render inputs and are removed after rendering;
+they are not committed to this repository. Previously used Pexels IDs are
+avoided until the eligible search results are exhausted. If the API, key,
+download, or source validation is unavailable, the bot falls back to its
+existing locally reviewed clips and continues the normal publishing flow.
