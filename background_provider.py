@@ -89,7 +89,7 @@ def _candidate(video, used_ids=()):
 
 
 def download_fresh_backgrounds(api_key, theme, used_ids, destination=None, count=2,
-                               request_get=None, max_pages=3):
+                               request_get=None, max_pages=10):
     """Search and download unique, native portrait clips; never log the API key."""
     if not str(api_key or "").strip():
         raise PexelsUnavailable("Pexels API key is not configured")
