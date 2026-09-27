@@ -45,7 +45,7 @@ The selected Pexels video IDs, source page, creator, license, dimensions,
 and SHA-256 checksum are saved with the uploaded job in the durable ledger.
 The description credits each creator and links to Pexels and its license.
 Downloaded files are temporary render inputs and are removed after rendering;
-they are not committed to this repository. Previously used Pexels IDs are
-avoided until the eligible search results are exhausted. If the API, key,
+they are not committed to this repository. Previously used Pexels IDs are avoided while fresh matching clips appear in up to
+10 search-result pages; after those results are exhausted, known clips may repeat. If the API, key,
 download, or source validation is unavailable, the bot falls back to its
 existing locally reviewed clips and continues the normal publishing flow.
