@@ -70,7 +70,7 @@ workflow ـی reciter watcher هەموو دووشەممە کاتژمێر 08:00 �
 
 بۆ چالاککردنی کلیپی portraitی نوێی Pexels، API key ـێک لە Pexels Developer بگرە و لە
 GitHub repository ـەکەدا بیخە ناو **Settings → Secrets and variables → Actions → New repository secret**.
-ناوی secret دەبێت بە وردی \`PEXELS_API_KEY\` بێت. ئەم کلیلە تەنها لە GitHub Actions ـی
+ناوی secret دەبێت بە وردی `PEXELS_API_KEY` بێت. ئەم کلیلە تەنها لە GitHub Actions ـی
 publish بەکاردێت؛ پێویست ناکات لە Vercel دایبنێیت.
 
 بۆتەکە بە API کلیپی نوێی portrait بە کوالیتی گونجاو دەهێنێت، کلیپی بەکارهاتوو تا
