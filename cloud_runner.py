@@ -1276,9 +1276,11 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
     if external_backgrounds:
         credits = []
         for row in external_backgrounds:
-            creator = str(row.get('creator') or 'Pexels creator').strip()
+            creator = ' '.join(str(row.get('creator') or 'Pexels creator').split())[:120]
             page_url = str(row.get('page_url') or 'https://www.pexels.com/')
-            credits.append(f"خلفية الفيديو: {creator} — Pexels: {page_url}")
+            creator_url = str(row.get('creator_url') or page_url)
+            credits.append(f"خلفية الفيديو: {creator} — {creator_url}; Pexels: {page_url}")
+        credits.append("Pexels: https://www.pexels.com/")
         credits.append("الترخيص: Pexels License — https://www.pexels.com/license/")
         description = description.rstrip() + "\n\n" + "\n".join(credits)
 
