@@ -41,3 +41,14 @@ publish --count N تا پێنج پۆست لە یەک کاردا بە ڕیز جێ
 داشبۆرد بەشی «کارایی و داتا»ی هەیە کە سێ شت نیشان دەدات لە تۆمارەکەوە: retention بۆ هەر ڤیدیۆ (بەرزترین بۆ نزمترین)، بەراوردی جۆرەکانی کۆمێنتی CTA، و بەستەری playlist ـە کاشکراوەکان. ئەم داتایانە تەنها کاتێک پڕ دەبنەوە کە scope ـی analytics چالاک بێت و ڕاپۆرتی ڕۆژانە جێبەجێ بووبێت؛ تا ئەو کاتە پەیامی empty-state ـی ڕوون دەردەکەوێت.
 
 چاکسازییەکان تەنها لەم کۆپییە ناوخۆییەدان تا repository و داشبۆردی میوانکراو نوێ بکرێنەوە.
+
+
+## Backup timer for posting delays
+
+GitHub's scheduled events are best-effort and can be delayed or dropped under load. To reduce long gaps, the dashboard also has a restricted endpoint for a free external timer. This endpoint can only ask the existing workflow to process a due scheduled slot; it cannot request manual publishing, choose a batch size, or bypass the ledger and upload safety checks.
+
+1. In Vercel → Project → Settings → Environment Variables, add `SCHEDULE_TRIGGER_KEY` as a Production secret. Use a new long random value, separate from `DASHBOARD_KEY`, then redeploy Production.
+2. In cron-job.org, create three HTTPS POST jobs for `https://quran-shorts-bot.vercel.app/api/schedule-trigger`, at 06:00, 12:00, and 18:00 in the `Asia/Baghdad` timezone.
+3. For each job, set `Content-Type: application/json` and `X-Schedule-Key: [the same SCHEDULE_TRIGGER_KEY]`; set the body to `{"trigger":"scheduled"}`.
+
+The timer receives a short accepted/no-due response after asking GitHub to start the existing workflow. GitHub still performs video creation and upload. The original GitHub schedule remains enabled as a backup; the durable ledger and workflow concurrency guard prevent duplicate scheduled uploads. Both services are best-effort, so this reduces the chance of a multi-hour delay but cannot guarantee an exact publish minute.

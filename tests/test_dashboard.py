@@ -162,6 +162,7 @@ class HttpTests(unittest.TestCase):
     def setUp(self):
         self.server = dashboard.DashboardServer(('127.0.0.1', 0), dashboard.DashboardHandler,
                                                  'never-expose-this', 'owner/repo', 'main', 'test-key')
+        self.server.schedule_trigger_key = 'cron-only-key'
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.addCleanup(self.close)
@@ -179,6 +180,54 @@ class HttpTests(unittest.TestCase):
             return response.status, dict(response.getheaders()), response.read()
         finally:
             connection.close()
+
+    def test_schedule_trigger_uses_its_own_key_and_can_only_dispatch_due_scheduled_work(self):
+        client = Mock(repository='owner/repo')
+        client.file_json.side_effect = [{'enabled': True}, {'jobs': {}}]
+        client.dispatch.return_value = 1
+        headers = {'Content-Type': 'application/json', 'X-Schedule-Key': 'cron-only-key'}
+        with patch.object(dashboard, 'GitHubClient', return_value=client), \
+                patch.object(dashboard, 'schedule_state', return_value={'next_due': '2026-09-27/06:00'}):
+            status, _, raw = self.request('POST', '/api/schedule-trigger',
+                                         '{"trigger":"scheduled"}', headers)
+        self.assertEqual(status, 202)
+        self.assertEqual(json.loads(raw)['mode'], 'scheduled')
+        client.dispatch.assert_called_once_with('scheduled', 1)
+        client.file_json.assert_any_call('automation.json')
+        client.file_json.assert_any_call(dashboard.STATE_PATH, {'schema': 1, 'jobs': {}})
+
+    def test_schedule_trigger_rejects_missing_wrong_and_privileged_requests(self):
+        client = Mock(repository='owner/repo')
+        with patch.object(dashboard, 'GitHubClient', return_value=client):
+            for headers in ({'Content-Type': 'application/json'},
+                            {'Content-Type': 'application/json', 'X-Schedule-Key': 'wrong'}):
+                status, _, _ = self.request('POST', '/api/schedule-trigger',
+                                            '{"trigger":"scheduled"}', headers)
+                self.assertEqual(status, 401)
+            status, _, _ = self.request('POST', '/api/schedule-trigger',
+                '{"trigger":"publish","count":5}',
+                {'Content-Type': 'application/json', 'X-Schedule-Key': 'cron-only-key'})
+        self.assertEqual(status, 400)
+        client.dispatch.assert_not_called()
+        client.file_json.assert_not_called()
+
+    def test_schedule_trigger_skips_when_disabled_uncertain_or_nothing_is_due(self):
+        headers = {'Content-Type': 'application/json', 'X-Schedule-Key': 'cron-only-key'}
+        for automation, ledger, due, expected_status in (
+                ({'enabled': False}, {'jobs': {}}, '2026-09-27/06:00', 409),
+                ({'enabled': True}, {'jobs': {'x': {'status': 'uploading'}}},
+                 '2026-09-27/06:00', 409),
+                ({'enabled': True}, {'jobs': {}}, None, 200)):
+            client = Mock(repository='owner/repo')
+            client.file_json.side_effect = [automation, ledger]
+            with patch.object(dashboard, 'GitHubClient', return_value=client), \
+                    patch.object(dashboard, 'schedule_state', return_value={'next_due': due}):
+                status, _, raw = self.request('POST', '/api/schedule-trigger',
+                    '{"trigger":"scheduled"}', headers)
+            self.assertEqual(status, expected_status)
+            if expected_status == 200:
+                self.assertEqual(json.loads(raw)['dispatched'], 0)
+            client.dispatch.assert_not_called()
 
     def test_api_requires_key_and_config_never_exposes_token(self):
         self.assertEqual(self.request('GET', '/api/config')[0], 401)

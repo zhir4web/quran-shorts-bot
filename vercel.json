@@ -18,6 +18,10 @@
       "destination": "/api?route=submit-clip"
     },
     {
+      "source": "/api/schedule-trigger",
+      "destination": "/api?route=schedule-trigger"
+    },
+    {
       "source": "/",
       "destination": "/dashboard/index.html"
     },
