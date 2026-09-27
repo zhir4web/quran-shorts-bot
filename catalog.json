@@ -34,6 +34,7 @@
   "max_audio_seconds": 58,
   "tail_silence_seconds": 1,
   "visual_style": "real_video_assets",
+  "pexels_backgrounds_enabled": true,
   "visual_themes": [
     "cinematic_coast_01",
     "cinematic_coast_02",
