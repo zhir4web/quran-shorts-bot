@@ -1927,6 +1927,8 @@ def run_performance_report(service, ledger, analytics=None):
         report = collect_performance_metrics(service, ledger, config.get('privacy', 'private'))
         try:
             catalog = load_catalog(ROOT / 'catalog.json')
+            if not isinstance(catalog, dict):
+                catalog = {}
         except Exception as error:
             print(f"Performance preference configuration unavailable: {type(error).__name__}")
             catalog = {}
@@ -1941,7 +1943,7 @@ def run_performance_report(service, ledger, analytics=None):
                 kind="health", key=f"health:{row['video_id']}:{row['flag']}")
         alerted_slots = ledger.data.setdefault('schedule_alerts', {})
         saved_alert = False
-        for row in report.get('schedule', {}).get('overdue_slots', []):
+        for row in (report.get('schedule') or {}).get('overdue_slots', []):
             slot = row['slot']
             if slot in alerted_slots:
                 continue
