@@ -2061,19 +2061,44 @@ def run(args, ledger=None, service=None):
             os.environ.get('PEXELS_API_KEY', '').strip(),
             entry.get('visual_theme'), used_pexels_ids, background_clip_count
         )
-    job = item_for(
-        entry, source, card, motion, background_video=custom_background,
-        used_clips=used_backgrounds, used_playlists=prior_playlists,
-        portrait_backgrounds=(catalog_settings.get('background_orientation') == 'portrait'),
-        background_clip_count=background_clip_count,
-        external_backgrounds=external_backgrounds
-    )
+    def build_job(background_sources):
+        return item_for(
+            entry, source, card, motion, background_video=custom_background,
+            used_clips=used_backgrounds, used_playlists=prior_playlists,
+            portrait_backgrounds=(catalog_settings.get('background_orientation') == 'portrait'),
+            background_clip_count=background_clip_count,
+            external_backgrounds=background_sources
+        )
+
+    try:
+        job = build_job(external_backgrounds)
+    except Exception as error:
+        if not external_backgrounds:
+            raise
+        print('Pexels metadata setup failed; using reviewed local footage '
+              f'({type(error).__name__}).', flush=True)
+        cleanup_pexels_backgrounds(pexels_temp)
+        pexels_temp, external_backgrounds = None, []
+        job = build_job([])
+
     print('Rendering cinematic montage with crossfades...', flush=True)
     queue = workspace / 'queue.json'
     try:
         bot.atomic_json(queue, {'items': [job]})
         bot.load_queue(queue)  # Apply the same metadata and permission checks as local runs.
-        target = bot.render(job, ROOT, workspace)
+        try:
+            target = bot.render(job, ROOT, workspace)
+        except Exception as error:
+            if not external_backgrounds:
+                raise
+            print('Pexels render failed; retrying with reviewed local footage '
+                  f'({type(error).__name__}).', flush=True)
+            cleanup_pexels_backgrounds(pexels_temp)
+            pexels_temp, external_backgrounds = None, []
+            job = build_job([])
+            bot.atomic_json(queue, {'items': [job]})
+            bot.load_queue(queue)
+            target = bot.render(job, ROOT, workspace)
     finally:
         cleanup_pexels_backgrounds(pexels_temp)
     if media_duration(target) < 30:
