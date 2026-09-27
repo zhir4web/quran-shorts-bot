@@ -33,8 +33,8 @@ Each Short mixes two different clips from the individually license-verified nati
 
 ## Optional live Pexels API backgrounds
 
-When \`pexels_backgrounds_enabled\` is true in \`catalog.json\` and the
-\`PEXELS_API_KEY\` GitHub Actions secret is configured, the renderer can
+When `pexels_backgrounds_enabled` is true in `catalog.json` and the
+`PEXELS_API_KEY` GitHub Actions secret is configured, the renderer can
 search Pexels for native portrait videos that are at least 1080 pixels on
 their shorter side. It uses the Pexels API and the Pexels License; it does
 not download arbitrary YouTube videos. Existing render code uses only the
