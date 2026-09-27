@@ -252,6 +252,17 @@ def validate_verse_catalog(data):
     if not 0 < weight <= 1 or (not isinstance(keywords, list) or
                                not all(isinstance(value, str) and value.strip() for value in keywords)):
         raise ValueError('Invalid tajwid reciter selection configuration')
+    if not isinstance(data.get('performance_bias_enabled', False), bool):
+        raise ValueError('Performance preference must be explicitly enabled or disabled')
+    minimum_samples = data.get('performance_bias_min_videos', 3)
+    if isinstance(minimum_samples, bool) or not isinstance(minimum_samples, int) or not 2 <= minimum_samples <= 20:
+        raise ValueError('Performance preference needs a valid minimum sample count')
+    try:
+        performance_strength = float(data.get('performance_bias_strength', 0.15))
+    except (TypeError, ValueError):
+        performance_strength = float('nan')
+    if not math.isfinite(performance_strength) or not 0 <= performance_strength <= 0.25:
+        raise ValueError('Performance preference must remain a small, bounded bias')
     if data.get('visual_style') not in ('premium_rotating_scenes', 'real_video_assets'):
         raise ValueError('The real-video background style is required')
     themes = data.get('visual_themes')
@@ -282,8 +293,8 @@ def _is_tajwid_reciter(reciter, catalog):
     return any(str(keyword).casefold() in text for keyword in keywords)
 
 
-def _reciter_order(reciters, jobs, position, catalog):
-    """Return a fair order that favours variety and slows tajwid repeats."""
+def _reciter_order(reciters, jobs, position, catalog, performance_history=None):
+    """Rank every allowed reciter fairly, with only a small optional view bias."""
     selection = catalog.get('reciter_selection', {})
     tajwid_weight = float(selection.get('tajwid_weight', 0.35))
     usage = {reciter.get('id'): 0 for reciter in reciters}
@@ -291,15 +302,51 @@ def _reciter_order(reciters, jobs, position, catalog):
         reciter_id = row.get('reciter_id')
         if reciter_id in usage:
             usage[reciter_id] += 1
+
+    bias = float(catalog.get('performance_bias_strength', 0.15)) \
+        if catalog.get('performance_bias_enabled') is True else 0.0
+    minimum = catalog.get('performance_bias_min_videos', 3)
+    preferences = (_performance_preferences(
+        performance_history or {}, jobs, 'reciter_id', minimum)
+        if bias else {})
     ranked = []
     for index, reciter in enumerate(reciters):
+        reciter_id = reciter.get('id')
         weight = tajwid_weight if _is_tajwid_reciter(reciter, catalog) else 1.0
-        score = (usage[reciter.get('id')] + weight) / weight
+        # A 0.15 maximum adjustment cannot outweigh one whole prior selection.
+        score = (usage[reciter_id] + weight) / weight
+        score -= bias * preferences.get(reciter_id, 0.0)
         tajwid_first = 1 if _is_tajwid_reciter(reciter, catalog) else 0
         tie_break = (position + index) % max(1, len(reciters))
         ranked.append((score, tajwid_first, tie_break, index, reciter))
     ranked.sort(key=lambda item: item[:4])
     return [item[4] for item in ranked]
+
+
+def _visual_theme_order(themes, jobs, position, catalog, performance_history=None):
+    """Prefer less-used themes; optionally nudge equally used themes by views."""
+    themes = list(dict.fromkeys(themes or []))
+    if not themes:
+        return []
+    usage = {theme: 0 for theme in themes}
+    for row in jobs.values():
+        theme = row.get('visual_theme')
+        if theme in usage and row.get('status') in ('uploading', 'uploaded'):
+            usage[theme] += 1
+
+    bias = float(catalog.get('performance_bias_strength', 0.15)) \
+        if catalog.get('performance_bias_enabled') is True else 0.0
+    minimum = catalog.get('performance_bias_min_videos', 3)
+    preferences = (_performance_preferences(
+        performance_history or {}, jobs, 'visual_theme', minimum)
+        if bias else {})
+    ranked = []
+    for index, theme in enumerate(themes):
+        score = usage[theme] - bias * preferences.get(theme, 0.0)
+        # Keep catalog order for equal scores so cursor advancement visits each theme.
+        ranked.append((score, index, theme))
+    ranked.sort(key=lambda item: item[:2])
+    return [item[2] for item in ranked]
 
 
 def passage_overlaps_jobs(jobs, chapter_id, verse_start, verse_end):
@@ -330,7 +377,7 @@ def passage_overlaps_jobs(jobs, chapter_id, verse_start, verse_end):
     return False
 
 
-def verse_entry_for_position(catalog, jobs, position):
+def verse_entry_for_position(catalog, jobs, position, performance_history=None):
     print('Loading Quran Foundation reciter and chapter metadata...', flush=True)
     english = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'en'}).get('recitations', [])
     arabic = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'ar'}).get('recitations', [])
@@ -354,7 +401,10 @@ def verse_entry_for_position(catalog, jobs, position):
         search_timeout = 900.0
     candidate_limit = min(total_verses * len(english), max_candidates)
     deadline = time.monotonic() + search_timeout
-    ordered_reciters = _reciter_order(english, jobs, position, catalog)
+    ordered_reciters = _reciter_order(
+        english, jobs, position, catalog, performance_history)
+    ordered_themes = _visual_theme_order(
+        catalog['visual_themes'], jobs, position, catalog, performance_history)
     min_duration = max(30.0, float(catalog.get('min_audio_seconds', 30)))
     max_duration = float(catalog['max_audio_seconds'])
     max_ayah_characters = int(catalog['max_ayah_characters'])
@@ -502,7 +552,7 @@ def verse_entry_for_position(catalog, jobs, position):
             'max_audio_seconds': max_duration,
             'tail_silence_seconds': float(catalog['tail_silence_seconds']),
             'visual_style': catalog['visual_style'],
-            'visual_theme': catalog['visual_themes'][candidate_position % len(catalog['visual_themes'])],
+            'visual_theme': ordered_themes[candidate_position % len(ordered_themes)],
         }, position)
     raise NoEligibleVerse(position, candidate_limit, rejected=rejected)
 def load_catalog(path):
@@ -1541,22 +1591,76 @@ def _count(value):
         return 0
 
 
-def performance_averages(history, jobs, window=10):
-    """Return simple rolling view averages without affecting content selection."""
-    groups = {'reciters': {}, 'visual_themes': {}}
-    for job_id, row in jobs.items():
-        video_id = row.get('video_id')
-        samples = history.get(video_id, [])[-window:]
-        if not samples:
+def _latest_view_snapshot(history, video_id, window=10):
+    samples = history.get(video_id, [])
+    if not isinstance(samples, list):
+        return None
+    for sample in reversed(samples[-window:]):
+        if isinstance(sample, dict) and 'view_count' in sample:
+            return sample
+    return None
+
+
+def _performance_group_values(history, jobs, field, window=10, reciter_labels=False):
+    """Use one latest view sample per uploaded video, so frequent polling adds no weight."""
+    groups = {}
+    for row in jobs.values():
+        if row.get('status') != 'uploaded' or not row.get('video_id'):
             continue
-        values = [_count(sample.get('view_count')) for sample in samples]
-        reciter = row.get('reciter_name') or (
-            f"reciter {row['reciter_id']}" if row.get('reciter_id') else 'unknown')
-        theme = row.get('visual_theme') or 'unknown'
-        groups['reciters'].setdefault(reciter, []).extend(values)
-        groups['visual_themes'].setdefault(theme, []).extend(values)
+        video_id = row['video_id']
+        sample = _latest_view_snapshot(history, video_id, window)
+        if not sample:
+            continue
+        key = row.get(field)
+        if reciter_labels:
+            key = row.get('reciter_name') or (
+                f"reciter {row['reciter_id']}" if row.get('reciter_id') else 'unknown')
+        if key in (None, ''):
+            continue
+        groups.setdefault(key, {})[video_id] = _count(sample.get('view_count'))
+    return {key: list(values.values()) for key, values in groups.items()}
+
+
+def _performance_preferences(history, jobs, field, minimum_videos=3):
+    """Return normalized view preferences only after independent videos provide signal."""
+    try:
+        minimum_videos = int(minimum_videos)
+    except (TypeError, ValueError):
+        return {}
+    if minimum_videos < 2:
+        return {}
+    groups = _performance_group_values(history, jobs, field)
+    means = {key: sum(values) / len(values) for key, values in groups.items()
+             if len(values) >= minimum_videos}
+    if len(means) < 2:
+        return {}
+    low, high = min(means.values()), max(means.values())
+    if high <= low:
+        return {}
+    return {key: (value - low) / (high - low) for key, value in means.items()}
+
+
+def performance_averages(history, jobs, window=10):
+    """Average each video's latest view count, not repeated polling snapshots."""
+    groups = {
+        'reciters': _performance_group_values(
+            history, jobs, 'reciter_id', window, reciter_labels=True),
+        'visual_themes': _performance_group_values(
+            history, jobs, 'visual_theme', window),
+    }
     return {kind: {name: round(sum(values) / len(values), 1)
-                   for name, values in sorted(rows.items())}
+                   for name, values in sorted(rows.items()) if values}
+            for kind, rows in groups.items()}
+
+
+def performance_sample_counts(history, jobs, window=10):
+    groups = {
+        'reciters': _performance_group_values(
+            history, jobs, 'reciter_id', window, reciter_labels=True),
+        'visual_themes': _performance_group_values(
+            history, jobs, 'visual_theme', window),
+    }
+    return {kind: {name: len(values) for name, values in rows.items()}
             for kind, rows in groups.items()}
 
 
@@ -1725,13 +1829,14 @@ def collect_performance_metrics(service, ledger, expected_privacy, now=None):
                     new_flags.append({'video_id': video_id, 'flag': flag})
     ledger.data['health_flags'] = current_flags
     averages = performance_averages(history, jobs)
+    sample_counts = performance_sample_counts(history, jobs)
     ledger.data['performance_averages'] = averages
     schedule = schedule_timing_summary(ledger.data.get('schedule_history', []), jobs, now=now)
     ledger.data['schedule_summary'] = schedule
     ledger.data['metrics_checked_at'] = timestamp
     ledger.save()
     return {'tracked': len(tracked), 'new_flags': new_flags, 'averages': averages,
-            'schedule': schedule, 'timestamp': timestamp}
+            'sample_counts': sample_counts, 'schedule': schedule, 'timestamp': timestamp}
 
 
 def performance_summary(report):
@@ -1745,12 +1850,23 @@ def performance_summary(report):
                          f"https://www.youtube.com/watch?v={row['video_id']}")
     else:
         lines.extend(['### Newly flagged videos', '- None'])
+    sample_counts = report.get('sample_counts') or {}
     lines.extend(['', '### Rolling average views by reciter'])
     reciters = report['averages']['reciters']
-    lines.extend([f'- {name}: {average:.1f}' for name, average in reciters.items()] or ['- No data yet'])
+    lines.extend([
+        f"- {name}: {average:.1f}" +
+        (f" views ({sample_counts.get('reciters', {}).get(name)} videos)"
+         if sample_counts.get('reciters', {}).get(name) else '')
+        for name, average in reciters.items()
+    ] or ['- No data yet'])
     lines.extend(['', '### Rolling average views by visual theme'])
     themes = report['averages']['visual_themes']
-    lines.extend([f'- {name}: {average:.1f}' for name, average in themes.items()] or ['- No data yet'])
+    lines.extend([
+        f"- {name}: {average:.1f}" +
+        (f" views ({sample_counts.get('visual_themes', {}).get(name)} videos)"
+         if sample_counts.get('visual_themes', {}).get(name) else '')
+        for name, average in themes.items()
+    ] or ['- No data yet'])
     schedule = report.get('schedule')
     if schedule:
         lines.extend(['', f"### Schedule timing (last {schedule['window_days']} days)",
@@ -1765,6 +1881,24 @@ def performance_summary(report):
         lines.append(f"- Uploads delayed over 30 minutes: {schedule['delayed_uploads']}")
         if schedule['unresolved']:
             lines.append(f"- Unresolved scheduled attempts: {schedule['unresolved']}")
+        overdue = schedule.get('overdue_slots', [])
+        lines.append('- Overdue Baghdad publication slots (>45 minutes):')
+        if overdue:
+            for row in overdue:
+                detail = ('upload outcome is uncertain; check YouTube before retrying'
+                          if row.get('upload_uncertain') else
+                          'the scheduled recovery run can catch up this slot')
+                lines.append(f"- {row['slot']}: {row['minutes_overdue']} minutes overdue "
+                             f"({detail})")
+        else:
+            lines.append('- None')
+    bias = report.get('selection_bias')
+    if bias:
+        state = 'enabled' if bias.get('enabled') else 'disabled pending review'
+        lines.extend(['', '### Performance preference',
+                      f"- Fair, small view-based rotation: {state}",
+                      f"- Minimum evidence before a preference applies: "
+                      f"{bias.get('minimum_videos', 3)} uploaded videos per option"])
     analytics = report.get('analytics')
     if analytics is not None:
         lines.extend(['', '### Watch-through analytics (uploads of the last 30 days)'])
@@ -1791,11 +1925,35 @@ def run_performance_report(service, ledger, analytics=None):
         ledger.load()
         verify_channel(service, ledger, config)
         report = collect_performance_metrics(service, ledger, config.get('privacy', 'private'))
+        catalog = load_catalog(ROOT / 'catalog.json')
+        report['selection_bias'] = {
+            'enabled': bool(catalog.get('performance_bias_enabled', False)),
+            'minimum_videos': catalog.get('performance_bias_min_videos', 3),
+        }
         for row in report['new_flags']:
             notifications.notify(
                 f"Health flag: {row['flag']}"
                 f"\nhttps://www.youtube.com/watch?v={row['video_id']}",
                 kind="health", key=f"health:{row['video_id']}:{row['flag']}")
+        alerted_slots = ledger.data.setdefault('schedule_alerts', {})
+        saved_alert = False
+        for row in report.get('schedule', {}).get('overdue_slots', []):
+            slot = row['slot']
+            if slot in alerted_slots:
+                continue
+            if row.get('upload_uncertain'):
+                message = (f"Scheduled slot {slot} has an uncertain upload. "
+                           "Check YouTube Studio before retrying to avoid a duplicate.")
+            else:
+                message = (f"Scheduled slot {slot} is {row['minutes_overdue']} minutes late. "
+                           "The recurring workflow will attempt safe catch-up.")
+            delivered = notifications.notify(
+                message, kind="health", key=f"schedule-late:{slot}")
+            if delivered:
+                alerted_slots[slot] = datetime.now(timezone.utc).isoformat()
+                saved_alert = True
+        if saved_alert:
+            ledger.save()
         report['analytics'] = collect_retention_metrics(analytics, ledger)
         summary = performance_summary(report)
     except Exception:
@@ -1827,6 +1985,32 @@ def schedule_slot_time(slot):
         return datetime.strptime(slot, '%Y-%m-%d/%H:%M').replace(tzinfo=BAGHDAD)
     except (TypeError, ValueError):
         raise CloudError('Invalid schedule slot in the ledger; stopping to prevent extra posts')
+
+
+SCHEDULE_ALERT_GRACE_MINUTES = 45
+
+
+def overdue_publication_slots(jobs, now=None, grace_minutes=SCHEDULE_ALERT_GRACE_MINUTES):
+    """List today's missed slots after a grace window; never creates or retries uploads."""
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    local = current.astimezone(BAGHDAD)
+    completed = schedule_state(jobs, now=current)['completed']
+    slots = []
+    for hour in PUBLICATION_HOURS:
+        slot = f"{local.date().isoformat()}/{hour:02d}:00"
+        elapsed = (local - schedule_slot_time(slot)).total_seconds() / 60
+        if elapsed < grace_minutes or slot in completed:
+            continue
+        uncertain = any(
+            isinstance(row, dict) and row.get('status') == 'uploading' and
+            row.get('schedule_slot') == slot
+            for row in jobs.values()
+        )
+        slots.append({'slot': slot, 'minutes_overdue': int(elapsed),
+                      'upload_uncertain': uncertain})
+    return slots
 
 
 def record_schedule_event(ledger, target_slot, triggered_at, outcome):
@@ -1904,6 +2088,7 @@ def schedule_timing_summary(history, jobs=None, now=None, days=SCHEDULE_REPORT_D
         'average_offset_minutes': round(sum(offsets) / len(offsets), 1) if offsets else None,
         'max_offset_minutes': round(max(offsets), 1) if offsets else None,
         'delayed_uploads': sum(offset > 30 for offset in offsets),
+        'overdue_slots': overdue_publication_slots(jobs or {}, now=now),
     }
 
 
@@ -2004,7 +2189,9 @@ def run(args, ledger=None, service=None):
         cursor = ledger.data.get('cursor', len(jobs)) if ledger else len(jobs)
         for _ in range(100):
             try:
-                entry, next_cursor = verse_entry_for_position(catalog, jobs, cursor)
+                entry, next_cursor = verse_entry_for_position(
+                    catalog, jobs, cursor,
+                    ledger.data.get('metrics_history', {}) if ledger else {})
             except NoEligibleVerse as error:
                 if ledger and args.mode != 'preview':
                     ledger.data['cursor'] = error.cursor
