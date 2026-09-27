@@ -1937,7 +1937,7 @@ def run_performance_report(service, ledger, analytics=None):
                 kind="health", key=f"health:{row['video_id']}:{row['flag']}")
         alerted_slots = ledger.data.setdefault('schedule_alerts', {})
         saved_alert = False
-        for row in report.get('schedule', {}).get('overdue_slots', []):
+        for row in (report.get('schedule') or {}).get('overdue_slots', []):
             slot = row['slot']
             if slot in alerted_slots:
                 continue
