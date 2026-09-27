@@ -385,6 +385,54 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._serve_static(path)
 
+    def _schedule_trigger(self):
+        """Dispatch only an already-due scheduled post for the external timer."""
+        expected = getattr(self.server, 'schedule_trigger_key', '')
+        if not expected:
+            self._json(HTTPStatus.SERVICE_UNAVAILABLE, {'error': 'Scheduled trigger is not configured'})
+            return
+        actual = self.headers.get('X-Schedule-Key', '')
+        if not actual or not hmac.compare_digest(actual.encode('utf-8'), expected.encode('utf-8')):
+            self._json(HTTPStatus.UNAUTHORIZED, {'error': 'Schedule key required'})
+            return
+        try:
+            body = self._body()
+            if body != {'trigger': 'scheduled'}:
+                raise BadRequest('Only the scheduled trigger is supported')
+            client = GitHubClient(self.server.github_token, self.server.repository, self.server.branch)
+            automation = client.file_json('automation.json')
+            ledger = client.file_json(STATE_PATH, {'schema': 1, 'jobs': {}})
+            jobs = ledger.get('jobs', {}) if isinstance(ledger, dict) else None
+            if not isinstance(automation, dict) or not isinstance(jobs, dict):
+                raise DashboardError('Invalid remote configuration or ledger')
+            if automation.get('enabled') is not True:
+                self._json(HTTPStatus.CONFLICT, {'error': 'Publishing is disabled'})
+                return
+            if any(not isinstance(row, dict) for row in jobs.values()):
+                raise DashboardError('Invalid remote ledger job')
+            if any(row.get('status') == 'uploading' for row in jobs.values()):
+                self._json(HTTPStatus.CONFLICT, {'error': 'An upload needs review'})
+                return
+            schedule = schedule_state(jobs)
+            if not schedule.get('next_due'):
+                self._json(HTTPStatus.OK, {'ok': True, 'mode': 'scheduled', 'dispatched': 0,
+                                           'reason': 'No due slot'})
+                return
+            dispatched = client.dispatch('scheduled', 1)
+            self._json(HTTPStatus.ACCEPTED, {
+                'ok': True,
+                'mode': 'scheduled',
+                'dispatched': 1,
+                'requested_count': dispatched,
+                'workflow_url': f'https://github.com/{client.repository}/actions/workflows/{WORKFLOW_FILE}',
+            })
+        except BadRequest as error:
+            self._json(HTTPStatus.BAD_REQUEST, {'error': str(error)})
+        except (DashboardError, requests.RequestException, ValueError, TypeError) as error:
+            self._json(HTTPStatus.BAD_GATEWAY, {
+                'error': str(error) if isinstance(error, DashboardError) else 'Remote request failed'
+            })
+
     def do_POST(self):  # noqa: N802 - stdlib handler API
         # Reject cross-site form/fetch requests, including on keyless localhost.
         origin = self.headers.get('Origin')
@@ -392,10 +440,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 or (origin and urlparse(origin).netloc != self.headers.get('Host'))):
             self._json(HTTPStatus.FORBIDDEN, {'error': 'Cross-origin requests are not allowed'})
             return
+        path = urlparse(self.path).path
+        if path == '/api/schedule-trigger':
+            self._schedule_trigger()
+            return
         if not self._authorized():
             self._json(HTTPStatus.UNAUTHORIZED, {'error': 'Dashboard key required'})
             return
-        path = urlparse(self.path).path
         if path == '/api/submit-clip':
             self._submit_clip()
             return
@@ -525,6 +576,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.repository = repository
         self.branch = branch
         self.dashboard_key = dashboard_key
+        self.schedule_trigger_key = os.environ.get('SCHEDULE_TRIGGER_KEY', '')
 
 
 def main():
