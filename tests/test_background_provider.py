@@ -137,6 +137,7 @@ class BackgroundProviderTests(unittest.TestCase):
             job = cloud.item_for(
                 dict(id="pexels-sample", surah_ar="الإخلاص", surah_en="Al-Ikhlas",
                      reciter_ar="قارئ", reciter_en="Reciter", duration=35,
+                     visual_theme="forest_rain",
                      attribution="Quran Foundation", rights="licensed",
                      permission_url="https://example.com/license"),
                 Path(directory) / "audio.mp3", Path(directory) / "card.png",
