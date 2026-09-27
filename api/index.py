@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 from dashboard_server import DashboardHandler  # noqa: E402
 
 
-_API_ROUTES = {"overview", "config", "workflow", "submit-clip"}
+_API_ROUTES = {"overview", "config", "workflow", "submit-clip", "schedule-trigger"}
 
 
 def normalize_vercel_api_path(path):
@@ -37,6 +37,7 @@ class handler(DashboardHandler):
         server.repository = os.environ.get("GITHUB_REPOSITORY", "zhir4web/quran-shorts-bot")
         server.branch = os.environ.get("GITHUB_BRANCH", "main")
         server.dashboard_key = os.environ.get("DASHBOARD_KEY", "")
+        server.schedule_trigger_key = os.environ.get("SCHEDULE_TRIGGER_KEY", "")
         super().__init__(request, client_address, server)
 
     def do_GET(self):  # noqa: N802 - stdlib handler API
