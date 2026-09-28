@@ -463,6 +463,148 @@ class CloudTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'invalid job'):
             ledger.load()
 
+    def test_chapter_claim_block_does_not_collide_with_ayah_reciter_ids(self):
+        ledger = cloud.RemoteLedger('owner/repo', 'fake-test-token')
+        ledger.session = Mock()
+        remote_catalog = {
+            'allowed_reciter_ids': [158], 'blocked_reciter_ids': [],
+            'allowed_chapter_reciter_ids': [158, 159], 'blocked_chapter_reciter_ids': [],
+        }
+        ledger.session.get.return_value.status_code = 200
+        ledger.session.get.return_value.json.return_value = {
+            'sha': 'catalog-sha',
+            'content': base64.b64encode(json.dumps(remote_catalog).encode()).decode(),
+        }
+        ledger.session.put.return_value.status_code = 200
+        ledger.session.put.return_value.json.return_value = {'content': {'sha': 'new-sha'}}
+        catalog = copy.deepcopy(remote_catalog)
+
+        ledger.block_reciter(catalog, 158, 'chapter_recitations')
+
+        self.assertEqual(catalog['allowed_reciter_ids'], [158])
+        self.assertEqual(catalog['blocked_reciter_ids'], [])
+        self.assertEqual(catalog['allowed_chapter_reciter_ids'], [159])
+        self.assertEqual(catalog['blocked_chapter_reciter_ids'], [158])
+
+    def test_timed_chapter_passage_uses_complete_contiguous_ayahs(self):
+        timings = [
+            {'verse_key': '112:1', 'timestamp_from': 1000, 'timestamp_to': 19000},
+            {'verse_key': '112:2', 'timestamp_from': 19000, 'timestamp_to': 33000},
+            {'verse_key': '112:3', 'timestamp_from': 33000, 'timestamp_to': 44000},
+        ]
+        selected = cloud.select_timed_passage(timings, 112, 1, 4, 30, 58, 16)
+        self.assertEqual(selected['verse_start'], 1)
+        self.assertEqual(selected['verse_end'], 2)
+        self.assertEqual(selected['audio_start_ms'], 1000)
+        self.assertEqual(selected['audio_end_ms'], 33000)
+        self.assertEqual(selected['duration'], 32)
+        self.assertIsNone(cloud.select_timed_passage(timings, 112, 2, 4, 30, 58, 16))
+
+    def test_chapter_reciter_rotation_uses_every_allowed_profile_and_keeps_blocked_out(self):
+        catalog = json.loads((Path(__file__).resolve().parents[1] / 'catalog.json').read_text())
+        self.assertEqual(catalog['reciter_source_mode'], 'chapter_recitations')
+        self.assertEqual(len(catalog['allowed_chapter_reciter_ids']), 20)
+        self.assertIn(5, catalog['blocked_chapter_reciter_ids'])
+        profiles = [{'id': reciter_id, 'reciter_name': str(reciter_id),
+                     'reciter_source': 'chapter_recitations'}
+                    for reciter_id in catalog['allowed_chapter_reciter_ids']]
+        chosen = [cloud._reciter_order(profiles, {}, position, catalog)[0]['id']
+                  for position in range(len(profiles))]
+        self.assertEqual(set(chosen), set(catalog['allowed_chapter_reciter_ids']))
+        self.assertEqual(len(chosen), len(set(chosen)))
+
+    def test_chapter_reciter_selection_fetches_verified_text_and_official_timestamps(self):
+        catalog = {
+            'reciter_source_mode': 'chapter_recitations',
+            'allowed_chapter_reciter_ids': [5, 158],
+            'blocked_chapter_reciter_ids': [5],
+            'visual_themes': ['forest_rain', 'mist_mountains'],
+            'min_audio_seconds': 30, 'max_audio_seconds': 58, 'tail_silence_seconds': 1,
+            'max_ayah_characters': 240,
+            'permission_url': 'https://api-docs.quran.com/legal/developer-terms/',
+            'attribution': 'Quran Foundation', 'rights': 'Test rights',
+            'visual_style': 'real_video_assets',
+            'english_translation_id': 131,
+        }
+        requests_seen = []
+
+        def api(url, params=None):
+            requests_seen.append((url, params))
+            if url.endswith('/resources/chapter_reciters') and params == {'language': 'en'}:
+                return {'reciters': [
+                    {'id': 5, 'name': 'Blocked reader'},
+                    {'id': 158, 'name': 'Abdullah Ali Jabir',
+                     'style': {'name': 'Murattal'}, 'qirat': {'name': 'Hafs'}},
+                ]}
+            if url.endswith('/resources/chapter_reciters') and params == {'language': 'ar'}:
+                return {'reciters': [
+                    {'id': 5, 'translated_name': {'name': '���� �����'}},
+                    {'id': 158, 'translated_name': {'name': '��� ���� ��� ����'}},
+                ]}
+            if url.endswith('/chapters'):
+                return {'chapters': [{'id': 1, 'verses_count': 6236,
+                                      'name_arabic': '�������', 'name_simple': 'Al-Fatihah'}]}
+            if '/chapter_recitations/158/1' in url:
+                return {'audio_file': {
+                    'chapter_id': 1, 'file_size': 4096,
+                    'audio_url': 'https://download.quranicaudio.com/qdc/test/1.mp3',
+                    'timestamps': [
+                        {'verse_key': '1:1', 'timestamp_from': 0, 'timestamp_to': 18000},
+                        {'verse_key': '1:2', 'timestamp_from': 18000, 'timestamp_to': 35000},
+                    ],
+                }}
+            if 'quran/verses/uthmani' in url:
+                key = params['verse_key']
+                return {'verses': [{'verse_key': key, 'text_uthmani': '������ �������'}]}
+            if '/verses/by_key/' in url:
+                return english_translation_response(url, 'In the name of Allah.')
+            raise AssertionError(f'Unexpected Quran API request: {url}')
+
+        with patch.object(cloud, 'get_json', side_effect=api):
+            entry, next_position = cloud.verse_entry_for_position(catalog, {}, 0)
+        self.assertEqual(entry['recitation_id'], 158)
+        self.assertEqual(entry['reciter_source'], 'chapter_recitations')
+        self.assertEqual(entry['reciter_ar'], '��� ���� ��� ����')
+        self.assertEqual(entry['verse_key'], '1:1-2')
+        self.assertEqual(entry['audio_start_ms'], 0)
+        self.assertEqual(entry['audio_end_ms'], 35000)
+        self.assertEqual(entry['duration'], 35)
+        self.assertEqual(entry['ayah_translation'], 'In the name of Allah. � In the name of Allah.')
+        self.assertEqual(next_position, 1)
+        self.assertFalse(any('/chapter_recitations/5/' in url for url, _ in requests_seen))
+
+    def test_chapter_recitation_download_trims_by_official_range_and_pads_ending(self):
+        entry = dict(ENTRY, source_type='quran_chapter_passage',
+                     audio_url='https://download.quranicaudio.com/qdc/test/1.mp3',
+                     audio_file_size=2048, audio_start_ms=5000, audio_end_ms=40000,
+                     min_audio_seconds=30, max_audio_seconds=58, tail_silence_seconds=1)
+        response = Mock()
+        response.headers = {'content-length': '2048'}
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.raise_for_status = Mock()
+        response.iter_content.return_value = [b'a' * 2048]
+        commands = []
+
+        def render(args):
+            commands.append(args)
+            Path(args[-1]).write_bytes(b'timed complete-ayah passage')
+
+        with patch.object(cloud.requests, 'get', return_value=response), \
+             patch.object(cloud.bot, 'run_media', side_effect=render), \
+             patch.object(cloud, 'media_duration', return_value=36), \
+             patch.object(cloud.bot, 'file_hash', return_value='b' * 64):
+            target = cloud.download_quran_chapter_passage(entry, self.root / 'recitation.mp3')
+
+        self.assertTrue(target.is_file())
+        self.assertEqual(entry['duration'], 36)
+        command = commands[0]
+        self.assertIn('-ss', command)
+        self.assertEqual(command[command.index('-ss') + 1], '5.000')
+        self.assertEqual(command[command.index('-t') + 1], '35.000')
+        self.assertEqual(command[command.index('-af') + 1], 'apad=pad_dur=1.0')
+
+
     def test_verse_rotation_changes_reciter_and_verse(self):
         catalog = {'schema': 3, 'provider': 'quran_foundation', 'reciters': 'allowlist',
                    'allowed_reciter_ids': [1, 2], 'blocked_reciter_ids': [5],

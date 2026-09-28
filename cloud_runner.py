@@ -52,6 +52,10 @@ class TooLongRecording(RuntimeError):
     """The complete recording cannot fit safely in a YouTube Short."""
 
 
+class OptionalResourceNotFound(CloudError):
+    """A specific Quran Foundation reciter/chapter has no audio file."""
+
+
 class _TranslationText(HTMLParser):
     """Extract readable text from QF translation HTML without footnote markers."""
 
@@ -198,29 +202,32 @@ class RemoteLedger:
             return sha
         return response.json().get('content', {}).get('sha', sha)
 
-    def block_reciter(self, catalog, reciter_id):
+    def block_reciter(self, catalog, reciter_id, source='ayah_by_ayah'):
         """Persist a newly unsafe reciter without changing the reviewed allowlist."""
-        if reciter_id in catalog.get('blocked_reciter_ids', []):
+        chapter_source = source == 'chapter_recitations'
+        blocked_field = 'blocked_chapter_reciter_ids' if chapter_source else 'blocked_reciter_ids'
+        allowed_field = 'allowed_chapter_reciter_ids' if chapter_source else 'allowed_reciter_ids'
+        if reciter_id in catalog.get(blocked_field, []):
             return
         response = self.session.get(self.catalog_url, params={'ref': self.branch}, timeout=30)
         if response.status_code != 200:
             raise RuntimeError(f'Cannot read catalog for safety update (HTTP {response.status_code})')
         payload = response.json()
         remote = json.loads(base64.b64decode(payload['content']))
-        blocked = remote.setdefault('blocked_reciter_ids', [])
+        blocked = remote.setdefault(blocked_field, [])
         if reciter_id not in blocked:
             blocked.append(reciter_id)
             blocked.sort()
-        remote['allowed_reciter_ids'] = [value for value in remote.get('allowed_reciter_ids', [])
-                                         if value != reciter_id]
+        remote[allowed_field] = [value for value in remote.get(allowed_field, [])
+                                 if value != reciter_id]
         body = {'message': 'Auto-block reciter after YouTube restriction [skip ci]',
                 'content': base64.b64encode(json.dumps(remote, ensure_ascii=False, indent=2).encode()).decode(),
                 'branch': self.branch, 'sha': payload['sha']}
         written = self.session.put(self.catalog_url, json=body, timeout=30)
         if written.status_code not in (200, 201):
             raise RuntimeError(f'Cannot save catalog safety update (HTTP {written.status_code})')
-        catalog['blocked_reciter_ids'] = sorted(set(catalog.get('blocked_reciter_ids', [])) | {reciter_id})
-        catalog['allowed_reciter_ids'] = [value for value in catalog['allowed_reciter_ids'] if value != reciter_id]
+        catalog[blocked_field] = sorted(set(catalog.get(blocked_field, [])) | {reciter_id})
+        catalog[allowed_field] = [value for value in catalog.get(allowed_field, []) if value != reciter_id]
 
 
 def get_json(url, params=None):
@@ -230,10 +237,14 @@ def get_json(url, params=None):
         try:
             response = requests.get(url, params=params, timeout=(10, 30),
                                     headers={'User-Agent': 'quran-shorts-bot/2.0'})
+            if response.status_code == 404 and '/chapter_recitations/' in url:
+                raise OptionalResourceNotFound('This chapter reciter has no recording for the selected Surah')
             response.raise_for_status()
             payload = response.json()
             print('Quran API response received', flush=True)
             return payload
+        except OptionalResourceNotFound:
+            raise
         except (requests.RequestException, ValueError):
             print('Quran API request failed; retrying safely', flush=True)
             if attempt == 2:
@@ -294,16 +305,25 @@ def validate_verse_catalog(data):
     for field in ('attribution', 'rights'):
         if not isinstance(data.get(field), str) or not data[field].strip():
             raise ValueError(f'{field} required')
+    source_mode = data.get('reciter_source_mode', 'ayah_by_ayah')
+    if source_mode not in ('ayah_by_ayah', 'chapter_recitations'):
+        raise ValueError('Unsupported reciter audio source mode')
     allowed = data.get('allowed_reciter_ids')
     blocked = data.get('blocked_reciter_ids', [])
-    if (not isinstance(allowed, list) or not allowed or
-            any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in allowed)):
-        raise ValueError('A verified reciter allowlist is required')
-    if (not isinstance(blocked, list) or
-            any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in blocked)):
-        raise ValueError('Invalid blocked-reciter list')
-    if len(set(allowed)) != len(allowed) or set(allowed) & set(blocked):
-        raise ValueError('Reciter lists must be unique and disjoint')
+    chapter_allowed = data.get('allowed_chapter_reciter_ids', [])
+    chapter_blocked = data.get('blocked_chapter_reciter_ids', [])
+
+    def valid_ids(values, required=False):
+        return (isinstance(values, list) and (bool(values) or not required) and
+                all(not isinstance(value, bool) and isinstance(value, int) and value > 0
+                    for value in values) and len(set(values)) == len(values))
+
+    if not valid_ids(allowed, required=source_mode == 'ayah_by_ayah') or not valid_ids(blocked):
+        raise ValueError('Invalid ayah-reciter allow/block lists')
+    if not valid_ids(chapter_allowed, required=source_mode == 'chapter_recitations') or not valid_ids(chapter_blocked):
+        raise ValueError('Invalid chapter-reciter allow/block lists')
+    if set(allowed or []) & set(blocked) or set(chapter_allowed) & set(chapter_blocked):
+        raise ValueError('Reciter allow and block lists must be unique and disjoint')
     selection = data.get('reciter_selection', {})
     if not isinstance(selection, dict):
         raise ValueError('Invalid reciter selection configuration')
@@ -347,6 +367,7 @@ def validate_verse_catalog(data):
         raise ValueError('Invalid ayah text limit')
     return data
 
+
 def _is_tajwid_reciter(reciter, catalog):
     """Identify the slower rotation class from Quran Foundation metadata."""
     selection = catalog.get('reciter_selection', {})
@@ -355,25 +376,33 @@ def _is_tajwid_reciter(reciter, catalog):
     return any(str(keyword).casefold() in text for keyword in keywords)
 
 
+def _reciter_key(reciter):
+    source = reciter.get('reciter_source') or 'ayah_by_ayah'
+    return f"{source}:{reciter.get('id', reciter.get('reciter_id'))}"
+
+
 def _reciter_order(reciters, jobs, position, catalog, performance_history=None):
     """Rank every allowed reciter fairly, with only a small optional view bias."""
     selection = catalog.get('reciter_selection', {})
     tajwid_weight = float(selection.get('tajwid_weight', 0.35))
-    usage = {reciter.get('id'): 0 for reciter in reciters}
+    usage = {_reciter_key(reciter): 0 for reciter in reciters}
     for row in jobs.values():
-        reciter_id = row.get('reciter_id')
-        if reciter_id in usage:
-            usage[reciter_id] += 1
+        key = row.get('reciter_key') or _reciter_key({
+            'id': row.get('reciter_id'),
+            'reciter_source': row.get('reciter_source') or 'ayah_by_ayah',
+        })
+        if key in usage:
+            usage[key] += 1
 
     bias = float(catalog.get('performance_bias_strength', 0.15)) \
         if catalog.get('performance_bias_enabled') is True else 0.0
     minimum = catalog.get('performance_bias_min_videos', 3)
     preferences = (_performance_preferences(
-        performance_history or {}, jobs, 'reciter_id', minimum)
+        performance_history or {}, jobs, 'reciter_key', minimum)
         if bias else {})
     ranked = []
     for index, reciter in enumerate(reciters):
-        reciter_id = reciter.get('id')
+        reciter_id = _reciter_key(reciter)
         weight = tajwid_weight if _is_tajwid_reciter(reciter, catalog) else 1.0
         # A 0.15 maximum adjustment cannot outweigh one whole prior selection.
         score = (usage[reciter_id] + weight) / weight
@@ -411,6 +440,252 @@ def _visual_theme_order(themes, jobs, position, catalog, performance_history=Non
     return [item[2] for item in ranked]
 
 
+def select_timed_passage(timestamps, chapter_id, verse_start, verse_count,
+                         minimum_seconds, maximum_seconds, maximum_verses=24):
+    """Choose only contiguous complete ayahs whose official timestamps fit a Short."""
+    by_verse = {}
+    prefix = f'{int(chapter_id)}:'
+    for row in timestamps if isinstance(timestamps, list) else []:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get('verse_key') or '')
+        if not key.startswith(prefix):
+            continue
+        try:
+            number = int(key[len(prefix):])
+            start_ms = int(row.get('timestamp_from'))
+            end_ms = int(row.get('timestamp_to'))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= number <= verse_count and 0 <= start_ms < end_ms:
+            by_verse[number] = {'verse_key': key, 'verse_number': number,
+                                'timestamp_from': start_ms, 'timestamp_to': end_ms}
+
+    first = by_verse.get(int(verse_start))
+    if not first:
+        return None
+    passage = [first]
+    start_ms = first['timestamp_from']
+    end_ms = first['timestamp_to']
+    duration = (end_ms - start_ms) / 1000.0
+    if duration > maximum_seconds:
+        return None
+    maximum_verses = max(1, min(24, int(maximum_verses)))
+    while duration < minimum_seconds and len(passage) < maximum_verses:
+        next_verse = int(verse_start) + len(passage)
+        if next_verse > verse_count:
+            return None
+        row = by_verse.get(next_verse)
+        if not row:
+            return None
+        next_duration = (row['timestamp_to'] - end_ms) / 1000.0
+        # Include inter-ayah pauses, but reject broken or non-monotonic timings.
+        if next_duration <= 0 or duration + next_duration > maximum_seconds:
+            return None
+        passage.append(row)
+        end_ms = row['timestamp_to']
+        duration = (end_ms - start_ms) / 1000.0
+    if duration < minimum_seconds or duration > maximum_seconds:
+        return None
+    return {
+        'audio_start_ms': start_ms,
+        'audio_end_ms': end_ms,
+        'duration': duration,
+        'verse_start': int(verse_start),
+        'verse_end': passage[-1]['verse_number'],
+        'audio_parts': [{'verse_key': row['verse_key'],
+                         'verse_number': row['verse_number'],
+                         'duration': (row['timestamp_to'] - row['timestamp_from']) / 1000.0}
+                        for row in passage],
+    }
+
+
+def chapter_reciter_entry_for_position(catalog, jobs, position, performance_history=None):
+    """Select a verified, complete-ayah passage from chapter-reciter audio and timings."""
+    print('Loading Quran Foundation chapter-reciter and timing metadata...', flush=True)
+    allowed = set(catalog['allowed_chapter_reciter_ids'])
+    blocked = set(catalog.get('blocked_chapter_reciter_ids', []))
+    english_rows = get_json(
+        urljoin(QURAN_API, 'resources/chapter_reciters'), {'language': 'en'}
+    ).get('reciters', [])
+    arabic_rows = get_json(
+        urljoin(QURAN_API, 'resources/chapter_reciters'), {'language': 'ar'}
+    ).get('reciters', [])
+    arabic_names = {}
+    for row in arabic_rows:
+        translated = row.get('translated_name') or {}
+        if row.get('id') is not None:
+            arabic_names[row['id']] = translated.get('name') or row.get('name')
+
+    reciters = []
+    for row in english_rows:
+        reciter_id = row.get('id')
+        if reciter_id not in allowed or reciter_id in blocked:
+            continue
+        style = row.get('style') or {}
+        if isinstance(style, dict):
+            style = style.get('name') or ''
+        qirat = row.get('qirat') or {}
+        if isinstance(qirat, dict):
+            qirat = qirat.get('name') or ''
+        reciter = {
+            'id': reciter_id,
+            'reciter_source': 'chapter_recitations',
+            'reciter_name': str(row.get('name') or '').strip(),
+            'reciter_ar': arabic_names.get(reciter_id),
+            'style': str(style),
+            'qirat': str(qirat),
+        }
+        if reciter['reciter_name']:
+            reciters.append(reciter)
+    chapters = get_json(urljoin(QURAN_API, 'chapters'), {'language': 'en'}).get('chapters', [])
+    if not reciters or not chapters:
+        raise RuntimeError('No approved Quran Foundation chapter reciters are currently available')
+
+    chapter_by_id = {int(row['id']): row for row in chapters
+                     if isinstance(row, dict) and row.get('id') and row.get('verses_count')}
+    total_verses = sum(int(row['verses_count']) for row in chapter_by_id.values())
+    if total_verses < 6000:
+        raise RuntimeError('Quran Foundation chapter metadata is incomplete')
+    try:
+        max_candidates = max(30, int(os.environ.get('QURAN_MAX_CANDIDATES', '1200')))
+    except (TypeError, ValueError):
+        max_candidates = 1200
+    try:
+        search_timeout = max(60.0, float(os.environ.get('QURAN_SEARCH_TIMEOUT_SECONDS', '900')))
+    except (TypeError, ValueError):
+        search_timeout = 900.0
+    candidate_limit = min(total_verses * len(reciters), max_candidates)
+    deadline = time.monotonic() + search_timeout
+    ordered_reciters = _reciter_order(reciters, jobs, position, catalog, performance_history)
+    ordered_themes = _visual_theme_order(
+        catalog['visual_themes'], jobs, position, catalog, performance_history)
+    min_duration = max(30.0, float(catalog.get('min_audio_seconds', 30)))
+    max_duration = float(catalog['max_audio_seconds'])
+    max_ayah_characters = int(catalog['max_ayah_characters'])
+    max_passage_verses = int(catalog.get('max_passage_verses', 16))
+    translation_id = catalog.get('english_translation_id', DEFAULT_ENGLISH_TRANSLATION_ID)
+    audio_cache = {}
+    rejected = {'audio_unavailable': 0, 'timing_unavailable': 0,
+                'duration_out_of_range': 0, 'already_published': 0,
+                'arabic_text_unavailable_or_too_long': 0}
+
+    for attempt in range(candidate_limit):
+        if time.monotonic() >= deadline:
+            raise NoEligibleVerse(position, attempt, timed_out=True, rejected=rejected)
+        if attempt == 0 or (attempt + 1) % 100 == 0:
+            print(f'Checking chapter-recitation candidate {attempt + 1}/{candidate_limit}...', flush=True)
+        reciter = ordered_reciters[attempt % len(ordered_reciters)]
+        reciter_index = reciters.index(reciter)
+        batch = position // len(reciters)
+        verse_index = (batch + reciter_index * 521) % total_verses
+        remaining = verse_index
+        chapter = None
+        verse_number = 0
+        for row in chapter_by_id.values():
+            count = int(row['verses_count'])
+            if remaining < count:
+                chapter = row
+                verse_number = remaining + 1
+                break
+            remaining -= count
+        if not chapter:
+            rejected['audio_unavailable'] += 1
+            position += 1
+            continue
+        chapter_id = int(chapter['id'])
+        reciter_id = int(reciter['id'])
+        candidate_position = position
+        position += 1
+        cache_key = (reciter_id, chapter_id)
+        if cache_key not in audio_cache:
+            try:
+                payload = get_json(
+                    urljoin(QURAN_API, f'chapter_recitations/{reciter_id}/{chapter_id}'),
+                    {'segments': 'true'})
+                audio_cache[cache_key] = payload.get('audio_file')
+            except OptionalResourceNotFound:
+                audio_cache[cache_key] = None
+        audio_file = audio_cache[cache_key]
+        if not isinstance(audio_file, dict) or not audio_file.get('audio_url'):
+            rejected['audio_unavailable'] += 1
+            continue
+        if int(audio_file.get('chapter_id') or chapter_id) != chapter_id:
+            raise CloudError('Quran Foundation returned audio for a different Surah')
+        file_size = audio_file.get('file_size')
+        if file_size is not None and (isinstance(file_size, bool) or int(file_size) <= 0 or
+                                      int(file_size) > 100 * 1024 * 1024):
+            rejected['audio_unavailable'] += 1
+            continue
+        selected = select_timed_passage(
+            audio_file.get('timestamps'), chapter_id, verse_number,
+            int(chapter['verses_count']), min_duration, max_duration, max_passage_verses)
+        if not selected:
+            rejected['timing_unavailable'] += 1
+            continue
+        verse_start, verse_end = selected['verse_start'], selected['verse_end']
+        if passage_overlaps_jobs(jobs, chapter_id, verse_start, verse_end):
+            rejected['already_published'] += 1
+            continue
+
+        arabic_texts = []
+        translations = []
+        for part in selected['audio_parts']:
+            text_payload = get_json(
+                urljoin(QURAN_API, 'quran/verses/uthmani'),
+                {'verse_key': part['verse_key']})
+            text_rows = text_payload.get('verses', [])
+            if (len(text_rows) != 1 or
+                    text_rows[0].get('verse_key', part['verse_key']) != part['verse_key']):
+                arabic_texts = []
+                break
+            arabic = str(text_rows[0].get('text_uthmani') or '').strip()
+            if not arabic:
+                arabic_texts = []
+                break
+            arabic_number = str(part['verse_number']).translate(
+                str.maketrans('0123456789', '٠١٢٣٤٥٦٧٨٩'))
+            arabic_texts.append(arabic if len(selected['audio_parts']) == 1
+                                else f'{arabic} ۝{arabic_number}')
+            translations.append(qf_english_translation(part['verse_key'], translation_id))
+        ayah_text = ' '.join(arabic_texts)
+        if not ayah_text or len(ayah_text) > max_ayah_characters:
+            rejected['arabic_text_unavailable_or_too_long'] += 1
+            continue
+        verse_key = (f'{chapter_id}:{verse_start}' if verse_start == verse_end else
+                     f'{chapter_id}:{verse_start}-{verse_end}')
+        passage_id = (f'qf-ch-r{reciter_id}-a{chapter_id}-{verse_start}'
+                      if verse_start == verse_end else
+                      f'qf-ch-r{reciter_id}-a{chapter_id}-{verse_start}-to-{verse_end}')
+        return ({
+            'id': passage_id, 'source_type': 'quran_chapter_passage',
+            'recitation_id': reciter_id, 'reciter_source': 'chapter_recitations',
+            'reciter_key': _reciter_key(reciter),
+            'audio_url': quran_audio_url(audio_file['audio_url']),
+            'audio_file_size': int(file_size) if file_size is not None else None,
+            'audio_start_ms': selected['audio_start_ms'],
+            'audio_end_ms': selected['audio_end_ms'],
+            'chapter': chapter_id, 'chapter_id': chapter_id,
+            'surah_ar': chapter.get('name_arabic'), 'surah_en': chapter.get('name_simple'),
+            'verse_number': verse_start, 'verse_start': verse_start, 'verse_end': verse_end,
+            'verse_key': verse_key, 'ayah_text': ayah_text,
+            'ayah_translation': ' · '.join(translations),
+            'translation_resource_id': translation_id,
+            'translation_name': catalog.get('english_translation_name', DEFAULT_ENGLISH_TRANSLATION_NAME),
+            'translation_author': catalog.get('english_translation_author', DEFAULT_ENGLISH_TRANSLATION_AUTHOR),
+            'reciter_ar': reciter.get('reciter_ar') or reciter['reciter_name'],
+            'reciter_en': reciter['reciter_name'], 'style': reciter.get('style', ''),
+            'permission_url': catalog['permission_url'], 'attribution': catalog['attribution'],
+            'rights': catalog['rights'], 'verified': True, 'whole_recording': True,
+            'duration': selected['duration'],
+            'min_audio_seconds': min_duration, 'max_audio_seconds': max_duration,
+            'tail_silence_seconds': float(catalog['tail_silence_seconds']),
+            'visual_style': catalog['visual_style'],
+            'visual_theme': ordered_themes[candidate_position % len(ordered_themes)],
+        }, position)
+    raise NoEligibleVerse(position, candidate_limit, rejected=rejected)
+
+
 def passage_overlaps_jobs(jobs, chapter_id, verse_start, verse_end):
     """Return True when a previously uploaded/in-flight ayah overlaps this passage."""
     chapter_id = int(chapter_id)
@@ -422,7 +697,7 @@ def passage_overlaps_jobs(jobs, chapter_id, verse_start, verse_end):
         existing_start = row.get('verse_start')
         existing_end = row.get('verse_end')
         match = re.fullmatch(
-            r'qf-v-r\d+-a(\d+)-(\d+)(?:-to-(\d+))?', str(job_id))
+            r'qf-(?:v|ch)-r\d+-a(\d+)-(\d+)(?:-to-(\d+))?', str(job_id))
         if match:
             existing_chapter = existing_chapter or match.group(1)
             existing_start = existing_start or match.group(2)
@@ -440,6 +715,9 @@ def passage_overlaps_jobs(jobs, chapter_id, verse_start, verse_end):
 
 
 def verse_entry_for_position(catalog, jobs, position, performance_history=None):
+    if catalog.get('reciter_source_mode') == 'chapter_recitations':
+        return chapter_reciter_entry_for_position(
+            catalog, jobs, position, performance_history)
     print('Loading Quran Foundation reciter and chapter metadata...', flush=True)
     english = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'en'}).get('recitations', [])
     arabic = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'ar'}).get('recitations', [])
@@ -628,7 +906,6 @@ def verse_entry_for_position(catalog, jobs, position, performance_history=None):
             'visual_theme': ordered_themes[candidate_position % len(ordered_themes)],
         }, position)
     raise NoEligibleVerse(position, candidate_limit, rejected=rejected)
-
 def load_catalog(path):
     data = bot.read_json(path)
     if not isinstance(data, dict):
@@ -662,6 +939,8 @@ def load_catalog(path):
 
 
 def download_recording(entry, destination):
+    if entry.get('source_type') == 'quran_chapter_passage':
+        return download_quran_chapter_passage(entry, destination)
     if entry.get('source_type') == 'quran_passage':
         return download_quran_passage(entry, destination)
     if entry.get('source_type') == 'quran_verse':
@@ -883,6 +1162,69 @@ def quran_audio_url(relative_url):
     if value.startswith('/') or not value or '..' in value:
         raise ValueError('Quran Foundation returned an invalid audio path')
     return urljoin(QURAN_AUDIO, value)
+
+
+def download_quran_chapter_passage(entry, destination):
+    """Trim complete ayahs from official chapter audio using QF millisecond timings."""
+    try:
+        start_ms = int(entry['audio_start_ms'])
+        end_ms = int(entry['audio_end_ms'])
+        maximum = float(entry.get('max_audio_seconds', 58))
+        minimum = max(30.0, float(entry.get('min_audio_seconds', 30)))
+    except (KeyError, TypeError, ValueError):
+        raise ValueError('Quran Foundation chapter audio timings are invalid') from None
+    if start_ms < 0 or end_ms <= start_ms or (end_ms - start_ms) / 1000.0 < minimum or \
+            (end_ms - start_ms) / 1000.0 > maximum:
+        raise ValueError('Chapter audio segment is outside the approved complete-ayah duration')
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    raw = destination.with_name('quran-chapter-source.audio')
+    temporary_source = raw.with_suffix(raw.suffix + '.part')
+    expected_size = entry.get('audio_file_size')
+    if not raw.is_file():
+        total = 0
+        try:
+            with requests.get(quran_audio_url(entry.get('audio_url', '')), stream=True,
+                              timeout=(15, 90), headers={'User-Agent': 'quran-shorts-bot/4.0'}) as response:
+                response.raise_for_status()
+                declared = int(response.headers.get('content-length', '0') or 0)
+                if declared > 100 * 1024 * 1024:
+                    raise CloudError('Quran chapter audio exceeds the 100 MB source limit')
+                if expected_size and declared and declared != int(expected_size):
+                    raise CloudError('Quran Foundation chapter audio size changed after selection')
+                with temporary_source.open('wb') as handle:
+                    for block in response.iter_content(65536):
+                        total += len(block)
+                        if total > 100 * 1024 * 1024:
+                            raise CloudError('Quran chapter audio exceeds the 100 MB source limit')
+                        handle.write(block)
+        except requests.RequestException:
+            raise RuntimeError('Quran Foundation chapter audio is temporarily unavailable') from None
+        if total < 1024 or (expected_size and total != int(expected_size)):
+            temporary_source.unlink(missing_ok=True)
+            raise CloudError('Quran Foundation returned an incomplete chapter audio file')
+        os.replace(temporary_source, raw)
+
+    duration = (end_ms - start_ms) / 1000.0
+    temporary = destination.with_suffix('.part.mp3')
+    tail = float(entry.get('tail_silence_seconds', 1))
+    bot.run_media([
+        '-y', '-i', str(raw), '-ss', f'{start_ms / 1000.0:.3f}',
+        '-t', f'{duration:.3f}', '-af', f'apad=pad_dur={tail}',
+        '-c:a', 'libmp3lame', '-b:a', '192k', str(temporary),
+    ])
+    measured = media_duration(temporary)
+    if measured < minimum:
+        temporary.unlink(missing_ok=True)
+        raise TooShortRecording('Timed chapter passage did not produce an eligible Short')
+    if measured > 60:
+        temporary.unlink(missing_ok=True)
+        raise TooLongRecording('Timed chapter passage with its ending exceeds the Shorts limit')
+    os.replace(temporary, destination)
+    entry['duration'] = round(measured, 2)
+    entry['sha256'] = bot.file_hash(destination)
+    return destination
+
 
 def download_quran_foundation(entry, destination):
     payload = get_json(urljoin(QURAN_API, f"recitations/{entry['recitation_id']}/by_chapter/{entry['chapter']}"),
@@ -1569,6 +1911,7 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
         item['motion_overlay'] = str(motion_overlay.resolve())
     return item
 
+
 def reviewed_background_pool(folder, portrait=False):
     """Return only manifest-listed cinematic clips, optionally native portrait."""
     manifest = Path(folder) / 'LICENSES.md'
@@ -1712,8 +2055,13 @@ def check_upload_restrictions(service, ledger, catalog):
             # every recording by that reciter.
             block = reason == 'copyright' or reason.startswith('region ')
             if block:
-                ledger.block_reciter(catalog, reciter_id)
+                reciter_source = row.get('reciter_source') or 'ayah_by_ayah'
+                if reciter_source == 'chapter_recitations':
+                    ledger.block_reciter(catalog, reciter_id, reciter_source)
+                else:
+                    ledger.block_reciter(catalog, reciter_id)
             incident = {'video_id': row['video_id'], 'reciter_id': reciter_id,
+                        'reciter_source': row.get('reciter_source') or 'ayah_by_ayah',
                         'reason': reason, 'reciter_blocked': block,
                         'timestamp': datetime.now(timezone.utc).isoformat()}
             row['safety_incident'] = incident
@@ -1757,6 +2105,11 @@ def _performance_group_values(history, jobs, field, window=10, reciter_labels=Fa
         if not sample:
             continue
         key = row.get(field)
+        if field == 'reciter_key' and not key:
+            key = _reciter_key({
+                'id': row.get('reciter_id'),
+                'reciter_source': row.get('reciter_source') or 'ayah_by_ayah',
+            })
         if reciter_labels:
             key = row.get('reciter_name') or (
                 f"reciter {row['reciter_id']}" if row.get('reciter_id') else 'unknown')
@@ -2450,6 +2803,11 @@ def run(args, ledger=None, service=None):
         raise RuntimeError('Cloud publishing requires YouTube and a durable remote ledger')
     jobs[entry['id']] = {'status': 'uploading', 'audio_sha256': entry['sha256'],
                          'reciter_id': entry.get('recitation_id'),
+                         'reciter_source': entry.get('reciter_source') or 'ayah_by_ayah',
+                         'reciter_key': entry.get('reciter_key') or _reciter_key({
+                             'id': entry.get('recitation_id'),
+                             'reciter_source': entry.get('reciter_source') or 'ayah_by_ayah',
+                         }),
                          'reciter_name': entry.get('reciter_en'),
                          'chapter_id': entry.get('chapter_id'),
                          'verse_start': entry.get('verse_start', entry.get('verse_number')),
@@ -2571,3 +2929,4 @@ def main(argv=None):
 
 if __name__ == '__main__':
     raise SystemExit(main())
+

@@ -2,24 +2,49 @@
   "schema": 3,
   "provider": "quran_foundation",
   "reciters": "allowlist",
+  "reciter_source_mode": "chapter_recitations",
   "allowed_reciter_ids": [
     1,
     2,
     3,
     4,
-    12
-  ],
-  "blocked_reciter_ids": [
-    5
-  ],
-  "proposed_reciter_ids_for_review": [
     6,
     7,
     8,
     9,
     10,
-    11
+    11,
+    12
   ],
+  "blocked_reciter_ids": [
+    5
+  ],
+  "allowed_chapter_reciter_ids": [
+    1,
+    2,
+    3,
+    4,
+    6,
+    7,
+    9,
+    10,
+    12,
+    13,
+    19,
+    158,
+    159,
+    160,
+    161,
+    168,
+    173,
+    174,
+    175,
+    176
+  ],
+  "blocked_chapter_reciter_ids": [
+    5
+  ],
+  "proposed_reciter_ids_for_review": [],
   "reciter_selection": {
     "tajwid_weight": 0.35,
     "tajwid_keywords": [
@@ -53,6 +78,9 @@
   "background_crossfade_seconds": 0.45,
   "show_verified_ayah_text": true,
   "max_ayah_characters": 240,
+  "english_translation_id": 131,
+  "english_translation_name": "The Clear Quran",
+  "english_translation_author": "Dr. Mustafa Khattab",
   "permission_url": "https://api-docs.quran.com/legal/developer-terms/",
   "attribution": "Recitation audio provided by Quran Foundation (Quran.com)",
   "rights": "Used in a credited social-media video under the Quran Foundation Developer Terms",
@@ -60,8 +88,5 @@
   "text_presentation": "static_full_ayah",
   "performance_bias_enabled": false,
   "performance_bias_min_videos": 3,
-  "performance_bias_strength": 0.15,
-  "english_translation_id": 131,
-  "english_translation_name": "The Clear Quran",
-  "english_translation_author": "Dr. Mustafa Khattab"
+  "performance_bias_strength": 0.15
 }
