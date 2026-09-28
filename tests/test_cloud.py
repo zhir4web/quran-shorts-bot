@@ -19,6 +19,41 @@ ENTRY = dict(id='sample-112', verified=True, whole_recording=True,
              sha256='a' * 64, duration=35)
 
 
+def english_translation_response(url, text='Verified English meaning'):
+    key = url.rsplit('/', 1)[-1]
+    return {'verse': {'verse_key': key, 'translations': [
+        {'resource_id': 131, 'resource_name': 'The Clear Quran', 'text': text}]}}
+
+
+def fake_arabic_text_module(rendered=None):
+    from PIL import Image
+
+    class FakeArabicText:
+        def __init__(self, font):
+            pass
+
+        def mask(self, text, size):
+            if rendered is not None:
+                rendered.append(text)
+            return Image.new('L', (max(1, len(text) * size // 2), size), 255)
+
+        def wrap(self, text, size, width):
+            max_chars = max(1, width // max(1, size // 2))
+            lines, current = [], ''
+            for word in text.split():
+                candidate = (current + ' ' + word).strip()
+                if current and len(candidate) > max_chars:
+                    lines.append(current)
+                    current = word
+                else:
+                    current = candidate
+            if current:
+                lines.append(current)
+            return lines
+
+    return SimpleNamespace(ArabicText=FakeArabicText)
+
+
 class CloudTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -118,7 +153,7 @@ class CloudTests(unittest.TestCase):
                 key = params['verse_key']
                 return {'verses': [{'verse_key': key, 'text_uthmani': 'نَصٌّ قُرْآنِيٌّ'}]}
             if '/verses/by_key/' in url:
-                raise AssertionError('Arabic-only publishing must not request translations')
+                return english_translation_response(url, f'Meaning for {url.rsplit("/", 1)[-1]}')
 
             raise AssertionError(f'Unexpected Quran API request: {url}')
 
@@ -131,7 +166,7 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(entry['duration'], 32)
         self.assertEqual(len(entry['audio_urls']), 2)
         self.assertIn('۝٢', entry['ayah_text'])
-        self.assertNotIn('ayah_translation', entry)
+        self.assertEqual(entry['ayah_translation'], 'Meaning for 1:1 · Meaning for 1:2')
         self.assertEqual(requested_audio, ['1:1', '1:2'])
         self.assertEqual(cursor, 1)
 
@@ -176,7 +211,7 @@ class CloudTests(unittest.TestCase):
         self.assertFalse(cloud.passage_overlaps_jobs(jobs, 2, 9, 11))
         self.assertFalse(cloud.passage_overlaps_jobs(jobs, 3, 5, 8))
 
-    def test_verse_selection_does_not_depend_on_english_translation_api(self):
+    def test_verse_selection_fetches_the_selected_qf_english_translation(self):
         catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
                    'tail_silence_seconds': 1, 'max_ayah_characters': 180,
                    'permission_url': 'https://example.com/license', 'attribution': 'test',
@@ -194,17 +229,61 @@ class CloudTests(unittest.TestCase):
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'verse_key': '1:1', 'text_uthmani': 'بِسْمِ اللَّهِ'}]}
             if '/verses/by_key/' in url:
-                raise AssertionError('Arabic-only publishing must not request translations')
+                self.assertEqual(params, {'translations': '131'})
+                return english_translation_response(url, 'In the name of Allah.')
             raise AssertionError(f'Unexpected Quran API request: {url}')
 
         with patch.object(cloud, 'get_json', side_effect=api):
             entry, _ = cloud.verse_entry_for_position(catalog, {}, 0)
 
         self.assertEqual(entry['ayah_text'], 'بِسْمِ اللَّهِ')
-        self.assertNotIn('ayah_translation', entry)
-        self.assertNotIn('translation_resource_id', entry)
+        self.assertEqual(entry['ayah_translation'], 'In the name of Allah.')
+        self.assertEqual(entry['translation_resource_id'], 131)
+        self.assertEqual(entry['translation_name'], 'The Clear Quran')
 
-    def test_long_complete_arabic_ayah_is_eligible_without_translation(self):
+    def test_translation_html_is_cleaned_without_footnote_numbers(self):
+        response = english_translation_response(
+            'https://api.quran.com/api/v4/verses/by_key/1:1',
+            '<i>In the Name</i> of Allah<sup foot_note="123">1</sup> — the Most Merciful.')
+        with patch.object(cloud, 'get_json', return_value=response) as request:
+            text = cloud.qf_english_translation('1:1')
+        request.assert_called_once_with(
+            'https://api.quran.com/api/v4/verses/by_key/1:1', {'translations': '131'})
+        self.assertEqual(text, 'In the Name of Allah — the Most Merciful.')
+
+    def test_translation_resource_mismatch_fails_closed(self):
+        response = {'verse': {'verse_key': '1:1', 'translations': [
+            {'resource_id': 20, 'text': 'Wrong translation'}]}}
+        with patch.object(cloud, 'get_json', return_value=response):
+            with self.assertRaisesRegex(cloud.CloudError, 'selected English translation'):
+                cloud.qf_english_translation('1:1')
+
+    def test_translation_api_failure_cancels_verse_selection_safely(self):
+        catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
+                   'tail_silence_seconds': 1, 'max_ayah_characters': 180,
+                   'permission_url': 'https://example.com/license', 'attribution': 'test',
+                   'rights': 'test', 'visual_style': 'premium_rotating_scenes',
+                   'visual_themes': ['forest_rain']}
+
+        def api(url, params=None):
+            if 'resources/recitations' in url:
+                return {'recitations': [{'id': 1, 'reciter_name': 'Test'}]}
+            if url.endswith('/chapters'):
+                return {'chapters': [{'id': 1, 'verses_count': 6236,
+                                      'name_arabic': 'Test', 'name_simple': 'Test'}]}
+            if '/recitations/1/by_ayah/' in url:
+                return {'audio_files': [{'duration': 35, 'url': 'test.mp3'}]}
+            if 'quran/verses/uthmani' in url:
+                return {'verses': [{'verse_key': '1:1', 'text_uthmani': 'بِسْمِ اللَّهِ'}]}
+            if '/verses/by_key/' in url:
+                raise RuntimeError('temporarily unavailable')
+            raise AssertionError(f'Unexpected Quran API request: {url}')
+
+        with patch.object(cloud, 'get_json', side_effect=api):
+            with self.assertRaisesRegex(cloud.CloudError, 'translation is unavailable'):
+                cloud.verse_entry_for_position(catalog, {}, 0)
+
+    def test_long_complete_arabic_ayah_keeps_its_qf_translation(self):
         catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
                    'tail_silence_seconds': 1, 'max_ayah_characters': 240,
                    'permission_url': 'https://example.com/license', 'attribution': 'test',
@@ -223,7 +302,7 @@ class CloudTests(unittest.TestCase):
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'verse_key': '1:1', 'text_uthmani': arabic}]}
             if '/verses/by_key/' in url:
-                raise AssertionError('Arabic-only publishing must not request translations')
+                return english_translation_response(url, 'A sufficiently long English meaning.')
             raise AssertionError(f'Unexpected Quran API request: {url}')
 
         with patch.object(cloud, 'get_json', side_effect=api):
@@ -231,13 +310,17 @@ class CloudTests(unittest.TestCase):
 
         self.assertEqual(entry['ayah_text'], arabic.strip())
         self.assertGreater(len(entry['ayah_text']), 180)
-        self.assertNotIn('ayah_translation', entry)
+        self.assertEqual(entry['ayah_translation'], 'A sufficiently long English meaning.')
 
     def test_compact_card_renders_long_arabic_ayah_without_overflow(self):
         entry = dict(ENTRY, surah_ar='الإسراء', surah_en='Al-Isra',
                      reciter_ar='اسم القارئ', verse_number=23,
-                     ayah_text='بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ ' * 6)
-        target = cloud.make_card(entry, self.root / 'long-card.png')
+                     ayah_text='بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ ' * 6,
+                     ayah_translation='In the name of Allah, the Most Compassionate, the Most Merciful.')
+        font = Path(__file__).resolve().parents[1] / 'assets' / 'Amiri-Regular.ttf'
+        with patch.object(cloud, 'arabic_font_path', return_value=font), \
+             patch.dict('sys.modules', {'arabic_text': fake_arabic_text_module()}):
+            target = cloud.make_card(entry, self.root / 'long-card.png')
         self.assertTrue(target.is_file())
         self.assertGreater(target.stat().st_size, 0)
 
@@ -263,6 +346,8 @@ class CloudTests(unittest.TestCase):
                 return {'audio_files': [{'duration': 35, 'url': 'test.mp3'}]}
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'test text'}]}
+            if '/verses/by_key/' in url:
+                return english_translation_response(url, 'Verified English meaning.')
 
             raise AssertionError(f'Unexpected Quran API request: {url}')
 
@@ -378,6 +463,149 @@ class CloudTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'invalid job'):
             ledger.load()
 
+    def test_chapter_claim_block_does_not_collide_with_ayah_reciter_ids(self):
+        ledger = cloud.RemoteLedger('owner/repo', 'fake-test-token')
+        ledger.session = Mock()
+        remote_catalog = {
+            'allowed_reciter_ids': [158], 'blocked_reciter_ids': [],
+            'allowed_chapter_reciter_ids': [158, 159], 'blocked_chapter_reciter_ids': [],
+        }
+        ledger.session.get.return_value.status_code = 200
+        ledger.session.get.return_value.json.return_value = {
+            'sha': 'catalog-sha',
+            'content': base64.b64encode(json.dumps(remote_catalog).encode()).decode(),
+        }
+        ledger.session.put.return_value.status_code = 200
+        ledger.session.put.return_value.json.return_value = {'content': {'sha': 'new-sha'}}
+        catalog = copy.deepcopy(remote_catalog)
+
+        ledger.block_reciter(catalog, 158, 'chapter_recitations')
+
+        self.assertEqual(catalog['allowed_reciter_ids'], [158])
+        self.assertEqual(catalog['blocked_reciter_ids'], [])
+        self.assertEqual(catalog['allowed_chapter_reciter_ids'], [159])
+        self.assertEqual(catalog['blocked_chapter_reciter_ids'], [158])
+
+    def test_timed_chapter_passage_uses_complete_contiguous_ayahs(self):
+        timings = [
+            {'verse_key': '112:1', 'timestamp_from': 1000, 'timestamp_to': 19000},
+            {'verse_key': '112:2', 'timestamp_from': 19000, 'timestamp_to': 33000},
+            {'verse_key': '112:3', 'timestamp_from': 33000, 'timestamp_to': 44000},
+        ]
+        selected = cloud.select_timed_passage(timings, 112, 1, 4, 30, 58, 16)
+        self.assertEqual(selected['verse_start'], 1)
+        self.assertEqual(selected['verse_end'], 2)
+        self.assertEqual(selected['audio_start_ms'], 1000)
+        self.assertEqual(selected['audio_end_ms'], 33000)
+        self.assertEqual(selected['duration'], 32)
+        self.assertIsNone(cloud.select_timed_passage(timings, 112, 2, 4, 30, 58, 16))
+
+    def test_chapter_reciter_rotation_uses_every_allowed_profile_and_keeps_blocked_out(self):
+        catalog = json.loads((Path(__file__).resolve().parents[1] / 'catalog.json').read_text())
+        self.assertEqual(catalog['reciter_source_mode'], 'chapter_recitations')
+        self.assertEqual(len(catalog['allowed_chapter_reciter_ids']), 20)
+        self.assertIn(5, catalog['blocked_chapter_reciter_ids'])
+        profiles = [{'id': reciter_id, 'reciter_name': str(reciter_id),
+                     'reciter_source': 'chapter_recitations'}
+                    for reciter_id in catalog['allowed_chapter_reciter_ids']]
+        chosen = [cloud._reciter_order(profiles, {}, position, catalog)[0]['id']
+                  for position in range(len(profiles))]
+        self.assertEqual(set(chosen), set(catalog['allowed_chapter_reciter_ids']))
+        self.assertEqual(len(chosen), len(set(chosen)))
+
+    def test_chapter_reciter_selection_fetches_verified_text_and_official_timestamps(self):
+        catalog = {
+            'reciter_source_mode': 'chapter_recitations',
+            'allowed_chapter_reciter_ids': [5, 158],
+            'blocked_chapter_reciter_ids': [5],
+            'visual_themes': ['forest_rain', 'mist_mountains'],
+            'min_audio_seconds': 30, 'max_audio_seconds': 58, 'tail_silence_seconds': 1,
+            'max_ayah_characters': 240,
+            'permission_url': 'https://api-docs.quran.com/legal/developer-terms/',
+            'attribution': 'Quran Foundation', 'rights': 'Test rights',
+            'visual_style': 'real_video_assets',
+            'english_translation_id': 131,
+        }
+        requests_seen = []
+
+        def api(url, params=None):
+            requests_seen.append((url, params))
+            if url.endswith('/resources/chapter_reciters') and params == {'language': 'en'}:
+                return {'reciters': [
+                    {'id': 5, 'name': 'Blocked reader'},
+                    {'id': 158, 'name': 'Abdullah Ali Jabir',
+                     'style': {'name': 'Murattal'}, 'qirat': {'name': 'Hafs'}},
+                ]}
+            if url.endswith('/resources/chapter_reciters') and params == {'language': 'ar'}:
+                return {'reciters': [
+                    {'id': 5, 'translated_name': {'name': '���� �����'}},
+                    {'id': 158, 'translated_name': {'name': '��� ���� ��� ����'}},
+                ]}
+            if url.endswith('/chapters'):
+                return {'chapters': [{'id': 1, 'verses_count': 6236,
+                                      'name_arabic': '�������', 'name_simple': 'Al-Fatihah'}]}
+            if '/chapter_recitations/158/1' in url:
+                return {'audio_file': {
+                    'chapter_id': 1, 'file_size': 4096,
+                    'audio_url': 'https://download.quranicaudio.com/qdc/test/1.mp3',
+                    'timestamps': [
+                        {'verse_key': '1:1', 'timestamp_from': 0, 'timestamp_to': 18000},
+                        {'verse_key': '1:2', 'timestamp_from': 18000, 'timestamp_to': 35000},
+                    ],
+                }}
+            if 'quran/verses/uthmani' in url:
+                key = params['verse_key']
+                return {'verses': [{'verse_key': key, 'text_uthmani': '������ �������'}]}
+            if '/verses/by_key/' in url:
+                return english_translation_response(url, 'In the name of Allah.')
+            raise AssertionError(f'Unexpected Quran API request: {url}')
+
+        with patch.object(cloud, 'get_json', side_effect=api):
+            entry, next_position = cloud.verse_entry_for_position(catalog, {}, 0)
+        self.assertEqual(entry['recitation_id'], 158)
+        self.assertEqual(entry['reciter_source'], 'chapter_recitations')
+        self.assertEqual(entry['reciter_ar'], '��� ���� ��� ����')
+        self.assertEqual(entry['verse_key'], '1:1-2')
+        self.assertEqual(entry['audio_start_ms'], 0)
+        self.assertEqual(entry['audio_end_ms'], 35000)
+        self.assertEqual(entry['duration'], 35)
+        self.assertEqual(entry['ayah_translation'].split(f" {chr(183)} "),
+                         ['In the name of Allah.', 'In the name of Allah.'])
+        self.assertEqual(next_position, 1)
+        self.assertFalse(any('/chapter_recitations/5/' in url for url, _ in requests_seen))
+
+    def test_chapter_recitation_download_trims_by_official_range_and_pads_ending(self):
+        entry = dict(ENTRY, source_type='quran_chapter_passage',
+                     audio_url='https://download.quranicaudio.com/qdc/test/1.mp3',
+                     audio_file_size=2048, audio_start_ms=5000, audio_end_ms=40000,
+                     min_audio_seconds=30, max_audio_seconds=58, tail_silence_seconds=1)
+        response = Mock()
+        response.headers = {'content-length': '2048'}
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.raise_for_status = Mock()
+        response.iter_content.return_value = [b'a' * 2048]
+        commands = []
+
+        def render(args):
+            commands.append(args)
+            Path(args[-1]).write_bytes(b'timed complete-ayah passage')
+
+        with patch.object(cloud.requests, 'get', return_value=response), \
+             patch.object(cloud.bot, 'run_media', side_effect=render), \
+             patch.object(cloud, 'media_duration', return_value=36), \
+             patch.object(cloud.bot, 'file_hash', return_value='b' * 64):
+            target = cloud.download_quran_chapter_passage(entry, self.root / 'recitation.mp3')
+
+        self.assertTrue(target.is_file())
+        self.assertEqual(entry['duration'], 36)
+        command = commands[0]
+        self.assertIn('-ss', command)
+        self.assertEqual(command[command.index('-ss') + 1], '5.000')
+        self.assertEqual(command[command.index('-t') + 1], '35.000')
+        self.assertEqual(command[command.index('-af') + 1], 'apad=pad_dur=1.0')
+
+
     def test_verse_rotation_changes_reciter_and_verse(self):
         catalog = {'schema': 3, 'provider': 'quran_foundation', 'reciters': 'allowlist',
                    'allowed_reciter_ids': [1, 2], 'blocked_reciter_ids': [5],
@@ -401,7 +629,7 @@ class CloudTests(unittest.TestCase):
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ'}]}
             if '/verses/by_key/' in url:
-                raise AssertionError('Arabic-only publishing must not request translations')
+                return english_translation_response(url)
 
             verse = url.rsplit('/', 1)[-1]
             return {'audio_files': [{'duration': 35, 'url': f'Test/{verse}.mp3'}]}
@@ -412,8 +640,8 @@ class CloudTests(unittest.TestCase):
         self.assertNotEqual(first['verse_key'], second['verse_key'])
         self.assertNotEqual(first['visual_theme'], second['visual_theme'])
         self.assertTrue(first['ayah_text'])
-        self.assertNotIn('ayah_translation', first)
-        self.assertNotIn('translation_resource_id', first)
+        self.assertTrue(first['ayah_translation'])
+        self.assertEqual(first['translation_resource_id'], 131)
 
     def test_blocked_reciter_is_never_selected(self):
         catalog = {'schema': 3, 'provider': 'quran_foundation', 'reciters': 'allowlist',
@@ -439,7 +667,7 @@ class CloudTests(unittest.TestCase):
             if 'quran/verses/uthmani' in url:
                 return {'verses': [{'text_uthmani': 'قُلْ هُوَ اللَّهُ أَحَدٌ'}]}
             if '/verses/by_key/' in url:
-                raise AssertionError('Arabic-only publishing must not request translations')
+                return english_translation_response(url)
 
             return {'audio_files': [{'duration': 35, 'url': 'safe/test.mp3'}]}
         with patch.object(cloud, 'get_json', side_effect=api):
@@ -480,9 +708,12 @@ class CloudTests(unittest.TestCase):
             with self.assertRaises(cloud.TooLongRecording):
                 cloud.download_quran_verse(entry, self.root / 'recitation.mp3')
 
-    def test_video_metadata_is_arabic_without_verse_translation(self):
+    def test_video_metadata_credits_the_qf_english_translation(self):
         entry = dict(ENTRY, verse_number=3, verse_key='112:3',
                      ayah_text='لَمْ يَلِدْ وَلَمْ يُولَدْ',
+                     ayah_translation='He has never had offspring, nor was He born.',
+                     translation_name='The Clear Quran',
+                     translation_author='Dr. Mustafa Khattab',
                      reciter_en='Test Reciter', style='Murattal', recitation_id=1)
         job = cloud.item_for(entry, self.root / 'audio.mp3', self.root / 'card.png')
         self.assertIn('سورة الإخلاص، الآية ٣', job['title'])
@@ -490,9 +721,10 @@ class CloudTests(unittest.TestCase):
         parts = job['description'].split('\n\n')
         self.assertEqual(parts[0], entry['ayah_text'])
         self.assertEqual(parts[1], 'تلاوة سورة الإخلاص، الآية ٣، بصوت اسم القارئ')
-        self.assertEqual(parts[2], entry['attribution'])
-        self.assertEqual(parts[3], entry['permission_url'])
-        self.assertNotIn('English meaning', job['description'])
+        self.assertIn('English meaning: The Clear Quran by Dr. Mustafa Khattab', parts[2])
+        self.assertIn('Quran Foundation', parts[2])
+        self.assertEqual(parts[3], entry['attribution'])
+        self.assertEqual(parts[4], entry['permission_url'])
         self.assertNotIn('Beautiful Quran recitation', job['description'])
         self.assertNotIn('ک', job['description'])
 
@@ -527,34 +759,44 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(data['text_presentation'], 'static_full_ayah')
         self.assertEqual(data['background_orientation'], 'portrait')
         self.assertEqual(data['background_clips_per_video'], 2)
+        self.assertEqual(data['english_translation_id'], 131)
 
         data['text_presentation'] = 'word_reveal'
         with self.assertRaises(ValueError):
             cloud.validate_verse_catalog(data)
 
+        data['text_presentation'] = 'static_full_ayah'
+        data['english_translation_id'] = 0
+        with self.assertRaises(ValueError):
+            cloud.validate_verse_catalog(data)
+
     def test_card_keeps_complete_arabic_ayah_and_metadata_static(self):
-        from PIL import Image
+        from PIL import Image, ImageDraw
 
         rendered_text = []
-        rendered_sizes = []
+        font = Path(__file__).resolve().parents[1] / 'assets' / 'Amiri-Regular.ttf'
+        original_draw = ImageDraw.Draw
 
-        class FakeArabicText:
-            def __init__(self, font):
-                pass
+        def capture_draw(*args, **kwargs):
+            draw = original_draw(*args, **kwargs)
 
-            def mask(self, text, size):
-                rendered_text.append(text)
-                rendered_sizes.append((text, size))
-                return Image.new('L', (max(1, min(850, len(text) * size // 2)), size), 255)
+            class CapturingDraw:
+                def __getattr__(self, name):
+                    return getattr(draw, name)
 
-            def wrap(self, text, size, width):
-                return [text]
+                def text(self, xy, text=None, *text_args, **text_kwargs):
+                    rendered_text.append(str(text))
+                    return draw.text(xy, text, *text_args, **text_kwargs)
 
-        fake_arabic_text = SimpleNamespace(ArabicText=FakeArabicText)
-        with patch.dict('sys.modules', {'arabic_text': fake_arabic_text}):
+            return CapturingDraw()
+
+        with patch.object(cloud, 'arabic_font_path', return_value=font), \
+             patch.dict('sys.modules', {'arabic_text': fake_arabic_text_module(rendered_text)}), \
+             patch.object(ImageDraw, 'Draw', new=capture_draw):
             entry = dict(
                 ENTRY, verse_number=3, ayah_text='لَمْ يَلِدْ وَلَمْ يُولَدْ',
-                ayah_translation='English text is intentionally ignored',
+                ayah_translation='He has never had offspring, nor was He born.',
+                translation_name='The Clear Quran',
                 surah_en='Al-Ikhlas', reciter_en='Test Reciter'
             )
             card = cloud.make_card(entry, self.root / 'card.png')
@@ -576,11 +818,17 @@ class CloudTests(unittest.TestCase):
         self.assertIn('سورة الإخلاص', rendered_text)
         self.assertIn('الآية ٣', rendered_text)
         self.assertIn('لَمْ يَلِدْ وَلَمْ يُولَدْ', rendered_text)
-        self.assertTrue(all(not any(char.isascii() and char.isalpha() for char in text)
-                            for text in rendered_text))
-        self.assertIn('اسم القارئ', rendered_text)
-        self.assertNotIn('Al-Ikhlas', rendered_text)
-        self.assertNotIn('Test Reciter', rendered_text)
+        self.assertTrue(any(text.startswith('English meaning') for text in rendered_text))
+        self.assertIn('He has never had offspring, nor was He born.', rendered_text)
+        self.assertLessEqual(bottom - top, 820)
+
+    def test_card_fails_closed_when_english_translation_is_missing(self):
+        font = Path(__file__).resolve().parents[1] / 'assets' / 'Amiri-Regular.ttf'
+        entry = dict(ENTRY, verse_number=3, ayah_text='لَمْ يَلِدْ وَلَمْ يُولَدْ')
+        with patch.object(cloud, 'arabic_font_path', return_value=font), \
+             patch.dict('sys.modules', {'arabic_text': fake_arabic_text_module()}):
+            with self.assertRaisesRegex(ValueError, 'English ayah meaning'):
+                cloud.make_card(entry, self.root / 'missing-translation.png')
 
     def test_quran_word_segments_drive_phrase_reveal_timing(self):
         font_source = Path(__file__).resolve().parents[1] / 'assets' / 'Amiri-Regular.ttf'
@@ -1125,3 +1373,5 @@ class PlaylistTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+

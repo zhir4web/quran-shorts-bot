@@ -168,6 +168,7 @@ class BoundaryTests(unittest.TestCase):
 
     def test_unavailable_preferred_reciter_does_not_starve_other_reciters(self):
         catalog = bot.read_json(cloud.ROOT / 'catalog.json')
+        catalog['reciter_source_mode'] = 'ayah_by_ayah'
         catalog['allowed_reciter_ids'] = [1, 2]
         calls = []
 
