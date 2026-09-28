@@ -60,5 +60,8 @@
   "text_presentation": "static_full_ayah",
   "performance_bias_enabled": false,
   "performance_bias_min_videos": 3,
-  "performance_bias_strength": 0.15
+  "performance_bias_strength": 0.15,
+  "english_translation_id": 131,
+  "english_translation_name": "The Clear Quran",
+  "english_translation_author": "Dr. Mustafa Khattab"
 }
