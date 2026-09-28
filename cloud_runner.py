@@ -1370,7 +1370,7 @@ def make_card(entry, destination):
         else:
             raise ValueError('Complete Arabic and English meaning do not fit inside the compact card')
 
-    top_pad, bottom_pad = 28, 30
+    top_pad = 28
     panel_left, panel_right = 70, 1010
     panel_top = (image.height - panel_height) // 2
     panel_bottom = panel_top + panel_height

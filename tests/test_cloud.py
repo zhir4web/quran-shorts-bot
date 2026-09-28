@@ -569,7 +569,8 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(entry['audio_start_ms'], 0)
         self.assertEqual(entry['audio_end_ms'], 35000)
         self.assertEqual(entry['duration'], 35)
-        self.assertEqual(entry['ayah_translation'], 'In the name of Allah. � In the name of Allah.')
+        self.assertEqual(entry['ayah_translation'].split(f" {chr(183)} "),
+                         ['In the name of Allah.', 'In the name of Allah.'])
         self.assertEqual(next_position, 1)
         self.assertFalse(any('/chapter_recitations/5/' in url for url, _ in requests_seen))
 
