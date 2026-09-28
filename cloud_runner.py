@@ -25,11 +25,11 @@ import requests
 import background_provider
 import bot
 import notifications
+import quran_foundation_api
 from schedule_policy import BAGHDAD, PUBLICATION_HOURS as PUBLICATION_HOURS, schedule_state
 
 ROOT = Path(__file__).resolve().parent
 STATE_PATH = '.bot-state/published.json'
-QURAN_API = 'https://api.quran.com/api/v4/'
 QURAN_AUDIO = 'https://verses.quran.foundation/'
 DEFAULT_ENGLISH_TRANSLATION_ID = 131
 DEFAULT_ENGLISH_TRANSLATION_NAME = 'The Clear Quran'
@@ -95,7 +95,7 @@ def qf_english_translation(verse_key, resource_id=DEFAULT_ENGLISH_TRANSLATION_ID
     if isinstance(resource_id, bool) or not isinstance(resource_id, int) or resource_id <= 0:
         raise ValueError('Invalid Quran Foundation translation resource id')
     payload = get_json(
-        urljoin(QURAN_API, f'verses/by_key/{verse_key}'),
+        quran_foundation_api.api_url(f'verses/by_key/{verse_key}'),
         {'translations': str(resource_id)})
     verse = payload.get('verse')
     if not isinstance(verse, dict) or verse.get('verse_key', verse_key) != verse_key:
@@ -231,25 +231,13 @@ class RemoteLedger:
 
 
 def get_json(url, params=None):
-    """Fetch Quran Foundation data with visible, bounded progress logging."""
-    for attempt in range(3):
-        print(f'Quran API request {attempt + 1}/3: {url}', flush=True)
-        try:
-            response = requests.get(url, params=params, timeout=(10, 30),
-                                    headers={'User-Agent': 'quran-shorts-bot/2.0'})
-            if response.status_code == 404 and '/chapter_recitations/' in url:
-                raise OptionalResourceNotFound('This chapter reciter has no recording for the selected Surah')
-            response.raise_for_status()
-            payload = response.json()
-            print('Quran API response received', flush=True)
-            return payload
-        except OptionalResourceNotFound:
-            raise
-        except (requests.RequestException, ValueError):
-            print('Quran API request failed; retrying safely', flush=True)
-            if attempt == 2:
-                raise RuntimeError('Quran Foundation source is temporarily unavailable') from None
-            time.sleep(2 ** attempt)
+    """Fetch Quran Foundation data, preserving safe domain exceptions."""
+    try:
+        return quran_foundation_api.get_json(url, params)
+    except quran_foundation_api.QuranFoundationNotFound as exc:
+        raise OptionalResourceNotFound(str(exc)) from None
+    except quran_foundation_api.QuranFoundationAPIError as exc:
+        raise CloudError(str(exc)) from None
 
 
 def api_entries(data):
@@ -261,8 +249,8 @@ def api_entries(data):
     permission_url = data.get('permission_url', '')
     if not permission_url.startswith('https://api-docs.quran.com/'):
         raise ValueError('Quran Foundation permission URL required')
-    english = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'en'}).get('recitations', [])
-    arabic = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'ar'}).get('recitations', [])
+    english = get_json(quran_foundation_api.api_url('resources/recitations'), {'language': 'en'}).get('recitations', [])
+    arabic = get_json(quran_foundation_api.api_url('resources/recitations'), {'language': 'ar'}).get('recitations', [])
     arabic_names = {row['id']: row.get('translated_name', {}).get('name') for row in arabic}
     if not english:
         raise RuntimeError('No Quran Foundation reciters are currently available')
@@ -310,20 +298,27 @@ def validate_verse_catalog(data):
         raise ValueError('Unsupported reciter audio source mode')
     allowed = data.get('allowed_reciter_ids')
     blocked = data.get('blocked_reciter_ids', [])
+    proposed = data.get('proposed_reciter_ids_for_review', [])
     chapter_allowed = data.get('allowed_chapter_reciter_ids', [])
     chapter_blocked = data.get('blocked_chapter_reciter_ids', [])
+    chapter_proposed = data.get('proposed_chapter_reciter_ids_for_review', [])
 
     def valid_ids(values, required=False):
         return (isinstance(values, list) and (bool(values) or not required) and
                 all(not isinstance(value, bool) and isinstance(value, int) and value > 0
                     for value in values) and len(set(values)) == len(values))
 
-    if not valid_ids(allowed, required=source_mode == 'ayah_by_ayah') or not valid_ids(blocked):
+    if (not valid_ids(allowed, required=source_mode == 'ayah_by_ayah') or
+            not valid_ids(blocked) or not valid_ids(proposed)):
         raise ValueError('Invalid ayah-reciter allow/block lists')
-    if not valid_ids(chapter_allowed, required=source_mode == 'chapter_recitations') or not valid_ids(chapter_blocked):
+    if (not valid_ids(chapter_allowed, required=source_mode == 'chapter_recitations') or
+            not valid_ids(chapter_blocked) or not valid_ids(chapter_proposed)):
         raise ValueError('Invalid chapter-reciter allow/block lists')
     if set(allowed or []) & set(blocked) or set(chapter_allowed) & set(chapter_blocked):
         raise ValueError('Reciter allow and block lists must be unique and disjoint')
+    if ((set(proposed) & (set(allowed or []) | set(blocked))) or
+            (set(chapter_proposed) & (set(chapter_allowed) | set(chapter_blocked)))):
+        raise ValueError('Reciter review proposals must be separate from allow/block lists')
     selection = data.get('reciter_selection', {})
     if not isinstance(selection, dict):
         raise ValueError('Invalid reciter selection configuration')
@@ -506,10 +501,10 @@ def chapter_reciter_entry_for_position(catalog, jobs, position, performance_hist
     allowed = set(catalog['allowed_chapter_reciter_ids'])
     blocked = set(catalog.get('blocked_chapter_reciter_ids', []))
     english_rows = get_json(
-        urljoin(QURAN_API, 'resources/chapter_reciters'), {'language': 'en'}
+        quran_foundation_api.api_url('resources/chapter_reciters'), {'language': 'en'}
     ).get('reciters', [])
     arabic_rows = get_json(
-        urljoin(QURAN_API, 'resources/chapter_reciters'), {'language': 'ar'}
+        quran_foundation_api.api_url('resources/chapter_reciters'), {'language': 'ar'}
     ).get('reciters', [])
     arabic_names = {}
     for row in arabic_rows:
@@ -538,7 +533,7 @@ def chapter_reciter_entry_for_position(catalog, jobs, position, performance_hist
         }
         if reciter['reciter_name']:
             reciters.append(reciter)
-    chapters = get_json(urljoin(QURAN_API, 'chapters'), {'language': 'en'}).get('chapters', [])
+    chapters = get_json(quran_foundation_api.api_url('chapters'), {'language': 'en'}).get('chapters', [])
     if not reciters or not chapters:
         raise RuntimeError('No approved Quran Foundation chapter reciters are currently available')
 
@@ -601,7 +596,7 @@ def chapter_reciter_entry_for_position(catalog, jobs, position, performance_hist
         if cache_key not in audio_cache:
             try:
                 payload = get_json(
-                    urljoin(QURAN_API, f'chapter_recitations/{reciter_id}/{chapter_id}'),
+                    quran_foundation_api.api_url(f'chapter_recitations/{reciter_id}/{chapter_id}'),
                     {'segments': 'true'})
                 audio_cache[cache_key] = payload.get('audio_file')
             except OptionalResourceNotFound:
@@ -632,7 +627,7 @@ def chapter_reciter_entry_for_position(catalog, jobs, position, performance_hist
         translations = []
         for part in selected['audio_parts']:
             text_payload = get_json(
-                urljoin(QURAN_API, 'quran/verses/uthmani'),
+                quran_foundation_api.api_url('quran/verses/uthmani'),
                 {'verse_key': part['verse_key']})
             text_rows = text_payload.get('verses', [])
             if (len(text_rows) != 1 or
@@ -719,9 +714,9 @@ def verse_entry_for_position(catalog, jobs, position, performance_history=None):
         return chapter_reciter_entry_for_position(
             catalog, jobs, position, performance_history)
     print('Loading Quran Foundation reciter and chapter metadata...', flush=True)
-    english = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'en'}).get('recitations', [])
-    arabic = get_json(urljoin(QURAN_API, 'resources/recitations'), {'language': 'ar'}).get('recitations', [])
-    chapters = get_json(urljoin(QURAN_API, 'chapters'), {'language': 'en'}).get('chapters', [])
+    english = get_json(quran_foundation_api.api_url('resources/recitations'), {'language': 'en'}).get('recitations', [])
+    arabic = get_json(quran_foundation_api.api_url('resources/recitations'), {'language': 'ar'}).get('recitations', [])
+    chapters = get_json(quran_foundation_api.api_url('chapters'), {'language': 'en'}).get('chapters', [])
     allowed = set(catalog['allowed_reciter_ids'])
     blocked = set(catalog.get('blocked_reciter_ids', []))
     english = [row for row in english if row.get('id') in allowed and row.get('id') not in blocked]
@@ -762,7 +757,7 @@ def verse_entry_for_position(catalog, jobs, position, performance_history=None):
     def fetch_audio(reciter_id, chapter_id, verse_number):
         expected_key = f'{chapter_id}:{verse_number}'
         payload = get_json(
-            urljoin(QURAN_API, f'recitations/{reciter_id}/by_ayah/{expected_key}'),
+            quran_foundation_api.api_url(f'recitations/{reciter_id}/by_ayah/{expected_key}'),
             {'fields': 'chapter_id,verse_number,verse_key,duration,url,segments'})
         files = payload.get('audio_files', [])
         if len(files) != 1:
@@ -789,7 +784,7 @@ def verse_entry_for_position(catalog, jobs, position, performance_history=None):
         for part in audio_parts:
             expected_key = part['verse_key']
             text_payload = get_json(
-                urljoin(QURAN_API, 'quran/verses/uthmani'),
+                quran_foundation_api.api_url('quran/verses/uthmani'),
                 {'verse_key': expected_key})
             text_rows = text_payload.get('verses', [])
             if len(text_rows) != 1:
@@ -1227,7 +1222,7 @@ def download_quran_chapter_passage(entry, destination):
 
 
 def download_quran_foundation(entry, destination):
-    payload = get_json(urljoin(QURAN_API, f"recitations/{entry['recitation_id']}/by_chapter/{entry['chapter']}"),
+    payload = get_json(quran_foundation_api.api_url(f"recitations/{entry['recitation_id']}/by_chapter/{entry['chapter']}"),
                        {'per_page': 50, 'fields': 'chapter_id,verse_number,verse_key,duration,url'})
     audio_files = payload.get('audio_files', [])
     if not audio_files:

@@ -45,6 +45,7 @@
     5
   ],
   "proposed_reciter_ids_for_review": [],
+  "proposed_chapter_reciter_ids_for_review": [],
   "reciter_selection": {
     "tajwid_weight": 0.35,
     "tajwid_keywords": [

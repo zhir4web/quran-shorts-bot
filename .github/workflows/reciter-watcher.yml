@@ -26,9 +26,12 @@ jobs:
         run: python -m pip install requests==2.34.2
       - name: Check for newly available reciters
         env:
-          GITHUB_TOKEN: ${ secrets.GITHUB_TOKEN }
-          GITHUB_REPOSITORY: ${ github.repository }
-          GITHUB_REF_NAME: ${ github.ref_name }
-          DISCORD_WEBHOOK_URL: ${ secrets.DISCORD_WEBHOOK_URL }
-          NOTIFY_RUN_URL: ${ github.server_url }/${ github.repository }/actions/runs/${ github.run_id }
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          QF_CLIENT_ID: ${{ secrets.QF_CLIENT_ID }}
+          QF_CLIENT_SECRET: ${{ secrets.QF_CLIENT_SECRET }}
+          QF_ENV: production
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          NOTIFY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python reciter_watcher.py

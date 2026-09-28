@@ -770,6 +770,18 @@ class CloudTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             cloud.validate_verse_catalog(data)
 
+    def test_catalog_keeps_review_proposals_disjoint_from_both_allowlists(self):
+        path = Path(__file__).resolve().parents[1] / 'catalog.json'
+        data = json.loads(path.read_text(encoding='utf-8'))
+        data['proposed_chapter_reciter_ids_for_review'] = [210]
+        self.assertIs(cloud.validate_verse_catalog(data), data)
+
+        data['proposed_chapter_reciter_ids_for_review'] = [
+            data['allowed_chapter_reciter_ids'][0]
+        ]
+        with self.assertRaisesRegex(ValueError, 'proposals'):
+            cloud.validate_verse_catalog(data)
+
     def test_card_keeps_complete_arabic_ayah_and_metadata_static(self):
         from PIL import Image, ImageDraw
 

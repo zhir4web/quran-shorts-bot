@@ -15,9 +15,9 @@ import re
 
 import requests
 import notifications
+import quran_foundation_api
 
 LOG = logging.getLogger("quran-bot.reciter-watcher")
-QURAN_API = "https://api.quran.com/api/v4/resources/recitations"
 GITHUB_API = "https://api.github.com"
 REQUEST_TIMEOUT = (10, 30)
 STATE_PATH = ".bot-state/reciter-watcher.json"
@@ -68,27 +68,77 @@ def parse_reciters(payload):
     return dict(sorted(reciters.items()))
 
 
+def parse_chapter_reciters(payload):
+    """Return names keyed by chapter-reciter IDs, a separate ID namespace."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("reciters"), list):
+        raise WatcherError("Quran Foundation returned an invalid chapter-reciter list")
+    rows = payload["reciters"]
+    if not rows:
+        raise WatcherError("Quran Foundation returned an empty chapter-reciter list")
+    reciters = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise WatcherError("Quran Foundation returned an invalid chapter-reciter record")
+        reciter_id = row.get("id")
+        if isinstance(reciter_id, bool) or not isinstance(reciter_id, int) or reciter_id <= 0:
+            raise WatcherError("Quran Foundation returned an invalid chapter-reciter id")
+        if reciter_id in reciters:
+            raise WatcherError("Quran Foundation returned a duplicate chapter-reciter id")
+        translated = row.get("translated_name")
+        translated = translated.get("name") if isinstance(translated, dict) else None
+        name = row.get("name") or translated or "ناوی بەردەست نییە"
+        if not isinstance(name, str):
+            raise WatcherError("Quran Foundation returned an invalid chapter-reciter name")
+        reciters[reciter_id] = name.strip() or "ناوی بەردەست نییە"
+    return dict(sorted(reciters.items()))
+
+
 def fetch_reciters(session=None):
-    """Fetch the full English-name listing; the API falls back if unavailable."""
-    client = session or requests
-    response = client.get(
-        QURAN_API,
-        params={"language": "en"},
-        timeout=REQUEST_TIMEOUT,
-        headers={"User-Agent": "quran-shorts-bot-reciter-watcher/1.0"},
-    )
-    if response.status_code >= 400:
-        raise WatcherError(f"Quran Foundation listing returned HTTP {response.status_code}")
+    """Fetch ayah-by-ayah recitation profiles."""
     try:
-        return parse_reciters(response.json())
+        payload = quran_foundation_api.get_json(
+            quran_foundation_api.api_url("resources/recitations"),
+            params={"language": "en"},
+            session=session,
+        )
+        return parse_reciters(payload)
+    except quran_foundation_api.QuranFoundationAPIError as exc:
+        raise WatcherError(str(exc)) from None
     except (ValueError, TypeError):
         raise WatcherError("Quran Foundation returned unreadable reciter data") from None
 
 
+def fetch_chapter_reciters(session=None):
+    """Fetch full-Surah recording profiles used by the active publishing mode."""
+    try:
+        payload = quran_foundation_api.get_json(
+            quran_foundation_api.api_url("resources/chapter_reciters"),
+            params={"language": "en"},
+            session=session,
+        )
+        return parse_chapter_reciters(payload)
+    except quran_foundation_api.QuranFoundationAPIError as exc:
+        raise WatcherError(str(exc)) from None
+    except (ValueError, TypeError):
+        raise WatcherError("Quran Foundation returned unreadable chapter-reciter data") from None
+
+
+def fetch_reciter_catalog(session=None):
+    """Fetch both APIs; their numeric IDs are distinct and must stay separate."""
+    return {
+        "recitations": fetch_reciters(session),
+        "chapter_reciters": fetch_chapter_reciters(session),
+    }
+
+
 def validate_snapshot(state):
-    if not isinstance(state, dict) or state.get("schema") != 1:
+    if not isinstance(state, dict) or state.get("schema") not in (1, 2):
         raise WatcherError("Saved reciter snapshot is invalid")
-    return _valid_ids(state.get("reciter_ids"), "Saved reciter snapshot")
+    recitations = _valid_ids(state.get("reciter_ids"), "Saved recitation snapshot")
+    chapter_reciters = (_valid_ids(state.get("chapter_reciter_ids"),
+                                   "Saved chapter-reciter snapshot")
+                        if state.get("schema") == 2 else None)
+    return {"recitations": recitations, "chapter_reciters": chapter_reciters}
 
 
 def find_new_reciters(current, previous_ids, catalog):
@@ -97,6 +147,19 @@ def find_new_reciters(current, previous_ids, catalog):
     proposed = _valid_ids(catalog.get("proposed_reciter_ids_for_review", []),
                           "proposed_reciter_ids_for_review")
     blocked = _valid_ids(catalog.get("blocked_reciter_ids", []), "blocked_reciter_ids")
+    known = allowed | proposed | blocked | set(previous_ids or ())
+    return {reciter_id: current[reciter_id] for reciter_id in sorted(current)
+            if reciter_id not in known}
+
+
+def find_new_chapter_reciters(current, previous_ids, catalog):
+    """Compare only chapter-reciter IDs with the matching reviewed allowlist."""
+    allowed = _valid_ids(catalog.get("allowed_chapter_reciter_ids", []),
+                         "allowed_chapter_reciter_ids")
+    proposed = _valid_ids(catalog.get("proposed_chapter_reciter_ids_for_review", []),
+                          "proposed_chapter_reciter_ids_for_review")
+    blocked = _valid_ids(catalog.get("blocked_chapter_reciter_ids", []),
+                         "blocked_chapter_reciter_ids")
     known = allowed | proposed | blocked | set(previous_ids or ())
     return {reciter_id: current[reciter_id] for reciter_id in sorted(current)
             if reciter_id not in known}
@@ -157,8 +220,9 @@ class GitHubContents:
         return response.json().get("content", {}).get("sha")
 
 
-def add_review_proposals(contents, candidates):
-    """Merge candidates into the review-only list without touching the allowlist."""
+def add_review_proposals(contents, candidates, chapter_candidates=None):
+    """Merge both ID namespaces into review lists without touching allowlists."""
+    chapter_candidates = chapter_candidates or {}
     for _attempt in range(3):
         catalog, sha = contents.read_json(CATALOG_PATH)
         if catalog is None:
@@ -168,18 +232,32 @@ def add_review_proposals(contents, candidates):
                               "proposed_reciter_ids_for_review")
         blocked = _valid_ids(catalog.get("blocked_reciter_ids", []), "blocked_reciter_ids")
         additions = sorted(set(candidates) - allowed - proposed - blocked)
-        if not additions:
-            return []
+        chapter_allowed = _valid_ids(catalog.get("allowed_chapter_reciter_ids", []),
+                                     "allowed_chapter_reciter_ids")
+        chapter_proposed = _valid_ids(
+            catalog.get("proposed_chapter_reciter_ids_for_review", []),
+            "proposed_chapter_reciter_ids_for_review",
+        )
+        chapter_blocked = _valid_ids(catalog.get("blocked_chapter_reciter_ids", []),
+                                     "blocked_chapter_reciter_ids")
+        chapter_additions = sorted(
+            set(chapter_candidates) - chapter_allowed - chapter_proposed - chapter_blocked
+        )
+        if not additions and not chapter_additions:
+            return {"recitations": [], "chapter_reciters": []}
         catalog["proposed_reciter_ids_for_review"] = sorted(proposed | set(additions))
-        # allowed_reciter_ids is never written or changed by this watcher.
+        catalog["proposed_chapter_reciter_ids_for_review"] = sorted(
+            chapter_proposed | set(chapter_additions)
+        )
+        # Neither allowed list is ever written or changed by this watcher.
         try:
             contents.write_json(
                 CATALOG_PATH,
                 catalog,
                 sha,
-                "Suggest newly available reciters for manual review",
+                "Suggest newly available Quran reciters for manual review",
             )
-            return additions
+            return {"recitations": additions, "chapter_reciters": chapter_additions}
         except ContentsConflict:
             continue
     raise WatcherError("catalog.json kept changing; review proposals were not saved")
@@ -189,24 +267,33 @@ def _utc_now():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _render_summary(status, checked_at, total=0, new_reciters=None, note=""):
+def _render_summary(status, checked_at, total=0, new_reciters=None, note="",
+                    chapter_total=0, new_chapter_reciters=None):
     new_reciters = new_reciters or {}
+    new_chapter_reciters = new_chapter_reciters or {}
     lines = ["## Weekly Quran Foundation reciter check", ""]
     if status == "baseline":
         lines += [
             f"Initial baseline saved at {checked_at}; no reciters were proposed on this first check.",
-            f"Available reciters recorded: **{total}**.",
+            f"Ayah-by-ayah reciters recorded: **{total}**.",
+            f"Full-Surah reciters recorded: **{chapter_total}**.",
         ]
     elif status == "ok":
         lines += [
-            f"Checked at {checked_at}. Available reciters: **{total}**.",
+            f"Checked at {checked_at}. Ayah-by-ayah reciters: **{total}**; "
+            f"full-Surah reciters: **{chapter_total}**.",
             "",
         ]
         if new_reciters:
-            lines += ["New reciters added to proposed_reciter_ids_for_review for manual review:"]
+            lines += ["New ayah-by-ayah reciters added to `proposed_reciter_ids_for_review`:"]
             lines += [f"- **ID {reciter_id}** — {name}" for reciter_id, name in new_reciters.items()]
-            lines += ["", "Review and approve each reciter manually before moving an ID to allowed_reciter_ids."]
-        else:
+            lines += ["Review manually before moving any ID to `allowed_reciter_ids`."]
+        if new_chapter_reciters:
+            lines += ["New full-Surah reciters added to `proposed_chapter_reciter_ids_for_review`:"]
+            lines += [f"- **ID {reciter_id}** — {name}"
+                      for reciter_id, name in new_chapter_reciters.items()]
+            lines += ["Review manually before moving any ID to `allowed_chapter_reciter_ids`."]
+        if not new_reciters and not new_chapter_reciters:
             lines.append("No genuinely new reciter IDs since the last successful check.")
     else:
         lines += [
@@ -216,7 +303,57 @@ def _render_summary(status, checked_at, total=0, new_reciters=None, note=""):
     return "\n".join(lines).strip() + "\n"
 
 
-def run_check(contents, fetcher=fetch_reciters, notifier=None, notify_env=None):
+def _normalize_reciter_catalog(value):
+    """Accept the full two-namespace result and legacy test/custom fetchers."""
+    if not isinstance(value, dict):
+        raise WatcherError("Quran Foundation returned an invalid reciter catalog")
+    if "recitations" not in value and "chapter_reciters" not in value:
+        # Compatibility for callers that supplied the old fetcher returning
+        # only the ayah-by-ayah ID map.
+        return {"recitations": value, "chapter_reciters": {}}
+    recitations = value.get("recitations")
+    chapters = value.get("chapter_reciters")
+    if not isinstance(recitations, dict) or not isinstance(chapters, dict):
+        raise WatcherError("Quran Foundation returned an incomplete reciter catalog")
+    return {"recitations": recitations, "chapter_reciters": chapters}
+
+
+def _snapshot_document(checked_at, reciters, chapter_reciters):
+    return {
+        "schema": 2,
+        "checked_at": checked_at,
+        "reciter_ids": sorted(reciters),
+        "reciter_names": {str(key): value for key, value in reciters.items()},
+        "chapter_reciter_ids": sorted(chapter_reciters),
+        "chapter_reciter_names": {str(key): value for key, value in chapter_reciters.items()},
+    }
+
+
+def _notify_proposals(notifier, env, candidates, chapter_candidates):
+    if not notifier:
+        return
+    items = [
+        ("recitation", reciter_id, name, "allowed_reciter_ids", "ayah-by-ayah")
+        for reciter_id, name in candidates.items()
+    ] + [
+        ("chapter", reciter_id, name, "allowed_chapter_reciter_ids", "full-Surah")
+        for reciter_id, name in chapter_candidates.items()
+    ]
+    for namespace, reciter_id, name, allowlist, label in items:
+        message = (
+            f"قورئانخوێنی نوێ ({label}) دۆزرایەوە و بۆ پشکنینی دەستی زیاد کرا:\n"
+            f"ناسنامە: {reciter_id}\nناو: {name}\n\n"
+            "پێش بەکارهێنان بە دەستی پەسەندی بکە و تەنها ئەوکات ID ـەکە بگوازەوە بۆ "
+            f"{allowlist}."
+        )
+        try:
+            notifier(message, kind="info", key=f"reciter-review:{namespace}:{reciter_id}",
+                     env=env or {})
+        except Exception as exc:
+            LOG.warning("Reciter notification unavailable: %s", type(exc).__name__)
+
+
+def run_check(contents, fetcher=None, notifier=None, notify_env=None):
     """Run one check. Source and storage failures are reported, never raised."""
     checked_at = _utc_now()
     try:
@@ -225,58 +362,55 @@ def run_check(contents, fetcher=fetch_reciters, notifier=None, notify_env=None):
             raise WatcherError("catalog.json was not found")
         state, state_sha = contents.read_json(STATE_PATH)
         previous_ids = validate_snapshot(state) if state is not None else None
-        current = fetcher()
+        current_catalog = _normalize_reciter_catalog((fetcher or fetch_reciter_catalog)())
+        current = current_catalog["recitations"]
+        chapter_current = current_catalog["chapter_reciters"]
         if not current:
-            raise WatcherError("Quran Foundation returned no reciters")
+            raise WatcherError("Quran Foundation returned an empty reciter list")
 
         # The first run establishes a baseline. It must not mislabel the entire
         # existing API catalog as new because no historical snapshot exists yet.
         if previous_ids is None:
-            state_doc = {"schema": 1, "checked_at": checked_at,
-                         "reciter_ids": sorted(current),
-                         "reciter_names": {str(key): value for key, value in current.items()}}
+            state_doc = _snapshot_document(checked_at, current, chapter_current)
             contents.write_json(STATE_PATH, state_doc, state_sha,
                                 "Save Quran Foundation reciter watcher baseline")
             return {
-                "status": "baseline", "new_reciters": {},
-                "summary": _render_summary("baseline", checked_at, len(current)),
+                "status": "baseline", "new_reciters": {}, "new_chapter_reciters": {},
+                "summary": _render_summary("baseline", checked_at, len(current),
+                                            chapter_total=len(chapter_current)),
             }
 
-        candidates = find_new_reciters(current, previous_ids, catalog)
-        added = add_review_proposals(contents, candidates) if candidates else []
-        added_reciters = {reciter_id: current[reciter_id] for reciter_id in added}
+        old_reciters = previous_ids["recitations"]
+        old_chapters = previous_ids["chapter_reciters"]
+        candidates = find_new_reciters(current, old_reciters, catalog)
+        chapter_candidates = (
+            find_new_chapter_reciters(chapter_current, old_chapters, catalog)
+            if old_chapters is not None else {}
+        )
+        additions = add_review_proposals(contents, candidates, chapter_candidates)
+        added_reciters = {reciter_id: current[reciter_id]
+                          for reciter_id in additions["recitations"]}
+        added_chapter_reciters = {reciter_id: chapter_current[reciter_id]
+                                  for reciter_id in additions["chapter_reciters"]}
+        _notify_proposals(notifier, notify_env, added_reciters, added_chapter_reciters)
 
-        # Send one short, idempotency-keyed alert per reciter. The GitHub run
-        # summary remains the complete fallback if Discord is not configured.
-        if notifier and added_reciters:
-            for reciter_id, name in added_reciters.items():
-                message = (
-                    "قورئانخوێنی نوێ دۆزرایەوە و بۆ پشکنینی دەستی زیاد کرا:\n"
-                    f"ناسنامە: {reciter_id}\nناو: {name}\n\n"
-                    "تکایە پێش بەکارهێنان، خۆت لە catalog.json پەسەندی بکە و "
-                    "ناسنامەکە بگوازەوە بۆ allowed_reciter_ids."
-                )
-                try:
-                    notifier(message, kind="info", key=f"reciter-review:{reciter_id}",
-                             env=notify_env or {})
-                except Exception as exc:
-                    LOG.warning("Reciter notification unavailable: %s", type(exc).__name__)
-
-        state_doc = {"schema": 1, "checked_at": checked_at,
-                     "reciter_ids": sorted(current),
-                     "reciter_names": {str(key): value for key, value in current.items()}}
+        state_doc = _snapshot_document(checked_at, current, chapter_current)
         contents.write_json(STATE_PATH, state_doc, state_sha,
                             "Update Quran Foundation reciter watcher snapshot")
         return {
             "status": "ok", "new_reciters": added_reciters,
-            "summary": _render_summary("ok", checked_at, len(current), added_reciters),
+            "new_chapter_reciters": added_chapter_reciters,
+            "summary": _render_summary("ok", checked_at, len(current), added_reciters,
+                                        chapter_total=len(chapter_current),
+                                        new_chapter_reciters=added_chapter_reciters),
         }
     except Exception as exc:
         # Never leak request details or credentials and never fail a publish job.
         note = str(exc) if isinstance(exc, WatcherError) else f"temporary error ({type(exc).__name__})"
         summary = _render_summary("skipped", checked_at, note=note)
         LOG.warning("Reciter watcher skipped: %s", note)
-        return {"status": "skipped", "new_reciters": {}, "summary": summary}
+        return {"status": "skipped", "new_reciters": {},
+                "new_chapter_reciters": {}, "summary": summary}
 
 
 def main(argv=None):

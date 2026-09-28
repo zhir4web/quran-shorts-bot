@@ -26,6 +26,8 @@ Node.js 22 یان نوێتر بۆ تاقیکردنەوەکانی JavaScript پێ
 
 GitHub Actions پێویستی بە secret ـی `YOUTUBE_TOKEN` هەیە. `GITHUB_TOKEN` لە workflow دابین دەکرێت. scope ـەکان `youtube.upload`، `youtube.readonly`، `youtube.force-ssl` و `yt-analytics.readonly` ـن. بۆ login ـی ناوخۆیی، OAuth desktop client لە `client_secrets.json` دابنێ و `run.bat auth` جێبەجێ بکە. بۆ چالاککردنی داتای تەندروستی (retention)، تۆکین ـەکە بە scope ـی `yt-analytics.readonly` نوێ بکەرەوە؛ پێش ئەوە ڕاپۆرت وەک «نابەردەست» نیشان دەدرێت و بڵاوکردنەوە کاریگەری لێ نابینێت.
 
+بۆ بەکارهێنانی Quran Foundation Content API ـی نوێ، `QF_CLIENT_ID` و `QF_CLIENT_SECRET` وەک GitHub Actions repository secrets زیاد بکە؛ کۆدەکە تەنها لە workflow ـی سێرڤەر بەکاریان دەهێنێت. `QF_ENV` لە workflow بە `production` دانراوە بۆ ئەوەی هەموو سوورەت و دەنگەکان بەردەست بن؛ دەبێت لە Developer Console ـی Quran Foundation مۆڵەتی production ـت هەبێت. تا هەردوو secret ـەکە دانەنرێن، سیستەمەکە بە API ـی پێشوو کار دەکات و دووبارەکردنەوەی سنووردار بە `Retry-After` جێبەجێ دەکات. بە هیچ شێوەیەک client secret لە Vercel یان لە ناو وێبسایت دابنێ.
+
 ئاگادارکردنەوەی GitHub بۆ workflow ـە شکست‌خواردووەکان لە ڕێکخستنی هەژماری خۆتەوە چالاک دەکرێت. `DISCORD_WEBHOOK_URL` بۆ ئاگادارکردنەوەی Discord ئارەزوومەندانەیە؛ `HEARTBEAT_URL` بۆ چاودێریی دەرەکییە. ئەگەر هیچ کامیان ڕێکنەخرابێت، تۆڕێکی دەرەکی پەیوەندی پێوە ناکرێت و بڵاوکردنەوە بەردەوام دەبێت.
 
 لە Actions، `preview` بۆ پشکنینی ڤیدیۆ، `scheduled` بۆ گرتنەوەی slot، `publish` بۆ پۆستی دەستی، یان `report` بۆ نوێکردنەوەی دۆخی YouTube بەبێ بڵاوکردنەوە هەڵبژێرە. لە داشبۆردیش دوگمەی پشکنینی دۆخ هەیە؛ ئەنجام دوای تەواوبوونی workflow نوێ دەبێتەوە. `count` لە 1 تا 5 تەنها لە publish کار دەکات. پۆستەکانی یەک داواکاری لە یەک workflow بە ڕیز جێبەجێ دەبن؛ شکستی پۆستێک batch ڕادەگرێت.
@@ -38,6 +40,7 @@ GitHub Actions پێویستی بە secret ـی `YOUTUBE_TOKEN` هەیە. `GITHUB
 - ماوە، دەنگ، قەبارە و جووڵە بە FFmpeg دەپشکنرێن.
 - دەقی عوسمانی لە Quran Foundation وەردەگیرێت؛ ناسنامەی ئایەتی گەڕاوە ئەگەر هەبێت لەگەڵ داواکاری بەراورد دەکرێت.
 - HarfBuzz و FreeType نووسین و حەرەکات دادەنێن. ئەگەر فۆنت پیتێکی نەبێت یان دەق جێ نەبێتەوە، ڕەندەر دەوەستێت.
+- فۆنتی `Amiri-Regular.ttf` بە Naskhی گونجاو بۆ نووسینی قورئانە و مۆڵەتی Open Font License ـی لەگەڵ فایلەکە پارێزراوە.
 - بۆ هەر یەک لە پێنج theme ـەکە کلیپێکی فیلمکراوی ڕاستەقینەی پاشبنەما هەیە؛ ئەگەر کلیپێک ون بێت، workflow بە هەڵە دەوەستێت و theme ـێکی تر بە بێ ئاگاداری جێگۆڕکێ ناکرێت. [سەرچاوەکانی کلیپ](assets/backgrounds/video/LICENSES.md).
 - تۆماری uploading پێش ناردن دەپارێزرێت؛ video_id پێش کۆمێنت دەپارێزرێت. upload ـی نادیار پۆستکردن ڕادەگرێت تا پشکنین بکرێت.
 
