@@ -22,6 +22,22 @@
       "destination": "/api?route=schedule-trigger"
     },
     {
+      "source": "/api/tiktok/connect",
+      "destination": "/api/tiktok-auth?route=connect"
+    },
+    {
+      "source": "/api/tiktok/status",
+      "destination": "/api/tiktok-auth?route=status"
+    },
+    {
+      "source": "/api/tiktok/access-token",
+      "destination": "/api/tiktok-auth?route=access-token"
+    },
+    {
+      "source": "/api/tiktok/callback",
+      "destination": "/api/tiktok-auth?route=callback"
+    },
+    {
       "source": "/",
       "destination": "/dashboard/index.html"
     },

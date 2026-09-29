@@ -41,7 +41,30 @@ reverse proxy. Missing remote configuration is an error, not a local fallback.
 - Refresh retries authentication after canceling the key dialog.
 - The service worker caches static assets only, never API responses.
 
-TikTok posting is not implemented. Environment credentials do not enable it.
+TikTok draft upload is available from the dashboard after configuring a TikTok
+Developer app and connecting the creator account. Add these Vercel Production
+environment variables, then redeploy:
+
+- `TIKTOK_CLIENT_KEY` and `TIKTOK_CLIENT_SECRET` from the TikTok Developer app.
+- `TIKTOK_REDIRECT_URI` set exactly to
+  `https://quran-shorts-bot.vercel.app/api/tiktok/callback` and registered in
+  the app.
+- Enable the Content Posting API and request the `video.upload` scope. TikTok
+  must approve the app/scope before the creator account can connect.
+- `BLOB_READ_WRITE_TOKEN` must be present. OAuth tokens are AES-GCM encrypted
+  in a Vercel Blob object, with the encryption key derived from this server-only
+  token. The browser and GitHub workflow never receive the client secret or
+  refresh token; the workflow receives only a short-lived access token over
+  HTTPS when it starts an upload.
+
+After redeploying, open TikTok in the dashboard, connect the account, and check
+the consent box before sending a draft. The workflow renders a TikTok-specific
+video longer than 60 seconds, checks the final file duration, uploads it through
+TikTok's `video.upload` inbox endpoint, and records each GitHub run ID to prevent
+duplicate drafts on a workflow rerun. TikTok sends an inbox notification; the
+creator must open it, review/edit the draft, and publish it in TikTok. This flow
+does not call the direct-publication API and never automatically publishes to
+TikTok. YouTube rendering and upload remain separate and unchanged.
 
 ## Tests
 

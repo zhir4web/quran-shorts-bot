@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const state = { overview: null, manualCount: 1, busy: false, refreshing: false, authCancelled: false };
+  const state = { overview: null, tiktok: null, manualCount: 1, busy: false, refreshing: false, authCancelled: false };
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>'"]/g, (char) => ({
@@ -168,6 +168,56 @@
     updateButtons();
   }
 
+  function updateTikTokButtons() {
+    const configured = state.tiktok?.configured === true;
+    const connected = state.tiktok?.connected === true;
+    const consent = $('#tiktok-consent')?.checked === true;
+    $('#tiktok-connect').disabled = state.busy || !configured;
+    $('#tiktok-draft').disabled = state.busy || !connected || !consent;
+    if (!configured) {
+      $('#tiktok-label').textContent = 'APP SETUP REQUIRED';
+      $('#tiktok-connection').textContent = 'پێویستە TikTok app دروست بکرێت و کلیلی API لە Vercel زیاد بکرێت.';
+      $('#tiktok-badge').textContent = '○ ئامادە نییە';
+      $('#tiktok-status').textContent = 'TIKTOK_CLIENT_KEY، TIKTOK_CLIENT_SECRET و TIKTOK_REDIRECT_URI لە Vercel پێویستن.';
+      $('#tiktok-settings').textContent = 'ڕێکخستنی ئەپی TikTok پێویستە';
+    } else if (connected) {
+      $('#tiktok-label').textContent = 'CONNECTED';
+      $('#tiktok-connection').textContent = 'ئەکاونتی TikTok پەیوەستە. draft ـەکان بۆ Inbox دەنێردرێن.';
+      $('#tiktok-badge').textContent = '✓ پەیوەستە';
+      $('#tiktok-status').textContent = 'بۆ ناردن، ڕەزامەندییەکە هەڵبژێرە و دوگمەی draft دابگرە؛ publish لە TikTok خۆت دەکەیت.';
+      $('#tiktok-settings').textContent = 'پەیوەستە؛ draft/inbox تەنها';
+    } else {
+      $('#tiktok-label').textContent = 'NOT CONNECTED';
+      $('#tiktok-connection').textContent = 'ئەپەکە ڕێکخراوە؛ ئەکاونتی TikTok ـەکەت پەیوەست بکە.';
+      $('#tiktok-badge').textContent = '○ پەیوەست نییە';
+      $('#tiktok-status').textContent = 'دوگمەی پەیوەستکردن دابگرە و لە TikTok ڕێگەی video.upload پەسەند بکە.';
+      $('#tiktok-settings').textContent = 'پەیوەندیی ئەکاونت پێویستە';
+    }
+  }
+
+  async function refreshTikTokStatus() {
+    if (state.authCancelled) {
+      state.tiktok = { configured: false, connected: false };
+      updateTikTokButtons();
+      return;
+    }
+    try { state.tiktok = await api('/api/tiktok/status'); }
+    catch (_) { state.tiktok = { configured: false, connected: false }; }
+    updateTikTokButtons();
+  }
+
+  async function connectTikTok() {
+    if (state.busy) return;
+    try {
+      const result = await api('/api/tiktok/connect');
+      const target = new URL(result.authorization_url);
+      if (target.protocol !== 'https:' || !['tiktok.com', 'www.tiktok.com'].includes(target.hostname)) {
+        throw new Error('بەستەری OAuth ـی TikTok پشتڕاست نییە.');
+      }
+      window.location.assign(target.toString());
+    } catch (error) { toast(`پەیوەستکردنی TikTok سەرکەوتوو نەبوو: ${error.message}`, true); }
+  }
+
   function renderSchedule(data) {
     const slots = data.schedule?.slots || ['06:00', '12:00', '18:00'];
     const states = data.schedule?.slot_states || [];
@@ -235,23 +285,25 @@
       state.overview = null;
       updateButtons();
     } finally { state.refreshing = false; }
+    await refreshTikTokStatus();
   }
 
   function updateButtons() {
     const blocked = !state.overview?.channel?.enabled || state.overview?.health?.uncertain_uploads?.length > 0;
-    $$('[data-action]').forEach((button) => { const mode = button.dataset.action; button.disabled = state.busy || !state.overview || (blocked && !['preview', 'report'].includes(mode)); });
+    $$('[data-action]').forEach((button) => { const mode = button.dataset.action; button.disabled = state.busy || !state.overview || (blocked && !['preview', 'report', 'tiktok_draft'].includes(mode)); });
     $('#manual-publish').disabled = state.busy || !state.overview || blocked;
+    updateTikTokButtons();
   }
 
   async function runAction(mode, count = 1) {
     if (state.busy) return;
     state.busy = true;
     updateButtons();
-    const names = { publish: 'پۆستکردن', preview: 'دروستکردنی preview', scheduled: 'گرتنەوەی schedule', report: 'پشکنینی ڕاستەقینەی YouTube' };
+    const names = { publish: 'پۆستکردن', preview: 'دروستکردنی preview', scheduled: 'گرتنەوەی schedule', report: 'پشکنینی ڕاستەقینەی YouTube', tiktok_draft: 'ناردنی draft بۆ TikTok' };
     toast(`${names[mode] || 'کردار'} دەستی پێکرد...`);
     try {
       const result = await api('/api/workflow', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, count }) });
-      toast(mode === 'report' ? 'داواکاریی پشکنین نێردرا؛ دوای تەواوبوونی GitHub Actions دۆخی ڤیدیۆکان نوێ دەبێتەوە.' : `داواکاریی ${result.requested_count} پۆست نێردرا؛ ئەمە پشتڕاستکردنەوەی بڵاوکردنەوە نییە.`);
+      toast(mode === 'report' ? 'داواکاریی پشکنین نێردرا؛ دوای تەواوبوونی GitHub Actions دۆخی ڤیدیۆکان نوێ دەبێتەوە.' : mode === 'tiktok_draft' ? 'داواکاری نێردرا؛ دوای سەرکەوتنی GitHub Actions ئاگاداری TikTok inbox بپشکنە. پۆستەکە خۆکارانە بڵاو نابێتەوە.' : `داواکاریی ${result.requested_count} پۆست نێردرا؛ ئەمە پشتڕاستکردنەوەی بڵاوکردنەوە نییە.`);
       window.setTimeout(refresh, 4500);
     } catch (error) { toast(`کردارەکە سەرکەوتوو نەبوو: ${error.message}`, true); }
     finally { state.busy = false; updateButtons(); }
@@ -304,10 +356,21 @@
       $('#manual-count').textContent = state.manualCount;
     }));
     $('#manual-publish').addEventListener('click', () => runAction('publish', state.manualCount));
+    $('#tiktok-connect').addEventListener('click', connectTikTok);
+    $('#tiktok-consent').addEventListener('change', updateTikTokButtons);
+    $('#tiktok-draft').addEventListener('click', () => {
+      if ($('#tiktok-consent').checked && state.tiktok?.connected === true) runAction('tiktok_draft', 1);
+    });
     $('#refresh-data').addEventListener('click', () => { state.authCancelled = false; refresh(); });
   }
 
   bind();
+  const callbackResult = window.location?.search || '';
+  if (callbackResult.includes('tiktok=')) {
+    const result = new URLSearchParams(callbackResult).get('tiktok');
+    toast(result === 'connected' ? 'TikTok پەیوەست کرا؛ دەتوانیت draft بنێریت.' : 'پەیوەستکردنی TikTok تەواو نەبوو؛ ڕێکخستن و ڕەزامەندی بپشکنە.', result !== 'connected');
+    window.history?.replaceState({}, '', '/');
+  }
   updateButtons();
   refresh();
   window.setInterval(() => { if (!state.authCancelled) refresh(); }, 30000);

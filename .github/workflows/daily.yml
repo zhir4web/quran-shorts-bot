@@ -18,9 +18,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Preview, publish, catch up the schedule, or sync YouTube status without publishing
+        description: Preview, publish, catch up the schedule, sync YouTube, or upload a TikTok draft
         type: choice
-        options: [preview, publish, scheduled, report]
+        options: [preview, publish, scheduled, report, tiktok_draft]
         default: preview
       count:
         description: Number of posts in one publish batch (other modes require 1)
@@ -90,9 +90,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           NOTIFY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          RUN_MODE: ${{ inputs.mode || 'scheduled' }}
+          RUN_MODE: ${{ inputs.mode == 'tiktok_draft' && 'preview' || inputs.mode || 'scheduled' }}
           POST_COUNT: ${{ inputs.count || '1' }}
-          TARGET_PLATFORM: ${{ inputs.platform || 'youtube' }}
+          TARGET_PLATFORM: ${{ inputs.mode == 'tiktok_draft' && 'tiktok' || inputs.platform || 'youtube' }}
           CUSTOM_VIDEO_ID: ${{ inputs.custom_id || '' }}
           DASHBOARD_URL: https://quran-shorts-bot.vercel.app
           DASHBOARD_KEY: ${{ secrets.DASHBOARD_KEY }}
@@ -107,8 +107,18 @@ jobs:
             state/cloud/*/background.png
             state/cloud/*/metadata.json
           retention-days: 7
+      - name: Upload TikTok draft to inbox
+        if: success() && steps.gate.outputs.run == 'true' && inputs.mode == 'tiktok_draft'
+        env:
+          DASHBOARD_URL: https://quran-shorts-bot.vercel.app
+          DASHBOARD_KEY: ${{ secrets.DASHBOARD_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: python tiktok_draft.py upload-latest
       - name: Performance and health report
-        if: always() && steps.gate.outputs.run == 'true' && inputs.mode != 'preview'
+        if: always() && steps.gate.outputs.run == 'true' && inputs.mode != 'preview' && inputs.mode != 'tiktok_draft'
         env:
           YOUTUBE_TOKEN: ${{ secrets.YOUTUBE_TOKEN }}
           QF_CLIENT_ID: ${{ secrets.QF_CLIENT_ID }}

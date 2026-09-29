@@ -125,6 +125,28 @@ test('YouTube status report is available without enabling publication and does n
   assert.match(ui.ids.get('#toast').textContent, /GitHub Actions/);
 });
 
+test('TikTok draft action requires account consent and dispatches draft mode only', async () => {
+  const requests = [];
+  const ui = boot(async (path, options) => {
+    requests.push({ path, options });
+    if (path === '/api/tiktok/status') return response(200, { configured: true, connected: true, scope: 'video.upload' });
+    return options.method === 'POST' ? response(202, { requested_count: 1 }) : response(200, overview());
+  });
+  await flush();
+  const consent = ui.ids.get('#tiktok-consent');
+  const draft = ui.ids.get('#tiktok-draft');
+  assert.equal(draft.disabled, true);
+  consent.checked = true;
+  await consent.emit('change');
+  assert.equal(draft.disabled, false);
+  await draft.emit('click');
+  await flush();
+  const posted = requests.find((item) => item.path === '/api/workflow' && item.options.method === 'POST');
+  assert.equal(JSON.parse(posted.options.body).mode, 'tiktok_draft');
+  assert.equal(JSON.parse(posted.options.body).count, 1);
+  assert.match(ui.ids.get('#toast').textContent, /خۆکارانە بڵاو نابێتەوە/);
+});
+
 test('analytics section renders retention bars, CTA variants and playlists safely', async () => {
   const data = overview();
   data.analytics = {

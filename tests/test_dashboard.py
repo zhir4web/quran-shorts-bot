@@ -71,6 +71,17 @@ class DashboardTests(unittest.TestCase):
         with self.assertRaises(dashboard.DashboardError):
             client.dispatch('delete', 1)
 
+    def test_tiktok_draft_dispatch_selects_tiktok_and_only_one_video(self):
+        client = dashboard.GitHubClient('secret-token', 'owner/repo', 'main')
+        client.session.post = Mock(return_value=Mock(status_code=204))
+        self.assertEqual(client.dispatch('tiktok_draft', 1), 1)
+        inputs = client.session.post.call_args.kwargs['json']['inputs']
+        self.assertEqual(inputs, {'mode': 'tiktok_draft', 'count': '1', 'platform': 'tiktok'})
+        with self.assertRaises(dashboard.BadRequest):
+            client.dispatch('tiktok_draft', 2)
+        with self.assertRaises(dashboard.BadRequest):
+            client.dispatch('tiktok_draft', 1, custom_id='some-custom-video')
+
     def test_dispatch_rejects_bad_counts_without_network(self):
         client = dashboard.GitHubClient('secret', 'owner/repo')
         client.session.post = Mock()
@@ -234,7 +245,7 @@ class HttpTests(unittest.TestCase):
         status, _, raw = self.request('GET', '/api/config', headers={'X-Dashboard-Key': 'test-key'})
         self.assertEqual(status, 200)
         self.assertNotIn(b'never-expose-this', raw)
-        self.assertFalse(json.loads(raw)['features']['tiktok'])
+        self.assertTrue(json.loads(raw)['features']['tiktok'])
 
     def test_invalid_json_shapes_lengths_and_types_do_not_dispatch(self):
         for body, extra in (('[]', {}), ('null', {}), ('{', {}), ('{}', {'Content-Length': '-1'}),
@@ -276,6 +287,18 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(status, 202)
         self.assertEqual(json.loads(raw)['mode'], 'report')
         client.dispatch.assert_called_once_with('report', 1)
+
+    def test_tiktok_draft_dispatch_is_explicit_and_does_not_use_youtube_publish_gate(self):
+        overview = {'channel': {'enabled': False}, 'health': {'uncertain_uploads': [{'id': 'youtube-review'}]}}
+        client = Mock(repository='owner/repo')
+        client.dispatch.return_value = 1
+        with patch.object(dashboard.DashboardHandler, '_read_model', return_value=(overview, client)):
+            status, _, raw = self.request('POST', '/api/workflow',
+                '{"mode":"tiktok_draft","count":1}',
+                {'Content-Type': 'application/json', 'X-Dashboard-Key': 'test-key'})
+        self.assertEqual(status, 202)
+        self.assertEqual(json.loads(raw)['mode'], 'tiktok_draft')
+        client.dispatch.assert_called_once_with('tiktok_draft', 1)
 
     def test_dispatch_uses_one_batch_and_blocks_uncertain_upload(self):
         overview = {'channel': {'enabled': True}, 'health': {'uncertain_uploads': []}}

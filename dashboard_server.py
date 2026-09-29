@@ -278,16 +278,20 @@ class GitHubClient:
             raise DashboardError(f'Cannot write {path} (HTTP {response.status_code})')
 
     def dispatch(self, mode, count=1, custom_id=''):
-        if not isinstance(mode, str) or mode not in {'publish', 'preview', 'scheduled', 'report'}:
+        if not isinstance(mode, str) or mode not in {'publish', 'preview', 'scheduled', 'report', 'tiktok_draft'}:
             raise BadRequest('Unsupported workflow mode')
         if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 5:
             raise BadRequest('count must be an integer between 1 and 5')
         if mode != 'publish' and count != 1:
             raise BadRequest('Only publish supports multiple posts')
+        if mode == 'tiktok_draft' and custom_id:
+            raise BadRequest('TikTok draft mode does not accept a YouTube custom video id')
         if custom_id and not CLIP_NAME.fullmatch(custom_id):
             raise BadRequest('Invalid custom video id')
         url = f'{self.base}/actions/workflows/{WORKFLOW_FILE}/dispatches'
         inputs = {'mode': mode, 'count': str(count)}
+        if mode == 'tiktok_draft':
+            inputs['platform'] = 'tiktok'
         if custom_id:
             inputs['custom_id'] = custom_id
         try:
@@ -380,7 +384,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 'branch': self.server.branch,
                 'key_required': bool(self.server.dashboard_key),
                 'workflow': WORKFLOW_PATH,
-                'features': {'youtube': True, 'tiktok': False},
+                'features': {'youtube': True, 'tiktok': True},
             })
             return
         self._serve_static(path)
