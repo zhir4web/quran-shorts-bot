@@ -25,6 +25,8 @@ MAX_DURATION_SECONDS = 600.0
 MAX_VIDEO_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CHUNK_BYTES = 64 * 1024 * 1024
 MIN_CHUNK_BYTES = 5 * 1024 * 1024
+STATUS_POLL_ATTEMPTS = 12
+STATUS_POLL_INTERVAL_SECONDS = 5
 STATE_PATH = '.bot-state/tiktok-drafts.json'
 
 
@@ -193,7 +195,11 @@ class TikTokClient:
             raise TikTokDraftError('TikTok media transfer outcome is uncertain; do not retry this workflow run') from None
 
         status = 'PROCESSING_UPLOAD'
-        for attempt in range(4):
+        # Upload processing is asynchronous. A short four-poll window can
+        # report "still processing" before TikTok has delivered the inbox
+        # notification, so allow up to one minute while staying below the
+        # documented status endpoint rate limit.
+        for attempt in range(STATUS_POLL_ATTEMPTS):
             try:
                 checked = self.session.post(API_ROOT + STATUS_PATH, headers=self.headers,
                     json={'publish_id': publish_id}, timeout=20)
@@ -201,10 +207,10 @@ class TikTokClient:
                 break
             result = self._json(checked, 'status check')
             status = str(result.get('status') or 'PROCESSING_UPLOAD')
-            if status in ('SEND_TO_USER_INBOX', 'FAILED'):
+            if status in ('SEND_TO_USER_INBOX', 'FAILED', 'PUBLISH_COMPLETE'):
                 break
-            if attempt < 3:
-                self.sleep(3)
+            if attempt < STATUS_POLL_ATTEMPTS - 1:
+                self.sleep(STATUS_POLL_INTERVAL_SECONDS)
         if status == 'FAILED':
             raise TikTokDraftError('TikTok rejected the video during processing; see the TikTok draft details in the workflow')
         return publish_id, status
