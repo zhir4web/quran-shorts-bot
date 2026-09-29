@@ -103,10 +103,10 @@ def qf_english_translation(verse_key, resource_id=DEFAULT_ENGLISH_TRANSLATION_ID
     matches = [row for row in verse.get('translations', [])
                if isinstance(row, dict) and str(row.get('resource_id')) == str(resource_id)]
     if len(matches) != 1:
-        # The verse response can omit a translation; retry via the resource endpoint.
+        # The verse response can omit a translation; retry via the documented ayah endpoint.
         payload = get_json(
-            quran_foundation_api.api_url(f'translations/{resource_id}'),
-            {'verse_key': verse_key})
+            quran_foundation_api.api_url(f'translations/{resource_id}/by_ayah/{verse_key}'),
+            {'fields': 'verse_key'})
         matches = [row for row in payload.get('translations', [])
                    if isinstance(row, dict)
                    and str(row.get('resource_id')) == str(resource_id)
