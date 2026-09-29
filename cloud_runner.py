@@ -94,41 +94,48 @@ def qf_english_translation(verse_key, resource_id=DEFAULT_ENGLISH_TRANSLATION_ID
         raise ValueError('Invalid Quran verse key for translation lookup')
     if isinstance(resource_id, bool) or not isinstance(resource_id, int) or resource_id <= 0:
         raise ValueError('Invalid Quran Foundation translation resource id')
+
+    def matching_rows(rows):
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows
+                if isinstance(row, dict)
+                and (row.get('resource_id') is None or str(row.get('resource_id')) == str(resource_id))
+                and (row.get('verse_key') is None or row.get('verse_key') == verse_key)]
+
     payload = get_json(
         quran_foundation_api.api_url(f'verses/by_key/{verse_key}'),
         {'translations': str(resource_id)})
     verse = payload.get('verse')
     if not isinstance(verse, dict) or verse.get('verse_key', verse_key) != verse_key:
         raise CloudError('Quran Foundation translation did not match the requested ayah')
-    matches = [row for row in verse.get('translations', [])
-               if isinstance(row, dict) and (row.get('resource_id') is None or str(row.get('resource_id')) == str(resource_id))]
+    matches = matching_rows(verse.get('translations'))
     if len(matches) != 1:
-        # The verse response can omit a translation; retry via the documented ayah endpoint.
-        payload = get_json(
-            quran_foundation_api.api_url(f'resources/translations/{resource_id}/by_ayah/{verse_key}'),
-            {'fields': 'verse_key'})
-        matches = [row for row in payload.get('translations', [])
-                   if isinstance(row, dict)
-                   and (row.get('resource_id') is None or str(row.get('resource_id')) == str(resource_id))
-                   and (row.get('verse_key') is None or row.get('verse_key') == verse_key)]
-        if len(matches) != 1:
-            # Final documented fallback: the single-translation endpoint supports verse_key.
+        # The ayah endpoint is paginated (10 rows by default); scan pages so the
+        # configured resource is not missed when it appears after the first page.
+        page = 1
+        for _ in range(100):
             payload = get_json(
-                quran_foundation_api.api_url(f'resources/translations/{resource_id}'),
-                {'verse_key': verse_key, 'fields': 'verse_key'})
-            matches = [row for row in payload.get('translations', [])
-                       if isinstance(row, dict)
-                       and (row.get('resource_id') is None or str(row.get('resource_id')) == str(resource_id))
-                       and (row.get('verse_key') is None or row.get('verse_key') == verse_key)]
-            if len(matches) != 1:
-                raise CloudError('Quran Foundation did not return the selected English translation')
+                quran_foundation_api.api_url(f'translations/{resource_id}/by_ayah/{verse_key}'),
+                {'fields': 'verse_key', 'page': page, 'per_page': 50})
+            matches = matching_rows(payload.get('translations'))
+            if len(matches) == 1 or len(matches) > 1:
+                break
+            pagination = payload.get('pagination')
+            next_page = pagination.get('next_page') if isinstance(pagination, dict) else None
+            if (isinstance(next_page, bool) or not isinstance(next_page, int) or
+                    next_page <= page):
+                break
+            page = next_page
+        if len(matches) != 1:
+            raise CloudError('Quran Foundation did not return the selected English translation')
+
     parser = _TranslationText()
     parser.feed(str(matches[0].get('text') or ''))
     text = ' '.join(''.join(parser.parts).split())
     if not text or len(text) > 1200:
         raise CloudError('Quran Foundation returned empty or oversized English translation text')
     return text
-
 
 class NoEligibleVerse(CloudError):
     def __init__(self, cursor, candidates_checked=0, timed_out=False, rejected=None):
