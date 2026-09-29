@@ -101,7 +101,7 @@ def qf_english_translation(verse_key, resource_id=DEFAULT_ENGLISH_TRANSLATION_ID
     if not isinstance(verse, dict) or verse.get('verse_key', verse_key) != verse_key:
         raise CloudError('Quran Foundation translation did not match the requested ayah')
     matches = [row for row in verse.get('translations', [])
-               if isinstance(row, dict) and str(row.get('resource_id')) == str(resource_id)]
+               if isinstance(row, dict) and (row.get('resource_id') is None or str(row.get('resource_id')) == str(resource_id))]
     if len(matches) != 1:
         # The verse response can omit a translation; retry via the documented ayah endpoint.
         payload = get_json(
@@ -109,8 +109,8 @@ def qf_english_translation(verse_key, resource_id=DEFAULT_ENGLISH_TRANSLATION_ID
             {'fields': 'verse_key'})
         matches = [row for row in payload.get('translations', [])
                    if isinstance(row, dict)
-                   and str(row.get('resource_id')) == str(resource_id)
-                   and row.get('verse_key') == verse_key]
+                   and (row.get('resource_id') is None or str(row.get('resource_id')) == str(resource_id))
+                   and (row.get('verse_key') is None or row.get('verse_key') == verse_key)]
         if len(matches) != 1:
             raise CloudError('Quran Foundation did not return the selected English translation')
     parser = _TranslationText()
