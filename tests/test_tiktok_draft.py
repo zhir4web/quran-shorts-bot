@@ -66,6 +66,27 @@ class TikTokDraftTests(unittest.TestCase):
                 client.upload(path)
         session.put.assert_not_called()
 
+    def test_upload_waits_for_async_processing_before_reporting_inbox_delivery(self):
+        session = Mock()
+        session.post.side_effect = [
+            Response(200, {'data': {'publish_id': 'draft~id',
+                                    'upload_url': 'https://open-upload.tiktokapis.com/video?upload_id=x'},
+                           'error': {'code': 'ok'}}),
+            *[Response(200, {'data': {'status': 'PROCESSING_UPLOAD'}, 'error': {'code': 'ok'}})
+              for _ in range(5)],
+            Response(200, {'data': {'status': 'SEND_TO_USER_INBOX'}, 'error': {'code': 'ok'}}),
+        ]
+        session.put.return_value = Response(201)
+        sleeps = []
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'video.mp4'
+            path.write_bytes(b'video-bytes')
+            client = tiktok_draft.TikTokClient('private-access-token', session=session, sleep=sleeps.append)
+            result = client.upload(path)
+        self.assertEqual(result, ('draft~id', 'SEND_TO_USER_INBOX'))
+        self.assertEqual(sleeps, [tiktok_draft.STATUS_POLL_INTERVAL_SECONDS] * 5)
+        self.assertEqual(session.post.call_count, 7)
+
     def test_duplicate_workflow_run_is_blocked_before_second_upload(self):
         session = Mock()
         state = {'schema': 1, 'runs': {'123': {'status': 'send_to_user_inbox', 'publish_id': 'draft~id'}}}
