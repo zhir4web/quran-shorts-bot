@@ -658,6 +658,51 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(first['ayah_translation'], '')
         self.assertEqual(first['translation_resource_id'], 131)
 
+    def test_changed_chapter_audio_size_is_a_recoverable_candidate_error(self):
+        entry = dict(ENTRY, source_type='quran_chapter_passage',
+                     audio_url='https://download.quranicaudio.com/qdc/test/1.mp3',
+                     audio_file_size=2048, audio_start_ms=5000, audio_end_ms=40000,
+                     min_audio_seconds=30, max_audio_seconds=58)
+        response = Mock()
+        response.headers = {'content-length': '4096'}
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.raise_for_status = Mock()
+        destination = self.root / 'recitation.mp3'
+
+        with patch.object(cloud.requests, 'get', return_value=response):
+            with self.assertRaises(cloud.ChapterAudioMetadataChanged):
+                cloud.download_quran_chapter_passage(entry, destination)
+
+        response.iter_content.assert_not_called()
+        self.assertFalse((self.root / 'quran-chapter-source.audio.part').exists())
+
+    def test_stale_chapter_audio_metadata_skips_source_and_tries_another_passage(self):
+        stale = {'id': 'stale', 'source_type': 'quran_chapter_passage',
+                 'recitation_id': 4, 'chapter_id': 11, 'verse_key': '11:4'}
+        same_source = {'id': 'stale-again', 'source_type': 'quran_chapter_passage',
+                       'recitation_id': 4, 'chapter_id': 11, 'verse_key': '11:5'}
+        valid = {'id': 'valid', 'source_type': 'quran_chapter_passage',
+                 'recitation_id': 9, 'chapter_id': 12, 'verse_key': '12:3'}
+        ledger = SimpleNamespace(data={'cursor': 0}, save=Mock())
+        expected_source = self.root / 'recitation.mp3'
+
+        with patch.object(cloud, 'verse_entry_for_position', side_effect=[
+                (stale, 1), (same_source, 2), (valid, 3)]) as select, \
+             patch.object(cloud, 'download_recording',
+                          side_effect=[cloud.ChapterAudioMetadataChanged('stale size'),
+                                       expected_source]) as download:
+            entry, cursor, _, source = cloud.next_downloadable_verse(
+                {}, {}, 0, ledger)
+
+        self.assertIs(entry, valid)
+        self.assertEqual(cursor, 3)
+        self.assertEqual(source, expected_source)
+        self.assertEqual(select.call_count, 3)
+        self.assertEqual(download.call_count, 2)
+        self.assertEqual(ledger.data['cursor'], 2)
+        self.assertEqual(ledger.save.call_count, 2)
+
     def test_blocked_reciter_is_never_selected(self):
         catalog = {'schema': 3, 'provider': 'quran_foundation', 'reciters': 'allowlist',
                    'allowed_reciter_ids': [1, 2], 'blocked_reciter_ids': [5],
