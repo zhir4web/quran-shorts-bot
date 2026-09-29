@@ -52,6 +52,10 @@ class TooLongRecording(RuntimeError):
     """The complete recording cannot fit safely in a YouTube Short."""
 
 
+class ChapterAudioMetadataChanged(CloudError):
+    """Quran Foundation's chapter audio no longer matches its selection metadata."""
+
+
 class OptionalResourceNotFound(CloudError):
     """A specific Quran Foundation reciter/chapter has no audio file."""
 
@@ -1204,7 +1208,8 @@ def download_quran_chapter_passage(entry, destination):
                 if declared > 100 * 1024 * 1024:
                     raise CloudError('Quran chapter audio exceeds the 100 MB source limit')
                 if expected_size and declared and declared != int(expected_size):
-                    raise CloudError('Quran Foundation chapter audio size changed after selection')
+                    raise ChapterAudioMetadataChanged(
+                        'Quran Foundation chapter audio size changed after selection')
                 with temporary_source.open('wb') as handle:
                     for block in response.iter_content(65536):
                         total += len(block)
@@ -1213,9 +1218,13 @@ def download_quran_chapter_passage(entry, destination):
                         handle.write(block)
         except requests.RequestException:
             raise RuntimeError('Quran Foundation chapter audio is temporarily unavailable') from None
-        if total < 1024 or (expected_size and total != int(expected_size)):
+        if total < 1024:
             temporary_source.unlink(missing_ok=True)
             raise CloudError('Quran Foundation returned an incomplete chapter audio file')
+        if expected_size and total != int(expected_size):
+            temporary_source.unlink(missing_ok=True)
+            raise ChapterAudioMetadataChanged(
+                'Quran Foundation chapter audio size changed after selection')
         os.replace(temporary_source, raw)
 
     duration = (end_ms - start_ms) / 1000.0
@@ -2559,6 +2568,40 @@ def verify_channel(service, ledger, config):
                                     'checked_at': datetime.now(timezone.utc).isoformat()}
 
 
+def next_downloadable_verse(catalog, jobs, cursor, ledger=None, preview=False):
+    """Skip unavailable or stale chapter sources and safely choose another passage."""
+    metrics_history = ledger.data.get('metrics_history', {}) if ledger else {}
+    rejected_chapter_audio = set()
+    for _ in range(100):
+        entry, next_cursor = verse_entry_for_position(
+            catalog, jobs, cursor, metrics_history)
+        source_key = None
+        if entry.get('source_type') == 'quran_chapter_passage':
+            source_key = (int(entry['recitation_id']), int(entry['chapter_id']))
+            if source_key in rejected_chapter_audio:
+                cursor = next_cursor
+                if ledger and not preview:
+                    ledger.data['cursor'] = cursor
+                    ledger.save()
+                continue
+        workspace = ROOT / 'state' / 'cloud' / entry['id']
+        try:
+            print(f'Downloading recitation for {entry.get("verse_key", entry["id"])}...', flush=True)
+            source = download_recording(entry, workspace / 'recitation.mp3')
+            return entry, next_cursor, workspace, source
+        except ChapterAudioMetadataChanged:
+            if source_key is not None:
+                rejected_chapter_audio.add(source_key)
+            print('Selected chapter audio changed; trying another verified passage.', flush=True)
+        except (TooLongRecording, TooShortRecording):
+            pass
+        cursor = next_cursor
+        if ledger and not preview:
+            ledger.data['cursor'] = cursor
+            ledger.save()
+    raise RuntimeError('No complete recitation between 30 seconds and the Shorts limit was found')
+
+
 def run(args, ledger=None, service=None):
     run_started_at = datetime.now(timezone.utc)
     print(f'Cloud runner started: mode={args.mode}', flush=True)
@@ -2630,29 +2673,15 @@ def run(args, ledger=None, service=None):
     next_cursor = None
     if isinstance(catalog, dict) and catalog.get('schema') == 3:
         cursor = ledger.data.get('cursor', len(jobs)) if ledger else len(jobs)
-        for _ in range(100):
-            try:
-                entry, next_cursor = verse_entry_for_position(
-                    catalog, jobs, cursor,
-                    ledger.data.get('metrics_history', {}) if ledger else {})
-            except NoEligibleVerse as error:
-                if ledger and args.mode != 'preview':
-                    ledger.data['cursor'] = error.cursor
-                    ledger.save()
-                raise
-            workspace = ROOT / 'state' / 'cloud' / entry['id']
-            try:
-                print(f'Downloading recitation for {entry.get("verse_key", entry["id"])}...', flush=True)
-                source = download_recording(entry, workspace / 'recitation.mp3')
-                print('Recitation ready; preparing the cinematic render...', flush=True)
-                break
-            except (TooLongRecording, TooShortRecording):
-                cursor = next_cursor
-                if ledger and args.mode != 'preview':
-                    ledger.data['cursor'] = cursor
-                    ledger.save()
-        else:
-            raise RuntimeError('No complete recitation between 30 seconds and the Shorts limit was found')
+        try:
+            entry, next_cursor, workspace, source = next_downloadable_verse(
+                catalog, jobs, cursor, ledger, preview=args.mode == 'preview')
+        except NoEligibleVerse as error:
+            if ledger and args.mode != 'preview':
+                ledger.data['cursor'] = error.cursor
+                ledger.save()
+            raise
+        print('Recitation ready; preparing the cinematic render...', flush=True)
     else:
         entries = catalog
         for entry in entries:
