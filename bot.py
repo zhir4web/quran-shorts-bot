@@ -76,11 +76,17 @@ def load_queue(path):
             raise ValueError(f"{key}: confirm permission covering every audio, video and image asset")
         if not isinstance(item.get("made_for_kids"), bool):
             raise ValueError(f"{key}: made_for_kids must be true or false")
-        positive(item.get("duration"), f"{key} duration", 60)
+        platform = item.get('platform', 'youtube')
+        if platform not in ('youtube', 'tiktok'):
+            raise ValueError(f'{key}: unsupported platform')
+        duration_limit = 90 if platform == 'tiktok' else 60
+        positive(item.get("duration"), f"{key} duration", duration_limit)
         minimum = item.get('min_duration_seconds', 0)
         if (isinstance(minimum, bool) or not isinstance(minimum, (int, float))
                 or not math.isfinite(minimum) or not 0 <= minimum <= item['duration']):
             raise ValueError(f'{key}: invalid minimum duration')
+        if platform == 'tiktok' and (minimum < 61 or item['duration'] < 61):
+            raise ValueError(f'{key}: TikTok preview duration must be 61 to 90 seconds')
         start = item.get("start", 0)
         if isinstance(start, bool) or not isinstance(start, (int, float)) or not math.isfinite(start) or start < 0:
             raise ValueError(f"{key}: start must be a nonnegative number")
@@ -485,7 +491,8 @@ def render(item, base, folder):
     run_media(["-y", *inputs, *mapping, "-t", duration, *filters,
                "-r", "30", *encode, "-pix_fmt", "yuv420p",
                "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(temporary)])
-    validate_video(temporary, item["duration"], minimum=minimum)
+    maximum = 90.1 if item.get('platform', 'youtube') == 'tiktok' else 60.1
+    validate_video(temporary, item["duration"], minimum=minimum, maximum=maximum)
     if item.get("background_motion") in ("premium_motion", "real_video"):
         validate_visible_motion(temporary, item["duration"])
     os.replace(temporary, target)
@@ -493,7 +500,7 @@ def render(item, base, folder):
     return target
 
 
-def validate_video(path, expected, minimum=0):
+def validate_video(path, expected, minimum=0, maximum=60.1):
     import imageio_ffmpeg
     reader = imageio_ffmpeg.read_frames(str(path))
     try:
@@ -502,7 +509,7 @@ def validate_video(path, expected, minimum=0):
         reader.close()
     if tuple(metadata["size"]) != (1080, 1920):
         raise ValueError("Rendered video must be 1080 by 1920")
-    if not math.isfinite(metadata['duration']) or metadata['duration'] <= 0 or metadata['duration'] > 60.1:
+    if not math.isfinite(metadata['duration']) or metadata['duration'] <= 0 or metadata['duration'] > maximum:
         raise ValueError('Rendered video has an invalid duration')
     if metadata["duration"] < minimum:
         raise ValueError("Rendered video is below the minimum video duration")
@@ -571,6 +578,9 @@ def upload(youtube, item, path, privacy):
 def run_queue(args):
     queue = Path(args.queue).resolve()
     items = load_queue(queue)
+    if args.command == 'run' and any(item.get('platform', 'youtube') == 'tiktok'
+                                     for item in items):
+        raise ValueError('TikTok uploads are not configured; render the video as a preview')
     state = Path(args.state).resolve()
     with process_lock(state / "run.lock"):
         ledger = Ledger(state / "jobs.sqlite3")

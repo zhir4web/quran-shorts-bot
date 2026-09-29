@@ -6,6 +6,16 @@ import retry_runner
 
 
 class RetryRunnerTests(unittest.TestCase):
+    def test_tiktok_preview_passes_platform_to_renderer(self):
+        runner = Mock(return_value=SimpleNamespace(returncode=0))
+        result = retry_runner.run_with_retries(
+            "preview", command_runner=runner, env={}, platform="tiktok")
+        self.assertEqual(result, 0)
+        self.assertEqual(runner.call_args.args[0][-2:], ["--platform", "tiktok"])
+
+    def test_tiktok_publish_is_rejected_safely(self):
+        with self.assertRaisesRegex(ValueError, "TikTok publishing is not configured"):
+            retry_runner.run_with_retries("publish", platform="tiktok")
     def test_scheduled_run_retries_once_and_returns_success(self):
         runner = Mock(side_effect=[
             SimpleNamespace(returncode=1),

@@ -1,5 +1,9 @@
 ﻿# Quran Shorts Bot
 
+## Separate platform video lengths
+
+The automatic publishing flow remains YouTube-only. YouTube recitations keep the existing 30–58 second audio profile. Choose `tiktok` in the daily workflow's manual run to render a separate preview using complete ayah boundaries: 61–88 seconds of recitation plus the configured ending silence, so the final video stays above one minute and at or below 90 seconds. The preview is saved as a GitHub Actions artifact. TikTok upload is deliberately rejected until TikTok Content Posting API access and OAuth are configured.
+
 بۆتەکە ڤیدیۆی ستوونی 1080×1920 لە تلاوەت و پاشبنەما دروست دەکات و لە ڕێگەی GitHub Actions بۆ YouTube دەنێرێت. ئامانجی خشتە 06:00، 12:00 و 18:00 بە کاتی بەغدایە؛ ئەمانە کاتی ئامانجن، نە بەڵێنی بڵاوکردنەوە لە هەمان چرکەدا.
 
 ## دامەزراندن و تاقیکردنەوە

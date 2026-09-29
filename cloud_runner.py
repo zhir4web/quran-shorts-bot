@@ -25,6 +25,7 @@ import requests
 import background_provider
 import bot
 import notifications
+import platform_policy
 import quran_foundation_api
 from schedule_policy import BAGHDAD, PUBLICATION_HOURS as PUBLICATION_HOURS, schedule_state
 
@@ -317,6 +318,12 @@ def validate_verse_catalog(data):
         raise ValueError('Minimum recitation duration must be at least 30 seconds and within the maximum')
     if not all(math.isfinite(value) for value in (limit, tail, minimum)) or limit <= 0 or limit + tail > 60 or tail < 0.5:
         raise ValueError('Invalid Short duration or ending-silence configuration')
+    youtube_minimum, youtube_limit = platform_policy.audio_duration_bounds(data, 'youtube')
+    _, tiktok_limit = platform_policy.audio_duration_bounds(data, 'tiktok')
+    if (youtube_minimum, youtube_limit) != (minimum, limit):
+        raise ValueError('YouTube duration policy must match the existing Short limits')
+    if tiktok_limit + tail > 90:
+        raise ValueError('TikTok video duration plus ending silence must not exceed 90 seconds')
     if not str(data.get('permission_url', '')).startswith('https://api-docs.quran.com/'):
         raise ValueError('Quran Foundation permission URL required')
     for field in ('attribution', 'rights'):
@@ -524,7 +531,8 @@ def select_timed_passage(timestamps, chapter_id, verse_start, verse_count,
     }
 
 
-def chapter_reciter_entry_for_position(catalog, jobs, position, performance_history=None):
+def chapter_reciter_entry_for_position(catalog, jobs, position, performance_history=None,
+                                      platform='youtube'):
     """Select a verified, complete-ayah passage from chapter-reciter audio and timings."""
     print('Loading Quran Foundation chapter-reciter and timing metadata...', flush=True)
     allowed = set(catalog['allowed_chapter_reciter_ids'])
@@ -584,8 +592,7 @@ def chapter_reciter_entry_for_position(catalog, jobs, position, performance_hist
     ordered_reciters = _reciter_order(reciters, jobs, position, catalog, performance_history)
     ordered_themes = _visual_theme_order(
         catalog['visual_themes'], jobs, position, catalog, performance_history)
-    min_duration = max(30.0, float(catalog.get('min_audio_seconds', 30)))
-    max_duration = float(catalog['max_audio_seconds'])
+    min_duration, max_duration = platform_policy.audio_duration_bounds(catalog, platform)
     max_ayah_characters = int(catalog['max_ayah_characters'])
     max_passage_verses = int(catalog.get('max_passage_verses', 16))
     translation_id = catalog.get('english_translation_id', DEFAULT_ENGLISH_TRANSLATION_ID)
@@ -736,10 +743,11 @@ def passage_overlaps_jobs(jobs, chapter_id, verse_start, verse_end):
     return False
 
 
-def verse_entry_for_position(catalog, jobs, position, performance_history=None):
+def verse_entry_for_position(catalog, jobs, position, performance_history=None,
+                            platform='youtube'):
     if catalog.get('reciter_source_mode') == 'chapter_recitations':
         return chapter_reciter_entry_for_position(
-            catalog, jobs, position, performance_history)
+            catalog, jobs, position, performance_history, platform)
     print('Loading Quran Foundation reciter and chapter metadata...', flush=True)
     english = get_json(quran_foundation_api.api_url('resources/recitations'), {'language': 'en'}).get('recitations', [])
     arabic = get_json(quran_foundation_api.api_url('resources/recitations'), {'language': 'ar'}).get('recitations', [])
@@ -767,8 +775,7 @@ def verse_entry_for_position(catalog, jobs, position, performance_history=None):
         english, jobs, position, catalog, performance_history)
     ordered_themes = _visual_theme_order(
         catalog['visual_themes'], jobs, position, catalog, performance_history)
-    min_duration = max(30.0, float(catalog.get('min_audio_seconds', 30)))
-    max_duration = float(catalog['max_audio_seconds'])
+    min_duration, max_duration = platform_policy.audio_duration_bounds(catalog, platform)
     max_ayah_characters = int(catalog['max_ayah_characters'])
     try:
         max_passage_verses = min(24, max(1, int(catalog.get('max_passage_verses', 16))))
@@ -1110,8 +1117,8 @@ def download_quran_passage(entry, destination):
         '-y', *inputs, '-filter_complex', filters, '-map', '[out]',
         '-c:a', 'libmp3lame', '-b:a', '192k', str(temporary)])
     padded = media_duration(temporary)
-    if padded > 60:
-        raise TooLongRecording('Quran passage with its ending exceeds the Shorts limit')
+    if padded > maximum + float(entry['tail_silence_seconds']) + 0.1:
+        raise TooLongRecording('Quran passage with its ending exceeds the platform limit')
     os.replace(temporary, destination)
     entry['duration'] = round(padded, 2)
     entry['sha256'] = bot.file_hash(destination)
@@ -1146,8 +1153,8 @@ def download_quran_verse(entry, destination):
     bot.run_media(['-y', '-i', str(raw), '-af', f'apad=pad_dur={tail}',
                    '-c:a', 'libmp3lame', '-b:a', '192k', str(temporary)])
     padded = media_duration(temporary)
-    if padded > 60:
-        raise TooLongRecording('Complete verse with its ending is too long for a Short')
+    if padded > float(entry['max_audio_seconds']) + float(tail) + 0.1:
+        raise TooLongRecording('Complete verse with its ending exceeds the platform limit')
     os.replace(temporary, destination)
     entry['duration'] = round(padded, 2)
     entry['sha256'] = bot.file_hash(destination)
@@ -1239,9 +1246,9 @@ def download_quran_chapter_passage(entry, destination):
     if measured < minimum:
         temporary.unlink(missing_ok=True)
         raise TooShortRecording('Timed chapter passage did not produce an eligible Short')
-    if measured > 60:
+    if measured > maximum + tail + 0.1:
         temporary.unlink(missing_ok=True)
-        raise TooLongRecording('Timed chapter passage with its ending exceeds the Shorts limit')
+        raise TooLongRecording('Timed chapter passage with its ending exceeds the platform limit')
     os.replace(temporary, destination)
     entry['duration'] = round(measured, 2)
     entry['sha256'] = bot.file_hash(destination)
@@ -1255,8 +1262,10 @@ def download_quran_foundation(entry, destination):
     if not audio_files:
         raise RuntimeError('The selected recitation has no audio files')
     duration = sum(float(row.get('duration') or 0) for row in audio_files)
-    if duration <= 0 or duration > 60:
-        raise ValueError('The selected recitation is not a valid Short')
+    minimum = max(30.0, float(entry.get('min_audio_seconds', 30)))
+    maximum = float(entry.get('max_audio_seconds', 58))
+    if duration < minimum or duration > maximum:
+        raise ValueError('The selected recitation is outside the platform duration limits')
     destination.parent.mkdir(parents=True, exist_ok=True)
     parts = []
     for index, row in enumerate(audio_files, 1):
@@ -1283,8 +1292,8 @@ def download_quran_foundation(entry, destination):
                    '-c:a', 'libmp3lame', '-b:a', '192k', str(temporary)])
     os.replace(temporary, destination)
     measured = media_duration(destination)
-    if measured > 60:
-        raise TooLongRecording('Complete recording is too long for a Short')
+    if measured > maximum:
+        raise TooLongRecording('Complete recording is too long for the selected platform')
     entry['duration'] = measured
     entry['sha256'] = bot.file_hash(destination)
     return destination
@@ -1736,12 +1745,12 @@ def choose_scene_cuts(duration, scene_count, word_layers, minimum_segment=6.0):
     return boundaries
 
 
-def item_for(entry, source, background, motion_overlay=None, background_video=None, used_clips=None, used_playlists=None, portrait_backgrounds=False, background_clip_count=3, external_backgrounds=None):
+def item_for(entry, source, background, motion_overlay=None, background_video=None, used_clips=None, used_playlists=None, portrait_backgrounds=False, background_clip_count=3, external_backgrounds=None, platform='youtube'):
     cta_index = int(hashlib.sha256(entry['id'].encode('utf-8')).hexdigest(), 16) % len(bot.CTA_COMMENTS)
     cta = bot.CTA_COMMENTS[cta_index]
     verse_caption = verse_label(entry, arabic=True)
     if verse_caption:
-        suffix = " #Shorts"
+        suffix = ' #Shorts' if platform == 'youtube' else ''
         prefix = f"سورة {entry['surah_ar']}، {verse_caption} | القارئ "
         reciter = entry['reciter_ar']
         room = max(1, 100 - len(prefix) - len(suffix))
@@ -1750,7 +1759,7 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
                        f"تلاوة سورة {entry['surah_ar']}، {verse_caption}، بصوت {entry['reciter_ar']}")
         description += f"\n\n{entry['attribution']}\n\n{entry['permission_url']}\n\n{cta}"
     else:
-        suffix = " #Shorts"
+        suffix = " #Shorts" if platform == "youtube" else ""
         prefix = f"سورة {entry['surah_ar']} | القارئ "
         room = max(1, 100 - len(prefix) - len(suffix))
         title = prefix + entry['reciter_ar'][:room].rstrip() + suffix
@@ -1770,9 +1779,10 @@ def item_for(entry, source, background, motion_overlay=None, background_video=No
         credits.append("الترخيص: Pexels License — https://www.pexels.com/license/")
         description = description.rstrip() + "\n\n" + "\n".join(credits)
 
-    item = {'id': entry['id'], 'mode': 'compose', 'source': str(source.resolve()),
+    item = {'id': entry['id'], 'mode': 'compose', 'platform': platform,
+            'source': str(source.resolve()),
             'background': str(background.resolve()), 'start': 0, 'duration': entry['duration'],
-            'min_duration_seconds': 30,
+            'min_duration_seconds': entry.get('min_audio_seconds', 30),
             'background_motion': 'premium_motion',
             'visual_theme': entry.get('visual_theme', 'forest_rain'),
             'title': title, 'description': description, 'metadata_complete': True,
@@ -2568,13 +2578,14 @@ def verify_channel(service, ledger, config):
                                     'checked_at': datetime.now(timezone.utc).isoformat()}
 
 
-def next_downloadable_verse(catalog, jobs, cursor, ledger=None, preview=False):
+def next_downloadable_verse(catalog, jobs, cursor, ledger=None, preview=False,
+                            platform='youtube'):
     """Skip unavailable or stale chapter sources and safely choose another passage."""
     metrics_history = ledger.data.get('metrics_history', {}) if ledger else {}
     rejected_chapter_audio = set()
     for _ in range(100):
         entry, next_cursor = verse_entry_for_position(
-            catalog, jobs, cursor, metrics_history)
+            catalog, jobs, cursor, metrics_history, platform)
         source_key = None
         if entry.get('source_type') == 'quran_chapter_passage':
             source_key = (int(entry['recitation_id']), int(entry['chapter_id']))
@@ -2599,11 +2610,19 @@ def next_downloadable_verse(catalog, jobs, cursor, ledger=None, preview=False):
         if ledger and not preview:
             ledger.data['cursor'] = cursor
             ledger.save()
-    raise RuntimeError('No complete recitation between 30 seconds and the Shorts limit was found')
+    minimum_duration, maximum_duration = platform_policy.audio_duration_bounds(catalog, platform)
+    raise RuntimeError(
+        f'No complete recitation between {minimum_duration:g} and {maximum_duration:g} '
+        f'seconds was found for {platform}')
 
 
 def run(args, ledger=None, service=None):
     run_started_at = datetime.now(timezone.utc)
+    platform = getattr(args, 'platform', 'youtube')
+    if platform not in platform_policy.SUPPORTED_PLATFORMS:
+        raise CloudError('Unsupported publishing platform')
+    if platform == 'tiktok' and args.mode != 'preview':
+        raise CloudError('TikTok publishing is not configured; use preview to create its separate video')
     print(f'Cloud runner started: mode={args.mode}', flush=True)
     config = bot.read_json(ROOT / 'automation.json')
     if not isinstance(config, dict):
@@ -2675,7 +2694,8 @@ def run(args, ledger=None, service=None):
         cursor = ledger.data.get('cursor', len(jobs)) if ledger else len(jobs)
         try:
             entry, next_cursor, workspace, source = next_downloadable_verse(
-                catalog, jobs, cursor, ledger, preview=args.mode == 'preview')
+                catalog, jobs, cursor, ledger, preview=args.mode == 'preview',
+                platform=platform)
         except NoEligibleVerse as error:
             if ledger and args.mode != 'preview':
                 ledger.data['cursor'] = error.cursor
@@ -2694,8 +2714,10 @@ def run(args, ledger=None, service=None):
         workspace = ROOT / 'state' / 'cloud' / entry['id']
         source = download_recording(entry, workspace / 'recitation.mp3')
     # Enforce the policy for every source type, including legacy catalogs.
-    if media_duration(source) < 30 or float(entry['duration']) < 30:
-        raise TooShortRecording('Recitation must be at least 30 seconds before rendering')
+    minimum_duration = max(30.0, float(entry.get('min_audio_seconds', 30)))
+    if media_duration(source) < minimum_duration or float(entry['duration']) < minimum_duration:
+        raise TooShortRecording(
+            f'Recitation must be at least {minimum_duration:g} seconds before rendering')
     custom_background = None
     if custom_clip:
         entry['visual_theme'] = custom_clip['theme']
@@ -2728,7 +2750,7 @@ def run(args, ledger=None, service=None):
             used_clips=used_backgrounds, used_playlists=prior_playlists,
             portrait_backgrounds=(catalog_settings.get('background_orientation') == 'portrait'),
             background_clip_count=background_clip_count,
-            external_backgrounds=background_sources
+            external_backgrounds=background_sources, platform=platform
         )
 
     try:
@@ -2762,8 +2784,8 @@ def run(args, ledger=None, service=None):
             target = bot.render(job, ROOT, workspace)
     finally:
         cleanup_pexels_backgrounds(pexels_temp)
-    if media_duration(target) < 30:
-        raise TooShortRecording('Rendered video is under 30 seconds; upload blocked')
+    if media_duration(target) < minimum_duration:
+        raise TooShortRecording('Rendered video is below the selected platform minimum')
     print('Preview ready:', target)
     if args.mode == 'preview':
         return
@@ -2852,6 +2874,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('mode', choices=['preview', 'publish', 'scheduled', 'report'])
     parser.add_argument('--count', type=int, choices=range(1, 6), default=1)
+    parser.add_argument('--platform', choices=sorted(platform_policy.SUPPORTED_PLATFORMS),
+                        default='youtube')
     args = parser.parse_args(argv)
     if args.mode != 'publish' and args.count != 1:
         parser.error('--count is only supported for publish')

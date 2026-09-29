@@ -89,5 +89,15 @@
   "text_presentation": "static_full_ayah",
   "performance_bias_enabled": false,
   "performance_bias_min_videos": 3,
-  "performance_bias_strength": 0.15
+  "performance_bias_strength": 0.15,
+  "platform_duration_policies": {
+    "youtube": {
+      "min_audio_seconds": 30,
+      "max_audio_seconds": 58
+    },
+    "tiktok": {
+      "min_audio_seconds": 61,
+      "max_audio_seconds": 88
+    }
+  }
 }

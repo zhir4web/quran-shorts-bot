@@ -31,6 +31,11 @@ on:
         description: Custom video submission id (used by dashboard)
         required: false
         default: ''
+      platform:
+        description: YouTube keeps its current profile; TikTok makes a preview longer than one minute only
+        type: choice
+        options: [youtube, tiktok]
+        default: youtube
 permissions:
   contents: write
 concurrency:
@@ -87,15 +92,16 @@ jobs:
           NOTIFY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUN_MODE: ${{ inputs.mode || 'scheduled' }}
           POST_COUNT: ${{ inputs.count || '1' }}
+          TARGET_PLATFORM: ${{ inputs.platform || 'youtube' }}
           CUSTOM_VIDEO_ID: ${{ inputs.custom_id || '' }}
           DASHBOARD_URL: https://quran-shorts-bot.vercel.app
           DASHBOARD_KEY: ${{ secrets.DASHBOARD_KEY }}
-        run: python retry_runner.py "$RUN_MODE" --count "$POST_COUNT"
+        run: python retry_runner.py "$RUN_MODE" --count "$POST_COUNT" --platform "$TARGET_PLATFORM"
       - name: Save preview for inspection
         if: success() && steps.gate.outputs.run == 'true' && inputs.mode == 'preview'
         uses: actions/upload-artifact@v5
         with:
-          name: quran-preview
+          name: quran-${{ inputs.platform || 'youtube' }}-preview
           path: |
             state/cloud/*/video.mp4
             state/cloud/*/background.png

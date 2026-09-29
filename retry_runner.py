@@ -24,10 +24,14 @@ RETRY_DELAY_SECONDS = 30
 
 def run_with_retries(mode, count=1, max_attempts=MAX_ATTEMPTS,
                      retry_delay_seconds=RETRY_DELAY_SECONDS,
-                     command_runner=None, sleep=None, env=None):
+                     command_runner=None, sleep=None, env=None, platform='youtube'):
     """Run the cloud pipeline with at most one safe retry for publish modes."""
     if mode not in ALL_MODES:
         raise ValueError("Unsupported runner mode")
+    if platform not in ('youtube', 'tiktok'):
+        raise ValueError("Unsupported publishing platform")
+    if platform == 'tiktok' and mode != 'preview':
+        raise ValueError("TikTok publishing is not configured; use preview to render a separate TikTok video")
     if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 5:
         raise ValueError("Post count must be between 1 and 5")
     if mode != "publish" and count != 1:
@@ -48,6 +52,8 @@ def run_with_retries(mode, count=1, max_attempts=MAX_ATTEMPTS,
         mode,
         "--count",
         str(count),
+        '--platform',
+        platform,
     ]
     runner = command_runner or subprocess.run
     pause = sleep or time.sleep
@@ -78,10 +84,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=sorted(ALL_MODES))
     parser.add_argument("--count", type=int, choices=range(1, 6), default=1)
+    parser.add_argument("--platform", choices=("youtube", "tiktok"), default="youtube")
     args = parser.parse_args(argv)
     if args.mode != "publish" and args.count != 1:
         parser.error("--count is only supported for publish")
-    return run_with_retries(args.mode, args.count)
+    return run_with_retries(args.mode, args.count, platform=args.platform)
 
 
 if __name__ == "__main__":
