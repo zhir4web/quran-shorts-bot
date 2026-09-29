@@ -112,7 +112,16 @@ def qf_english_translation(verse_key, resource_id=DEFAULT_ENGLISH_TRANSLATION_ID
                    and (row.get('resource_id') is None or str(row.get('resource_id')) == str(resource_id))
                    and (row.get('verse_key') is None or row.get('verse_key') == verse_key)]
         if len(matches) != 1:
-            raise CloudError('Quran Foundation did not return the selected English translation')
+            # Final documented fallback: the single-translation endpoint supports verse_key.
+            payload = get_json(
+                quran_foundation_api.api_url(f'translations/{resource_id}'),
+                {'verse_key': verse_key, 'fields': 'verse_key'})
+            matches = [row for row in payload.get('translations', [])
+                       if isinstance(row, dict)
+                       and (row.get('resource_id') is None or str(row.get('resource_id')) == str(resource_id))
+                       and (row.get('verse_key') is None or row.get('verse_key') == verse_key)]
+            if len(matches) != 1:
+                raise CloudError('Quran Foundation did not return the selected English translation')
     parser = _TranslationText()
     parser.feed(str(matches[0].get('text') or ''))
     text = ' '.join(''.join(parser.parts).split())
