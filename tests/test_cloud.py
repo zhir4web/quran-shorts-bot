@@ -258,6 +258,36 @@ class CloudTests(unittest.TestCase):
             with self.assertRaisesRegex(cloud.CloudError, 'selected English translation'):
                 cloud.qf_english_translation('1:1')
 
+    def test_translation_fallback_paginates_until_requested_resource_is_found(self):
+        verse_response = {'verse': {'verse_key': '11:4', 'translations': []}}
+        first_page = {
+            'translations': [
+                {'resource_id': 20, 'verse_key': '11:4', 'text': 'Other translation'}
+                for _ in range(10)
+            ],
+            'pagination': {'next_page': 2},
+        }
+        second_page = {
+            'translations': [
+                {'resource_id': 131, 'verse_key': '11:4', 'text': 'Verified meaning.'}
+            ],
+            'pagination': {'next_page': None},
+        }
+        with patch.object(
+                cloud, 'get_json',
+                side_effect=[verse_response, first_page, second_page]) as request:
+            text = cloud.qf_english_translation('11:4')
+
+        self.assertEqual(text, 'Verified meaning.')
+        expected = cloud.quran_foundation_api.api_url(
+            'translations/131/by_ayah/11:4')
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(request.call_args_list[1].args[0], expected)
+        self.assertEqual(request.call_args_list[1].args[1], {
+            'fields': 'verse_key', 'page': 1, 'per_page': 50})
+        self.assertEqual(request.call_args_list[2].args[1], {
+            'fields': 'verse_key', 'page': 2, 'per_page': 50})
+
     def test_translation_api_failure_cancels_verse_selection_safely(self):
         catalog = {'allowed_reciter_ids': [1], 'max_audio_seconds': 58,
                    'tail_silence_seconds': 1, 'max_ayah_characters': 180,
