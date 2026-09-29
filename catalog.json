@@ -13,11 +13,11 @@
     8,
     9,
     10,
-    11,
-    12
+    11
   ],
   "blocked_reciter_ids": [
-    5
+    5,
+    12
   ],
   "allowed_chapter_reciter_ids": [
     1,
@@ -28,7 +28,6 @@
     7,
     9,
     10,
-    12,
     13,
     19,
     158,
@@ -42,7 +41,8 @@
     176
   ],
   "blocked_chapter_reciter_ids": [
-    5
+    5,
+    12
   ],
   "proposed_reciter_ids_for_review": [],
   "proposed_chapter_reciter_ids_for_review": [],
