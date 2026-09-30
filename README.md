@@ -2,7 +2,7 @@
 
 ## Separate platform video lengths
 
-The automatic publishing flow remains YouTube-only. YouTube recitations keep the existing 30–58 second audio profile. Choose `tiktok` in the daily workflow's manual run to render a separate preview using complete ayah boundaries: 61–88 seconds of recitation plus the configured ending silence, so the final video stays above one minute and at or below 90 seconds. The preview is saved as a GitHub Actions artifact. TikTok upload is deliberately rejected until TikTok Content Posting API access and OAuth are configured.
+The automatic publishing flow remains YouTube-only. YouTube recitations keep the existing 30–58 second audio profile. Choose `tiktok_draft` in the daily workflow's manual run to render a separate video using complete ayah boundaries: 61–88 seconds of recitation plus the configured ending silence, so the final video stays above one minute and at or below 90 seconds. Once the TikTok Content Posting API and account authorization are configured, the workflow sends the video to the creator's TikTok inbox as an unpublished draft. The creator reviews and publishes it in TikTok; public auto-posting is not enabled.
 
 بۆتەکە ڤیدیۆی ستوونی 1080×1920 لە تلاوەت و پاشبنەما دروست دەکات و لە ڕێگەی GitHub Actions بۆ YouTube دەنێرێت. ئامانجی خشتە 06:00، 12:00 و 18:00 بە کاتی بەغدایە؛ ئەمانە کاتی ئامانجن، نە بەڵێنی بڵاوکردنەوە لە هەمان چرکەدا.
 
@@ -64,7 +64,7 @@ $env:GITHUB_BRANCH = "main"
 
 داشبۆرد تەنها پشکنینی سەرکەوتووی هەمان کەناڵ لە 24 کاتژمێری ڕابردوودا بە پشتڕاستکراو نیشان دەدات. بوونی ناسنامە بە مانای پەیوەستبوون نییە. upload ـی نادیار، شکستی workflow و ناچالاکبوونی بڵاوکردنەوە نیشان دەدرێن.
 
-TikTok تەنها لاپەڕەی زانیارییە؛ پۆستکردنی هێشتا جێبەجێ نەکراوە.
+TikTok draft تەنها لە داواکاریی دەستیی `tiktok_draft` ـەوە دەنێردرێت؛ پۆستکردنی خۆکارانەی TikTok چالاک نییە. وردەکاری ڕێکخستن لە [ڕێنمایی داشبۆرد](dashboard/README.md) بخوێنەوە.
 
 ڕێنمایی زیاتر: [داشبۆرد](dashboard/README.md)، [خۆکارکردن](AUTOMATION.md)، [Cloud Run](CLOUD_RUN.md)، [پشکنین](AUDIT.md).
 

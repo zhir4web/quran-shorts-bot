@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="index,follow">
+  <meta name="theme-color" content="#f5f7fb">
+  <title>Privacy Policy · Quran Shorts</title>
+  <link rel="stylesheet" href="/legal.css">
+</head>
+<body>
+  <main class="page">
+    <div class="brand">Quran Shorts · Control Center</div>
+    <header>
+      <h1>Privacy Policy</h1>
+      <p class="updated">Last updated: September 30, 2026</p>
+    </header>
+    <article>
+      <p>This notice explains how the Quran Shorts private dashboard processes information when its owner connects TikTok or uses the dashboard. The service is operated by the owner of the Quran Shorts channel and is not affiliated with TikTok, YouTube, or Quran Foundation.</p>
+
+      <h2>Information processed</h2>
+      <ul>
+        <li><strong>TikTok authorization:</strong> when the channel owner connects TikTok, the service receives the OAuth authorization response, TikTok account identifier (open ID, when provided), granted scope, and access and refresh tokens with their expiration times. A short-lived OAuth state value is used to protect the sign-in flow.</li>
+        <li><strong>Videos:</strong> when the owner requests a TikTok draft, the selected rendered video is transferred to TikTok. TikTok receives it as an unpublished inbox draft for the creator to review and publish. The service does not publish directly to a public TikTok profile.</li>
+        <li><strong>Dashboard access:</strong> the dashboard key is held in the current browser tab's session storage and sent over HTTPS to authenticate requests. It is not placed in the public page source.</li>
+        <li><strong>Optional custom clips:</strong> if the owner submits a custom video through the dashboard, the file may be temporarily processed by Vercel Blob and GitHub Actions for a YouTube upload. The workflow attempts to remove its temporary source file after a successful YouTube upload.</li>
+      </ul>
+
+      <h2>How information is used</h2>
+      <p>Information is used only to authenticate the owner's TikTok account, protect dashboard requests, and transfer a video draft when the owner explicitly starts that workflow. The service does not sell personal information or use it for advertising.</p>
+
+      <h2>Storage and service providers</h2>
+      <p>TikTok authorization tokens are encrypted before being stored in Vercel Blob. The service also relies on Vercel to host the dashboard and temporary files, GitHub Actions to run requested video workflows, and TikTok to receive and store drafts. These providers may process operational and security logs under their own policies. The service does not intentionally place OAuth tokens in the public GitHub repository.</p>
+
+      <h2>Retention and choices</h2>
+      <p>Authorization data is retained while the TikTok connection is in use so the owner can request drafts. The owner can revoke the app's access from TikTok's account settings; revocation prevents future authorized use, but the encrypted local copy may need to be removed separately by the service operator. TikTok inbox drafts remain subject to TikTok's own retention and deletion controls. Temporary custom-video files are intended to be removed after a successful YouTube upload; provider backups and logs may persist for limited periods under provider policies.</p>
+
+      <h2>Security and contact</h2>
+      <p>The dashboard uses HTTPS, a dashboard key, and encrypted storage for TikTok tokens. No online service can guarantee absolute security. For a privacy question or a request to remove locally stored TikTok authorization data, contact the project maintainer through the <a href="https://github.com/zhir4web/quran-shorts-bot/issues">Quran Shorts project page</a>. Do not include passwords, access tokens, or other secrets in a public issue.</p>
+
+      <p class="notice">This service is intended for its channel owner. If it is made available to additional users, this notice should be reviewed and updated to reflect that change.</p>
+    </article>
+    <footer><a href="/terms">Terms of Service</a><a href="/">Return to Quran Shorts</a></footer>
+  </main>
+</body>
+</html>
