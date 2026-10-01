@@ -57,6 +57,45 @@ class QuranFoundationAPITests(unittest.TestCase):
         self.assertEqual(sleeps, [5.0])
         self.assertEqual(session.get.call_count, 2)
 
+    def test_525_auth_gateway_failure_is_retried_before_success(self):
+        session = Mock()
+        session.post.side_effect = [
+            response(525),
+            response(200, {"access_token": "opaque-token", "expires_in": 3600}),
+        ]
+        session.get.return_value = response(200, {"chapters": []})
+        sleeps = Mock()
+        with patch.dict(os.environ, {
+            "QF_CLIENT_ID": "client-id",
+            "QF_CLIENT_SECRET": "client-secret",
+            "QF_ENV": "production",
+        }, clear=True), patch("quran_foundation_api.random.uniform", return_value=0):
+            payload = qf.get_json(
+                qf.api_url("chapters"), session=session, sleep=sleeps
+            )
+        self.assertEqual(payload, {"chapters": []})
+        self.assertEqual(session.post.call_count, 2)
+        sleeps.assert_called_once_with(1.0)
+
+    def test_525_content_gateway_failure_is_retried_before_success(self):
+        session = Mock()
+        session.post.return_value = response(
+            200, {"access_token": "opaque-token", "expires_in": 3600}
+        )
+        session.get.side_effect = [response(525), response(200, {"chapters": []})]
+        sleeps = Mock()
+        with patch.dict(os.environ, {
+            "QF_CLIENT_ID": "client-id",
+            "QF_CLIENT_SECRET": "client-secret",
+            "QF_ENV": "production",
+        }, clear=True), patch("quran_foundation_api.random.uniform", return_value=0):
+            payload = qf.get_json(
+                qf.api_url("chapters"), session=session, sleep=sleeps
+            )
+        self.assertEqual(payload, {"chapters": []})
+        self.assertEqual(session.get.call_count, 2)
+        sleeps.assert_called_once_with(1.0)
+
     def test_http_date_retry_after_is_parsed_and_bounded(self):
         now = datetime(2026, 9, 28, 12, tzinfo=timezone.utc)
         delay = qf._retry_delay(

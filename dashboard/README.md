@@ -64,7 +64,11 @@ TikTok's `video.upload` inbox endpoint, and records each GitHub run ID to preven
 duplicate drafts on a workflow rerun. TikTok sends an inbox notification; the
 creator must open it, review/edit the draft, and publish it in TikTok. This flow
 does not call the direct-publication API and never automatically publishes to
-TikTok. YouTube rendering and upload remain separate and unchanged.
+TikTok. In addition to manual drafts, `.github/workflows/tiktok-drafts.yml`
+checks 06:00, 12:00, and 18:00 Baghdad-time slots, with retries and same-day
+catch-up. Scheduled drafts are skipped until the app is approved, the creator
+account is connected, and `video.upload` is granted. YouTube rendering and
+upload remain separate and unchanged.
 
 ## Tests
 

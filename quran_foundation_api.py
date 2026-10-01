@@ -31,6 +31,11 @@ MAX_ATTEMPTS = 5
 MAX_RETRY_AFTER_SECONDS = 30.0
 
 
+def _is_retryable_status(status_code):
+    """Retry rate limits and server/gateway failures with bounded backoff."""
+    return status_code == 429 or 500 <= status_code <= 599
+
+
 class QuranFoundationAPIError(RuntimeError):
     """A safe API diagnostic that never includes response bodies or secrets."""
 
@@ -121,7 +126,7 @@ def _request_token(client_id, client_secret, environment, client, sleeper):
             _pause(min(20.0, 2.0 ** (attempt - 1)) + random.uniform(0.0, 0.5), sleeper)
             continue
 
-        if response.status_code in (429, 500, 502, 503, 504):
+        if _is_retryable_status(response.status_code):
             if attempt == MAX_ATTEMPTS:
                 raise QuranFoundationAPIError(
                     f"Quran Foundation authentication is temporarily unavailable (HTTP {response.status_code})"
@@ -206,7 +211,7 @@ def get_json(url, params=None, session=None, sleep=None):
             # from the bounded retry budget for temporary server failures.
             attempt -= 1
             continue
-        if response.status_code in (429, 500, 502, 503, 504):
+        if _is_retryable_status(response.status_code):
             if attempt == MAX_ATTEMPTS:
                 raise QuranFoundationAPIError(
                     f"Quran Foundation source is temporarily unavailable (HTTP {response.status_code})"

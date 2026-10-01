@@ -1,5 +1,8 @@
 import unittest
 from datetime import datetime, timezone
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock
 
 import tiktok_schedule
@@ -69,6 +72,23 @@ class TikTokScheduleTests(unittest.TestCase):
         session = Mock()
         session.get.side_effect = tiktok_schedule.requests.RequestException('offline')
         self.assertFalse(tiktok_schedule.tiktok_ready(session, 'https://example.test', 'dashboard-key'))
+
+    def test_global_automation_switch_disables_tiktok_schedule(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / 'automation.json'
+            config_path.write_text(json.dumps({'enabled': False}), encoding='utf-8')
+            session = Mock()
+            env = {'DASHBOARD_URL': 'https://example.test', 'DASHBOARD_KEY': 'key'}
+            self.assertIsNone(tiktok_schedule.select_slot(
+                env=env, session=session, automation_path=config_path))
+            session.get.assert_not_called()
+
+    def test_missing_or_invalid_automation_config_fails_closed(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / 'automation.json'
+            self.assertFalse(tiktok_schedule.automation_enabled(config_path))
+            config_path.write_text('{invalid', encoding='utf-8')
+            self.assertFalse(tiktok_schedule.automation_enabled(config_path))
 
 
 if __name__ == '__main__':

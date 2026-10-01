@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 import os
 import sys
+from pathlib import Path
 
 import requests
 
@@ -77,9 +79,21 @@ def tiktok_ready(session=None, base_url=None, dashboard_key=None):
             status.get('connected') is True and 'video.upload' in scopes)
 
 
-def select_slot(*, now=None, ledger=None, env=None, session=None):
+def automation_enabled(path=None):
+    """Fail closed unless the repository's global automation switch is on."""
+    config_path = Path(path) if path is not None else Path(__file__).with_name('automation.json')
+    try:
+        config = json.loads(config_path.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return isinstance(config, dict) and config.get('enabled') is True
+
+
+def select_slot(*, now=None, ledger=None, env=None, session=None, automation_path=None):
     """Fail closed on incomplete TikTok setup, full inbox quota, or bad state."""
     env = os.environ if env is None else env
+    if not automation_enabled(automation_path):
+        return None
     if not tiktok_ready(session=session, base_url=env.get('DASHBOARD_URL'),
                         dashboard_key=env.get('DASHBOARD_KEY')):
         return None
