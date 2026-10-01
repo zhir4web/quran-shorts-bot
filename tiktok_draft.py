@@ -113,13 +113,19 @@ class GitHubDraftLedger:
             raise TikTokDraftError('Could not safely save TikTok draft history')
         return response.json().get('content', {}).get('sha')
 
-    def claim(self, run_id, video_sha256, timestamp):
+    def claim(self, run_id, video_sha256, timestamp, schedule_slot=None):
         data, sha = self._read()
         key = str(run_id)
+        if schedule_slot and any(
+                isinstance(row, dict) and row.get('schedule_slot') == schedule_slot
+                for row in data['runs'].values()):
+            raise TikTokDraftError('This TikTok schedule slot already has an upload attempt; it was blocked to prevent a duplicate')
         if key in data['runs']:
             raise TikTokDraftError('This GitHub run already has a TikTok draft attempt; it was blocked to prevent a duplicate')
-        data['runs'][key] = {'status': 'uploading', 'video_sha256': video_sha256,
-                             'started_at': timestamp}
+        row = {'status': 'uploading', 'video_sha256': video_sha256, 'started_at': timestamp}
+        if schedule_slot:
+            row['schedule_slot'] = schedule_slot
+        data['runs'][key] = row
         sha = self._write(data, sha, f'Record TikTok draft attempt {key} [skip ci]')
         return sha
 
@@ -252,11 +258,14 @@ def upload_latest(session=None, *, env=None, duration_reader=media_duration, sle
     run_id = env.get('GITHUB_RUN_ID', '')
     if not run_id:
         raise TikTokDraftError('A GitHub run ID is required for duplicate protection')
+    schedule_slot = env.get('TIKTOK_SCHEDULE_SLOT', '').strip()
+    if schedule_slot and not re.fullmatch(r'\d{4}-\d{2}-\d{2}/(?:06|12|18):00', schedule_slot):
+        raise TikTokDraftError('The TikTok schedule slot is invalid')
     history = GitHubDraftLedger(env.get('GITHUB_TOKEN', ''), env.get('GITHUB_REPOSITORY', ''),
                                 env.get('GITHUB_REF_NAME', 'main'), session=session)
     access_token = access_token_from_dashboard(session=session)
     timestamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-    history_sha = history.claim(run_id, sha256, timestamp)
+    history_sha = history.claim(run_id, sha256, timestamp, schedule_slot=schedule_slot or None)
     current_sha = history_sha
 
     def save_publish_id(publish_id):

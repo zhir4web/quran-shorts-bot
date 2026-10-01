@@ -97,6 +97,17 @@ class TikTokDraftTests(unittest.TestCase):
             ledger.claim('123', 'abc123', 'now')
         session.put.assert_not_called()
 
+    def test_duplicate_scheduled_slot_is_blocked_across_workflow_runs(self):
+        session = Mock()
+        state = {'schema': 1, 'runs': {'123': {'status': 'send_to_user_inbox',
+            'schedule_slot': '2026-10-01/06:00'}}}
+        session.get.return_value = Response(200, {'content': __import__('base64').b64encode(
+            json.dumps(state).encode()).decode(), 'sha': 'sha-1'})
+        ledger = tiktok_draft.GitHubDraftLedger('github-token', 'owner/repo', 'main', session=session)
+        with self.assertRaisesRegex(tiktok_draft.TikTokDraftError, 'schedule slot already has an upload attempt'):
+            ledger.claim('124', 'video-hash', 'now', schedule_slot='2026-10-01/06:00')
+        session.put.assert_not_called()
+
     def test_generated_video_duration_is_checked_before_auth_or_upload(self):
         session = Mock()
         with tempfile.TemporaryDirectory() as directory:
