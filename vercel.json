@@ -2,6 +2,10 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     {
+      "source": "/oauth-home",
+      "destination": "/dashboard/oauth-home.html"
+    },
+    {
       "source": "/privacy",
       "destination": "/dashboard/privacy.html"
     },

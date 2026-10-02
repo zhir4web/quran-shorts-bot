@@ -5,42 +5,38 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="index,follow">
   <meta name="theme-color" content="#f5f7fb">
-  <title>Privacy Policy · Quran Shorts</title>
+  <title>Privacy Policy · Quran Bot</title>
   <link rel="stylesheet" href="/legal.css">
 </head>
 <body>
   <main class="page">
-    <div class="brand">Quran Shorts · Control Center</div>
+    <div class="brand">Quran Shorts · Channel tools</div>
     <header>
       <h1>Privacy Policy</h1>
-      <p class="updated">Last updated: September 30, 2026</p>
+      <p class="updated">Last updated: October 2, 2026</p>
     </header>
     <article>
-      <p>This notice explains how the Quran Shorts private dashboard processes information when its owner connects TikTok or uses the dashboard. The service is operated by the owner of the Quran Shorts channel and is not affiliated with TikTok, YouTube, or Quran Foundation.</p>
-
-      <h2>Information processed</h2>
+      <p>This policy describes how Quran Bot, a private tool operated by the owner of the Quran Shorts channel, processes information when the owner connects YouTube or TikTok or uses the dashboard. The service is not affiliated with Google, YouTube, TikTok, or Quran Foundation.</p>
+      <h2>Google and YouTube data</h2>
+      <p>When the owner authorizes YouTube, the app receives OAuth access and refresh tokens and the permissions the owner grants. It uses those permissions to identify and confirm the selected channel; upload and publish videos at the owner's request or according to the owner's schedule; organize channel videos into playlists; add the configured comment to an uploaded video; and read video statistics and YouTube Analytics data for upload checks and performance reports. This can include channel and video identifiers, video metadata, playlist information, view, like and comment counts, watch time, average view duration, and related report values.</p>
+      <p>Google user data is used only to provide and maintain the YouTube channel-management features described above. It is not sold, used for advertising, or used to train generalized AI or machine-learning models. The app does not transfer Google user data to unrelated third parties. It is processed by the infrastructure providers needed to run the owner's requested workflows, as described below, and is handled in accordance with the Google API Services User Data Policy, including its Limited Use requirements.</p>
+      <h2>Other information processed</h2>
       <ul>
-        <li><strong>TikTok authorization:</strong> when the channel owner connects TikTok, the service receives the OAuth authorization response, TikTok account identifier (open ID, when provided), granted scope, and access and refresh tokens with their expiration times. A short-lived OAuth state value is used to protect the sign-in flow.</li>
-        <li><strong>Videos:</strong> when the owner requests a TikTok draft, the selected rendered video is transferred to TikTok. TikTok receives it as an unpublished inbox draft for the creator to review and publish. The service does not publish directly to a public TikTok profile.</li>
-        <li><strong>Dashboard access:</strong> the dashboard key is held in the current browser tab's session storage and sent over HTTPS to authenticate requests. It is not placed in the public page source.</li>
-        <li><strong>Optional custom clips:</strong> if the owner submits a custom video through the dashboard, the file may be temporarily processed by Vercel Blob and GitHub Actions for a YouTube upload. The workflow attempts to remove its temporary source file after a successful YouTube upload.</li>
+        <li><strong>Videos and Quran metadata:</strong> the selected recitation, licensed background assets, captions and upload metadata are combined to render videos and carry out the owner's request. YouTube receives videos and metadata that the owner chooses to upload; YouTube controls their publication, display and retention there.</li>
+        <li><strong>Public workflow ledger:</strong> the public GitHub repository stores operational records such as video IDs, upload status and times, reciter and visual-theme labels, schedule history, and YouTube statistics or report summaries. Anyone who can access the public repository can read this ledger. OAuth tokens and dashboard keys are not intentionally written to it.</li>
+        <li><strong>GitHub Actions:</strong> the YouTube OAuth token is stored as the repository's encrypted <code>YOUTUBE_TOKEN</code> Actions secret and is supplied to the workflow runner only while a workflow runs. GitHub processes workflow logs and security information under its own policies.</li>
+        <li><strong>TikTok:</strong> if the owner connects TikTok, the service receives the account identifier, granted permissions, and access and refresh tokens. Tokens are encrypted before storage in Vercel Blob. When the owner requests a TikTok draft, the selected video is transferred to TikTok as an unpublished inbox draft for the owner to review and publish.</li>
+        <li><strong>Dashboard and custom clips:</strong> the dashboard key is held in the browser tab's session storage and sent over HTTPS to authenticate requests. If the owner submits a custom video, it may be temporarily processed by Vercel Blob and GitHub Actions; the workflow attempts to remove the temporary source file after a successful YouTube upload.</li>
       </ul>
-
-      <h2>How information is used</h2>
-      <p>Information is used only to authenticate the owner's TikTok account, protect dashboard requests, and transfer a video draft when the owner explicitly starts that workflow. The service does not sell personal information or use it for advertising.</p>
-
       <h2>Storage and service providers</h2>
-      <p>TikTok authorization tokens are encrypted before being stored in Vercel Blob. The service also relies on Vercel to host the dashboard and temporary files, GitHub Actions to run requested video workflows, and TikTok to receive and store drafts. These providers may process operational and security logs under their own policies. The service does not intentionally place OAuth tokens in the public GitHub repository.</p>
-
+      <p>The app relies on GitHub Actions to run video workflows and hold the encrypted YouTube token secret, GitHub to host source code and the public workflow ledger, Vercel to host the dashboard and temporarily process submitted clips, TikTok to receive requested drafts, and Google/YouTube to provide the authorized APIs and store uploaded videos. These providers may process operational and security logs under their own policies. OAuth tokens are kept separate from the public ledger.</p>
       <h2>Retention and choices</h2>
-      <p>Authorization data is retained while the TikTok connection is in use so the owner can request drafts. The owner can revoke the app's access from TikTok's account settings; revocation prevents future authorized use, but the encrypted local copy may need to be removed separately by the service operator. TikTok inbox drafts remain subject to TikTok's own retention and deletion controls. Temporary custom-video files are intended to be removed after a successful YouTube upload; provider backups and logs may persist for limited periods under provider policies.</p>
-
+      <p>The YouTube token remains in the GitHub Actions secret while the connection is needed. The TikTok authorization is retained while that connection is in use. The public ledger is retained in the repository and its Git history. Uploaded videos and drafts are subject to YouTube's and TikTok's own storage and deletion controls. Temporary custom-video files are intended to be removed after a successful YouTube upload, although provider backups or logs may persist for limited periods under provider policies. The owner can revoke Google or TikTok access from the relevant account's security or app settings; future API access then stops, and the operator can remove the corresponding stored token.</p>
       <h2>Security and contact</h2>
-      <p>The dashboard uses HTTPS, a dashboard key, and encrypted storage for TikTok tokens. No online service can guarantee absolute security. For a privacy question or a request to remove locally stored TikTok authorization data, contact the project maintainer through the <a href="https://github.com/zhir4web/quran-shorts-bot/issues">Quran Shorts project page</a>. Do not include passwords, access tokens, or other secrets in a public issue.</p>
-
-      <p class="notice">This service is intended for its channel owner. If it is made available to additional users, this notice should be reviewed and updated to reflect that change.</p>
+      <p>The dashboard uses HTTPS and a dashboard key. OAuth credentials are stored outside the public source repository. No online service can guarantee absolute security. For a privacy question or to request removal of stored authorization data, contact the project maintainer through the <a href="https://github.com/zhir4web/quran-shorts-bot/issues">Quran Shorts project page</a>. Do not include passwords, access tokens, or private account details in a public issue.</p>
+      <p class="notice">This tool is intended for its channel owner. If it is made available to other users or changes how Google user data is used, this policy and the app's disclosures must be updated first.</p>
     </article>
-    <footer><a href="/terms">Terms of Service</a><a href="/">Return to Quran Shorts</a></footer>
+    <footer><a href="/terms">Terms of Service</a><a href="/oauth-home">Quran Bot home</a><a href="/">Open the private dashboard</a></footer>
   </main>
 </body>
 </html>
