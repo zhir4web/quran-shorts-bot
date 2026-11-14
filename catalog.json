@@ -34,7 +34,6 @@
     159,
     160,
     161,
-    168,
     173,
     174,
     175,
@@ -42,7 +41,8 @@
   ],
   "blocked_chapter_reciter_ids": [
     5,
-    12
+    12,
+    168
   ],
   "proposed_reciter_ids_for_review": [],
   "proposed_chapter_reciter_ids_for_review": [],
